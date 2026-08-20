@@ -224,7 +224,7 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className={cn(tall ? "min-h-30" : "min-h-24", "max-h-60")}
+        className={cn(tall ? "min-h-48" : "min-h-32", "max-h-60")}
       />
     </div>
   )

@@ -20,6 +20,9 @@ import type { SessionConfigOptionInfo } from "@/lib/types"
 interface SessionConfigSelectorProps {
   option: SessionConfigOptionInfo
   onSelect: (configId: string, valueId: string) => void
+  /** Lets paired selectors keep their text and separator visually centered
+   * while their hover-only chevrons are collapsed. */
+  collapseChevronWhenIdle?: boolean
   /**
    * Frontend-derived grouping for the model picker (split on the `provider/`
    * prefix). When provided, it overrides the option's own (flat) value list;
@@ -33,6 +36,7 @@ export function InlineSessionConfigSelector({
   option,
   onSelect,
   derivedGroups,
+  collapseChevronWhenIdle = false,
 }: SessionConfigSelectorProps) {
   if (option.kind.type !== "select") return null
 
@@ -74,7 +78,14 @@ export function InlineSessionConfigSelector({
           className="min-w-0 gap-0.5 px-1 text-muted-foreground"
         >
           <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          <ChevronDown
+            className={cn(
+              "shrink-0 -translate-x-0.5 scale-90 text-muted-foreground opacity-0 transition-[width,height,opacity,transform] duration-150 ease-out motion-reduce:transition-none group-hover/button:translate-x-0 group-hover/button:scale-100 group-hover/button:opacity-100 group-focus-visible/button:translate-x-0 group-focus-visible/button:scale-100 group-focus-visible/button:opacity-100 group-data-[state=open]/button:translate-x-0 group-data-[state=open]/button:scale-100 group-data-[state=open]/button:opacity-100",
+              collapseChevronWhenIdle
+                ? "size-0 group-hover/button:size-3 group-focus-visible/button:size-3 group-data-[state=open]/button:size-3"
+                : "size-3"
+            )}
+          />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

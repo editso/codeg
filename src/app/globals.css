@@ -1378,6 +1378,77 @@
   display: inline;
 }
 
+/* Main assistant prose follows the reading rhythm used by the reference chat:
+   a 15px body with a generous 28px line-height, no enclosing reply bubble,
+   and tight but consistent Markdown block spacing. Tool cards own their
+   smaller, denser typography independently. */
+.codeg-assistant-prose {
+  display: grid;
+  gap: 0.42rem;
+  max-width: none;
+  overflow-wrap: anywhere;
+  font-size: 0.9375rem;
+  line-height: 1.75rem;
+}
+
+.codeg-assistant-prose > * {
+  min-width: 0;
+  margin-block: 0;
+}
+
+.codeg-assistant-prose :where(p, li, blockquote) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.codeg-assistant-prose :where(ul, ol) {
+  padding-inline-start: 1.25rem;
+}
+
+.codeg-assistant-prose :where(ul) {
+  list-style: disc;
+}
+
+.codeg-assistant-prose :where(ol) {
+  list-style: decimal;
+}
+
+.codeg-assistant-prose [data-streamdown="code-block-body"] {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+/* Expanded activity groups use a compact timeline, not a second full-sized
+   assistant response. Its Markdown stays on the rail and inherits the row's
+   13px / 20px rhythm. */
+.codeg-activity-reasoning {
+  display: grid;
+  gap: 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.codeg-activity-reasoning > * {
+  min-width: 0;
+  margin-block: 0;
+}
+
+.codeg-activity-reasoning :where(p, li, blockquote) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.codeg-activity-reasoning :where(ul, ol) {
+  padding-inline-start: 1rem;
+}
+
+.codeg-activity-reasoning :where(ul) {
+  list-style: disc;
+}
+
+.codeg-activity-reasoning :where(ol) {
+  list-style: decimal;
+}
+
 /* Streamdown table overrides */
 [data-streamdown="table-wrapper"] {
   position: relative;
@@ -1946,6 +2017,19 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .codeg-composer-chrome
   :is(button, a[href], [role="button"], [role="menuitem"], [role="combobox"]) {
   cursor: pointer;
+}
+
+/* The conversation composer is intentionally a generous writing surface. Its
+   controls stay component-owned; this only gives the shared rich editor enough
+   breathing room to match the outer surface at every composer height. */
+.codeg-message-composer-editor .codeg-composer-scroll {
+  padding: 1.25rem 1.5rem 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .codeg-message-composer-editor .codeg-composer-scroll {
+    padding: 1rem 1.25rem 0.75rem;
+  }
 }
 
 /* Active-session composer: a gradient that flows around the input border as the

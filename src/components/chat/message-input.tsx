@@ -1,6 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
@@ -273,6 +280,14 @@ function modelPickerGroups(
   // Preserve derived `provider/` groups, server-provided groups, or a flat list
   // (never silently flatten server groups — keeps wide/collapsed consistent).
   return modelListGroups(option)
+}
+
+// ACP adapters use slightly different ids for this setting (`reasoning_effort`,
+// `thinking_level`, etc.), but its id or display name always names the concept.
+// Keep the marker presentation-only and only pair it with the immediately
+// following setting, so an unrelated mode or permission option never joins it.
+function isThinkingLevelConfigOption(option: SessionConfigOptionInfo): boolean {
+  return /reasoning|thinking|effort/i.test(`${option.id} ${option.name}`)
 }
 
 export function MessageInput({
@@ -667,7 +682,6 @@ export function MessageInput({
   const hasInlineSelectors = hasConfigOptions || showModeSelector
   const hasFolderBranchPicker =
     useConversationFolderBranchPickerVisible(attachmentTabId)
-  const folderBranchPickerAttached = hasFolderBranchPicker
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
@@ -1409,20 +1423,39 @@ export function MessageInput({
   const inlineSelectorItems = (
     <>
       {hasConfigOptions &&
-        availableConfigOptions.map((option) => {
+        availableConfigOptions.map((option, index) => {
+          const previousOption = availableConfigOptions[index - 1]
+          const showModelThinkingSeparator =
+            isModelConfigOption(option) &&
+            Boolean(
+              availableConfigOptions[index + 1] &&
+                isThinkingLevelConfigOption(availableConfigOptions[index + 1])
+            )
+          const isThinkingFollowingModel =
+            isThinkingLevelConfigOption(option) &&
+            Boolean(previousOption && isModelConfigOption(previousOption))
+          const separator = showModelThinkingSeparator ? (
+            <span
+              aria-hidden="true"
+              className="-ml-0.5 mr-0 size-1 shrink-0 self-center rounded-full bg-muted-foreground/45"
+            />
+          ) : null
+
           // On/off options flip in place — a dropdown for a binary choice is a
           // wasted interaction.
           if (option.kind.type === "boolean") {
             return (
-              <InlineSessionConfigToggle
-                key={option.id}
-                option={option}
-                onLabel={t("toggleOn")}
-                offLabel={t("toggleOff")}
-                onSelect={(configId, value) =>
-                  onConfigOptionChange?.(configId, value)
-                }
-              />
+              <Fragment key={option.id}>
+                <InlineSessionConfigToggle
+                  option={option}
+                  onLabel={t("toggleOn")}
+                  offLabel={t("toggleOff")}
+                  onSelect={(configId, value) =>
+                    onConfigOptionChange?.(configId, value)
+                  }
+                />
+                {separator}
+              </Fragment>
             )
           }
           // Long model lists get the searchable + virtualized popover (a Radix
@@ -1431,25 +1464,33 @@ export function MessageInput({
           const listGroups = modelPickerGroups(option)
           if (listGroups) {
             return (
-              <ModelOptionPicker
-                key={option.id}
+              <Fragment key={option.id}>
+                <ModelOptionPicker
+                  option={option}
+                  groups={listGroups}
+                  collapseChevronWhenIdle={showModelThinkingSeparator}
+                  onSelect={(configId, valueId) =>
+                    onConfigOptionChange?.(configId, valueId)
+                  }
+                />
+                {separator}
+              </Fragment>
+            )
+          }
+          return (
+            <Fragment key={option.id}>
+              <InlineSessionConfigSelector
                 option={option}
-                groups={listGroups}
+                derivedGroups={deriveModelGroups(option)}
+                collapseChevronWhenIdle={
+                  showModelThinkingSeparator || isThinkingFollowingModel
+                }
                 onSelect={(configId, valueId) =>
                   onConfigOptionChange?.(configId, valueId)
                 }
               />
-            )
-          }
-          return (
-            <InlineSessionConfigSelector
-              key={option.id}
-              option={option}
-              derivedGroups={deriveModelGroups(option)}
-              onSelect={(configId, valueId) =>
-                onConfigOptionChange?.(configId, valueId)
-              }
-            />
+              {separator}
+            </Fragment>
           )
         })}
       {showModeSelector && (
@@ -1811,20 +1852,7 @@ export function MessageInput({
           </div>
         </div>
       )}
-      {/* When the folder/branch row is attached below the composer, this group
-          clips both into one rounded box (`overflow-hidden rounded-xl`); the
-          drag-active ring rides the wrapper so it isn't clipped. Standalone
-          (no row) it's layout-neutral (`display:contents`). */}
-      <div
-        className={cn(
-          folderBranchPickerAttached
-            ? "overflow-hidden rounded-xl transition-colors"
-            : "contents",
-          folderBranchPickerAttached &&
-            showDragActive &&
-            "ring-1 ring-primary/40"
-        )}
-      >
+      <div className="contents">
         <ContextMenu onOpenChange={handleContextMenuOpenChange}>
           {/* Disabled in non-secure web (no async clipboard read) so the native
               context menu — whose Paste still works over the editor text — is
@@ -1837,38 +1865,31 @@ export function MessageInput({
                 // blank areas (padding, the dead space below a short message, the
                 // action-bar gaps) so the whole input reads as clickable-to-type;
                 // interactive controls re-assert their own cursor (see globals.css).
-                // Resting border uses `border-foreground/20` (a touch darker than
-                // the default `border-input`, which is near-invisible at rest and
-                // vanishes over a workspace background image); it adapts per theme
-                // (dark ink in light mode, light ink in dark) and stays legible.
-                // Focus still swaps to `border-ring` below.
-                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-foreground/20 bg-transparent transition-colors",
-                // Standard focus ring — always shown when the composer is
-                // focused (the plain default input style). `bg-background
-                // ws-transparent-bg`: opaque surface normally, but with a
-                // workspace-bg image the composer goes transparent to reveal the
-                // real image like the rest of the canvas (no frosted treatment) —
-                // the border stays. Off (no image) it's the plain background,
-                // unchanged. When the folder/branch row is attached below, the
-                // solid surface + an INSET focus ring live here so the shared
-                // rounded box (clipped by the wrapper) reads as one control and
-                // the ring isn't clipped away.
-                folderBranchPickerAttached
-                  ? "bg-background ws-transparent-bg focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
-                  : "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                // Keep the large composer surface completely static: motion on
+                // this primary editing target makes pointer movement feel jittery.
+                "codeg-composer-chrome codeg-message-composer-surface @container relative flex flex-col rounded-[1.75rem] border border-border bg-card shadow-[0_18px_36px_-28px_rgb(0_0_0_/_0.42)]",
                 // Active session, tiled across multiple sessions: a gradient
                 // flows around the border to mark which tile is active — but ONLY
                 // while the composer itself is not focused. Focusing it hides the
-                // flow (globals.css) so the default focus ring above takes over.
+                // flow (globals.css) so an active editor keeps its plain chrome.
                 // A lone/non-tiled session (showActiveFlow=false) and inactive
                 // tiles show the plain default border.
                 showActiveFlow && "codeg-composer-flow",
-                !folderBranchPickerAttached &&
-                  showDragActive &&
-                  "ring-1 ring-primary/40",
+                showDragActive && "ring-1 ring-primary/40",
                 className
               )}
             >
+              {hasFolderBranchPicker && (
+                <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-3 text-xs text-muted-foreground">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <ConversationFolderBranchPicker tabId={attachmentTabId} />
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3 pr-1">
+                    <ComposerContextUsage tabId={attachmentTabId ?? null} />
+                    <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
+                  </div>
+                </div>
+              )}
               <ConversationContextBar
                 hasExtraContent={hasImageAttachments}
                 scrollEndTrigger={attachments.length}
@@ -1902,9 +1923,9 @@ export function MessageInput({
                 newlineShortcut={shortcuts.newline_in_message}
                 isExternalMenuOpen={slashMenuVisible}
                 onExternalMenuKeyDown={handleExternalMenuKeyDown}
-                className="min-h-0 flex-1"
+                className="codeg-message-composer-editor min-h-0 flex-1"
               />
-              <div className="flex shrink-0 items-end justify-between gap-1 px-2 pb-2">
+              <div className="flex shrink-0 items-end justify-between gap-2 px-4 pb-4">
                 <div className="flex min-w-0 items-end gap-1">
                   <ComposerAddMenu
                     disabled={disabled}
@@ -2064,30 +2085,6 @@ export function MessageInput({
             </ContextMenuSub>
           </ContextMenuContent>
         </ContextMenu>
-        {hasFolderBranchPicker && (
-          // `px-2` mirrors the action bar so this row lines up with the composer
-          // above; the folder icon then aligns with the centered "+" icon (both
-          // add the same 1px transparent border, paired with the picker buttons'
-          // `px-1.5`). The row only renders while attached below the composer, so
-          // it always takes the rounded-bottom box treatment. Pickers sit at the
-          // left edge; the context-usage circle + agent connection status
-          // right-align at the trailing edge.
-          <div className="flex items-center justify-between gap-2 rounded-b-xl px-2 pt-1 text-xs text-muted-foreground">
-            <div className="flex min-w-0 items-center gap-1">
-              <ConversationFolderBranchPicker tabId={attachmentTabId} />
-            </div>
-            {/* `pr-px` offsets the composer chrome's 1px border: the send button
-                sits INSIDE that border while this status row sits outside it, so
-                without the 1px nudge the trailing icon hangs 1px past the button.
-                With it, the connection icon's RIGHT edge is flush (0px) with the
-                send button's right edge in the action bar above — no centring
-                slot, which would inset the narrow icon and break the alignment. */}
-            <div className="flex shrink-0 items-center gap-3 pr-px">
-              <ComposerContextUsage tabId={attachmentTabId ?? null} />
-              <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
-            </div>
-          </div>
-        )}
       </div>
       {!attach.showNativePaperclip && (
         <ServerFileBrowserDialog
