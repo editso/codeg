@@ -143,16 +143,14 @@ export const ChatInput = memo(function ChatInput({
   // or not the agent has any commands, so this can never hang on a spinner.
   const commandsLoading = isConnecting || selectorsLoading
 
-  // Active/historical conversations dock the composer at the very bottom of the
-  // message list. The attached folder/branch selector row now sits at the
-  // composer's bottom edge, so the docked composer keeps only a tight bottom gap
-  // (pb-1) — matching the row's own `pt-1` top gap, so the selectors read as
-  // evenly spaced above and below rather than floating over a wide margin. The
-  // welcome/draft composer (`flush`) uses the same pb-1 but supplies its own
-  // px-4 gutter.
+  // The composer docks at the bottom of the message list, but keeps a 20px
+  // breathing gap now that the workspace no longer has a bottom status bar.
+  // The root layout owns mobile safe-area padding, so this remains a visual
+  // gutter rather than a second safe-area inset. The welcome/draft composer
+  // (`flush`) shares the same bottom gap while supplying its own px-4 gutter.
   return (
     <div
-      className={cn("pt-0", flush ? "pb-1" : "px-4 pb-1")}
+      className={cn("pt-0", flush ? "pb-5" : "px-4 pb-5")}
       onContextMenu={(event) => event.stopPropagation()}
       // Touch and pen open a context menu from a LONG PRESS, which Radix arms on
       // pointerdown — and the whole conversation panel (composer included) sits
