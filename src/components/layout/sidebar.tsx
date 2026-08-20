@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Crosshair,
+  ChartNoAxesColumn,
   Funnel,
+  GamepadDirectional,
   History,
   ListChevronsDownUp,
   ListChevronsUpDown,
@@ -47,6 +49,7 @@ import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { openSettingsWindow } from "@/lib/api"
 import { isDesktop } from "@/lib/platform"
@@ -69,6 +72,7 @@ import {
   type SidebarSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
+import { QuickActionsDropdown } from "./quick-actions-dropdown"
 import { cn } from "@/lib/utils"
 import {
   Tooltip,
@@ -192,10 +196,44 @@ function ActivityRailButton({
   )
 }
 
+function SidebarQuickActions({ collapsed }: { collapsed: boolean }) {
+  const t = useTranslations("Folder.statusBar.quickActions")
+
+  return (
+    <QuickActionsDropdown
+      side="right"
+      align="start"
+      trigger={
+        <button
+          type="button"
+          title={t("title")}
+          aria-label={t("title")}
+          className={cn(
+            collapsed
+              ? "inline-grid h-10 w-10 place-items-center rounded-xl text-foreground/65 outline-none transition-colors duration-200 hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+              : "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5 text-[0.875rem] text-sidebar-foreground outline-none transition-colors duration-150 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+          )}
+        >
+          <GamepadDirectional
+            aria-hidden="true"
+            className={cn(
+              "shrink-0 text-muted-foreground",
+              collapsed ? "size-5" : "size-[0.875rem]"
+            )}
+          />
+          {!collapsed ? <span className="truncate">{t("title")}</span> : null}
+        </button>
+      }
+    />
+  )
+}
+
 export function Sidebar() {
   const t = useTranslations("Folder.sidebar")
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const tAppearance = useTranslations("AppearanceSettings")
+  const tStatusStats = useTranslations("Folder.statusBar.stats")
+  const tTokenUsage = useTranslations("TokenUsage")
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabActions()
@@ -209,6 +247,7 @@ export function Sidebar() {
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
   const { resolvedTheme, setTheme } = useTheme()
+  const workspaceStats = useAppWorkspaceStore((s) => s.stats)
   const listRef = useRef<SidebarConversationListHandle>(null)
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
@@ -374,6 +413,7 @@ export function Sidebar() {
                 label={t("search")}
                 onClick={() => setSearchOpen(true)}
               />
+              <SidebarQuickActions collapsed />
             </nav>
 
             <div className="my-3 h-px w-7 bg-border/55" />
@@ -395,6 +435,12 @@ export function Sidebar() {
                 active={routeId === "tasks"}
                 badge={attentionCount}
                 onClick={() => setRoute("tasks")}
+              />
+              <ActivityRailButton
+                icon={ChartNoAxesColumn}
+                label={tStatusStats("openUsage")}
+                active={routeId === "tokenUsage"}
+                onClick={() => setRoute("tokenUsage")}
               />
             </nav>
 
@@ -597,6 +643,7 @@ export function Sidebar() {
             ) : null
           }
         />
+        <SidebarQuickActions collapsed={false} />
         {/* Both route rows close the mobile Sheet on the way out, like tapping a
             conversation card (handled by the list wrapper below) — otherwise the
             page they just opened stays hidden behind the sidebar. "Search" above
@@ -632,6 +679,24 @@ export function Sidebar() {
               // tint like the shortcut chips, not destructive.
               <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[0.625rem] font-medium leading-none text-primary">
                 {attentionCount}
+              </span>
+            ) : null
+          }
+        />
+        <SidebarNavButton
+          icon={ChartNoAxesColumn}
+          label={tTokenUsage("title")}
+          active={routeId === "tokenUsage"}
+          onClick={() => {
+            if (isMobile) toggle()
+            setRoute("tokenUsage")
+          }}
+          trailing={
+            workspaceStats ? (
+              <span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/75">
+                {tStatusStats("conversations", {
+                  count: workspaceStats.total_conversations,
+                })}
               </span>
             ) : null
           }

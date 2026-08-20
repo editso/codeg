@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useState, type ReactElement } from "react"
 import {
   Download,
   FolderGit2,
@@ -49,8 +49,8 @@ import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
 import { ConversationManageDialog } from "@/components/conversations/conversation-manage-dialog"
 
 /**
- * The quick-actions launcher pinned to the status bar's leading edge — the
- * window's bottom-left corner.
+ * The quick-actions launcher. Hosts provide the trigger so the same menu can
+ * live on a compact activity rail or in an expanded sidebar navigation row.
  *
  * Every entry here already exists somewhere else (the sidebar's nav rows, the
  * folder-list context menu, the top-left chrome, Settings › Appearance), but
@@ -64,7 +64,19 @@ import { ConversationManageDialog } from "@/components/conversations/conversatio
  * Dialogs are rendered as siblings of the menu, not inside it: the menu
  * unmounts its content on close, which would take a nested dialog with it.
  */
-export function QuickActionsDropdown() {
+interface QuickActionsDropdownProps {
+  /** An optional host-styled trigger for a sidebar or another navigation rail. */
+  trigger?: ReactElement
+  /** The menu grows upward for the legacy bottom-bar trigger, right elsewhere. */
+  side?: "top" | "right" | "bottom" | "left"
+  align?: "start" | "center" | "end"
+}
+
+export function QuickActionsDropdown({
+  trigger,
+  side = "top",
+  align = "start",
+}: QuickActionsDropdownProps) {
   const t = useTranslations("Folder.statusBar.quickActions")
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
   const tSidebar = useTranslations("Folder.sidebar")
@@ -135,14 +147,15 @@ export function QuickActionsDropdown() {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 shrink-0 hover:text-foreground/80"
-            title={t("title")}
-            aria-label={t("title")}
-          >
-            {/* Sized with `size-3.5`, NOT `h-3.5 w-3.5`: the Button base
+          {trigger ?? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 hover:text-foreground/80"
+              title={t("title")}
+              aria-label={t("title")}
+            >
+              {/* Sized with `size-3.5`, NOT `h-3.5 w-3.5`: the Button base
                 carries `[&_svg:not([class*='size-'])]:size-4`, and that
                 selector's (0,2,1) specificity beats a bare `h-*`/`w-*`
                 (0,1,0) — so the `h-3.5 w-3.5` spelling silently rendered this
@@ -151,15 +164,15 @@ export function QuickActionsDropdown() {
                 rule. 0.875rem is also exactly the sidebar's nav-icon size, so
                 atop the bar's `pl-2` this glyph shares their leading edge, not
                 just their rail axis. */}
-            <GamepadDirectional aria-hidden="true" className="size-3.5" />
-          </Button>
+              <GamepadDirectional aria-hidden="true" className="size-3.5" />
+            </Button>
+          )}
         </DropdownMenuTrigger>
-        {/* `side="top"`: the trigger sits on the window's bottom edge, so the
-            menu has to grow upward. `w-auto` releases the shared content
-            width-matches-trigger rule — the trigger is a 1.5rem icon. */}
+        {/* `w-auto` releases the shared content width-matches-trigger rule so
+            an icon-sized rail trigger still opens a useful action menu. */}
         <DropdownMenuContent
-          side="top"
-          align="start"
+          side={side}
+          align={align}
           className="w-auto min-w-60"
         >
           <DropdownMenuLabel>{t("groups.workspace")}</DropdownMenuLabel>

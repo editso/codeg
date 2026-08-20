@@ -11,7 +11,6 @@ import {
 import type { ImperativePanelGroupHandle } from "react-resizable-panels"
 import { FolderTitleBar } from "@/components/layout/folder-title-bar"
 import { Sidebar } from "@/components/layout/sidebar"
-import { StatusBar } from "@/components/layout/status-bar"
 import {
   AppWorkspaceProvider,
   ConversationStatusEventBridge,
@@ -1183,7 +1182,6 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
       ) : (
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
-      <StatusBar />
       {/* Desktop window chrome, pinned to the window corners so it never moves —
           or re-mounts — when the side panels open/close (that re-parenting is
           what made the old in-header clusters flicker). Left = sidebar toggle +
