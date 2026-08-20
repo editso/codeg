@@ -16,11 +16,13 @@ import {
 
 const STORAGE_KEY = "workspace:left-sidebar"
 
+/** Width of the desktop activity rail while the full sidebar is collapsed. */
+export const SIDEBAR_COLLAPSED_WIDTH = 64
+
 const DEFAULT_WIDTH = 320
-// The sidebar header is the window's top-left edge; its top-left is reserved for
-// the fixed window-chrome overlay (macOS traffic-light inset + toggle + remote)
-// and its top-right holds the view-options control, so it needs more minimum
-// room than the old 200.
+// The expanded sidebar header is the window's top-left edge; its top-left is
+// reserved for the fixed window-chrome overlay and its top-right holds view
+// controls, so the full panel needs more room than the collapsed activity rail.
 const MIN_WIDTH = 300
 const MAX_WIDTH = 900
 const DEFAULT_IS_OPEN = true

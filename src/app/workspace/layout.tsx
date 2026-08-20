@@ -27,7 +27,11 @@ import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider, useTabStore, useTabActions } from "@/contexts/tab-context"
 import { selectIsSplit } from "@/stores/tab-store"
-import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
+import {
+  SIDEBAR_COLLAPSED_WIDTH,
+  SidebarProvider,
+  useSidebarContext,
+} from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import { AutomationsViewProvider } from "@/contexts/automations-view-context"
 import { TasksViewProvider } from "@/contexts/tasks-view-context"
@@ -279,6 +283,12 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   // tabs never render underneath. The reserve scales with the app zoom so it
   // tracks the rem-sized overlay buttons (which grow with zoom).
   const leftReserve = leftChromeReserve(isMac && isDesktop(), zoomLevel)
+  // The collapsed activity rail still occupies the left edge. Only reserve the
+  // remainder of the fixed chrome overlay that extends past its 64px width.
+  const collapsedLeftReserve = Math.max(
+    0,
+    leftReserve - SIDEBAR_COLLAPSED_WIDTH
+  )
   const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
   // A middle column reserves the right overlay only when it (not the aux panel)
   // is the window's right edge: the file column in fusion, else conversation.
@@ -361,7 +371,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                     <div
                       data-tauri-drag-region
                       className="h-full shrink-0 ws-strip-line"
-                      style={{ width: leftReserve }}
+                      style={{ width: collapsedLeftReserve }}
                     />
                   )}
                   <div className="flex min-w-0 flex-1 items-stretch">
@@ -468,7 +478,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   <div
                     data-tauri-drag-region
                     className="h-full shrink-0 ws-strip-line"
-                    style={{ width: leftReserve }}
+                    style={{ width: collapsedLeftReserve }}
                   />
                 )}
                 <div className="flex min-w-0 flex-1 items-stretch">
@@ -519,7 +529,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
               <div
                 data-tauri-drag-region
                 className="h-full shrink-0"
-                style={{ width: leftReserve }}
+                style={{ width: collapsedLeftReserve }}
               />
             )}
             <WorkbenchRouteStrip />
@@ -752,7 +762,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
   const buildShellLayout = useCallback((): [number, number, number] => {
     const requestedLeft = sidebarOpen
       ? clamp(sidebarWidth, sidebarMinWidth, sidebarMaxWidth)
-      : 0
+      : SIDEBAR_COLLAPSED_WIDTH
     const requestedRight = auxOpen
       ? clamp(auxWidth, auxMinWidth, auxMaxWidth)
       : 0
@@ -973,6 +983,11 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
     sidebarMaxWidth,
     safeShellWidth
   )
+  const collapsedSidebarSizeRange = resolvePanelSizeRange(
+    SIDEBAR_COLLAPSED_WIDTH,
+    SIDEBAR_COLLAPSED_WIDTH,
+    safeShellWidth
+  )
   const auxSizeRange = resolvePanelSizeRange(
     auxMinWidth,
     auxMaxWidth,
@@ -1002,14 +1017,17 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
           id={FOLDER_SHELL_LEFT_PANEL_ID}
           order={1}
           defaultSize={18}
-          minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
-          maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
+          minSize={
+            sidebarOpen
+              ? sidebarSizeRange.minSize
+              : collapsedSidebarSizeRange.minSize
+          }
+          maxSize={
+            sidebarOpen
+              ? sidebarSizeRange.maxSize
+              : collapsedSidebarSizeRange.maxSize
+          }
         >
-          {/* `bg-sidebar` on the wrapper (not just the Sidebar surface) so the
-              collapse never flashes white: Sidebar `return null`s the instant
-              it closes, but the panel keeps a shrinking width for the 240ms
-              slide — an un-backed wrapper would show the root `bg-background`
-              (white) through that gap. */}
           <div className="h-full min-h-0 overflow-hidden ws-surface-sidebar">
             <Sidebar />
           </div>

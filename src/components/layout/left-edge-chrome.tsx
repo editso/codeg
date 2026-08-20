@@ -1,9 +1,8 @@
 "use client"
 
-import { PanelLeft } from "lucide-react"
+import { PanelLeft, PanelLeftOpen } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { isDesktop } from "@/lib/platform"
-import { Button } from "@/components/ui/button"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
@@ -11,6 +10,7 @@ import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { MAC_TRAFFIC_LIGHT_INSET, leftChromeReserve } from "@/lib/window-chrome"
+import { cn } from "@/lib/utils"
 import { RemoteWorkspaceDropdown } from "./remote-workspace-dropdown"
 
 /**
@@ -38,10 +38,15 @@ export function LeftEdgeChrome() {
   // The traffic lights only exist on the macOS desktop runtime (not web / not
   // Windows-Linux), so only reserve their inset there.
   const showMacInset = platformIsMac && isDesktop()
+  const railCollapsed = !isOpen
+  const SidebarIcon = railCollapsed ? PanelLeftOpen : PanelLeft
 
   return (
     <div
-      className="flex h-full items-center"
+      className={cn(
+        "flex h-full",
+        railCollapsed && !showMacInset ? "items-start" : "items-center"
+      )}
       style={{ width: leftChromeReserve(showMacInset, zoomLevel) }}
     >
       {showMacInset && (
@@ -51,22 +56,29 @@ export function LeftEdgeChrome() {
           style={{ width: MAC_TRAFFIC_LIGHT_INSET }}
         />
       )}
-      <div className="flex items-center gap-1 pl-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          // Ghost's own hover is `bg-muted` — identical to the strip, so it
-          // reads as no hover at all. Darken past it (and lighten in dark mode)
-          // so the hover is actually visible.
-          className="h-6 w-6 hover:bg-foreground/10 hover:text-foreground/80 dark:hover:bg-foreground/10"
+      <div
+        className={cn(
+          "flex items-center gap-1 pl-3",
+          railCollapsed && !showMacInset && "pt-4"
+        )}
+      >
+        <button
+          type="button"
+          className={cn(
+            "inline-grid shrink-0 place-items-center outline-none",
+            railCollapsed
+              ? "inline-grid h-10 w-10 shrink-0 place-items-center rounded-xl text-foreground/65 outline-none transition-colors duration-200 hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+              : "h-6 w-6 rounded-4xl text-foreground transition-colors hover:bg-foreground/10 hover:text-foreground/80 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:hover:bg-foreground/10"
+          )}
           onClick={toggle}
           title={tTitleBar("withShortcut", {
             label: tTitleBar(isOpen ? "hideSidebar" : "showSidebar"),
             shortcut: formatShortcutLabel(shortcuts.toggle_sidebar, isMac),
           })}
+          aria-label={tTitleBar(isOpen ? "hideSidebar" : "showSidebar")}
         >
-          <PanelLeft className="h-3.5 w-3.5" />
-        </Button>
+          <SidebarIcon className={railCollapsed ? "h-5 w-5" : "h-3.5 w-3.5"} />
+        </button>
         <RemoteWorkspaceDropdown triggerClassName="h-6 w-6 hover:bg-foreground/10 hover:text-foreground/80 dark:hover:bg-foreground/10" />
       </div>
       {/* Empty tail is a window-drag region. */}

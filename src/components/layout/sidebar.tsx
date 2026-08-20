@@ -4,15 +4,21 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Crosshair,
   Funnel,
+  History,
   ListChevronsDownUp,
   ListChevronsUpDown,
   Search,
   ListTodo,
+  MessageSquareText,
+  Moon,
+  Settings,
   SquarePen,
+  Sun,
   Zap,
   type LucideIcon,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { useTheme } from "next-themes"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useTabActions } from "@/contexts/tab-context"
@@ -42,6 +48,7 @@ import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
+import { openSettingsWindow } from "@/lib/api"
 import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve } from "@/lib/window-chrome"
 import {
@@ -63,6 +70,12 @@ import {
 } from "@/lib/sidebar-view-mode-storage"
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
 import { cn } from "@/lib/utils"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 // Keyboard-shortcut hint at the trailing edge of the New chat / Search rows.
 // Mirrors the folder count badge exactly — same chip (0.9375rem height,
@@ -127,8 +140,62 @@ function SidebarNavButton({
   )
 }
 
+/**
+ * Compact desktop navigation affordance. The activity rail deliberately keeps
+ * labels out of the layout; the tooltip is the visible label on hover and the
+ * button's accessible name is always present for keyboard and screen-reader
+ * users.
+ */
+function ActivityRailButton({
+  icon: Icon,
+  label,
+  onClick,
+  active = false,
+  badge,
+}: {
+  icon: LucideIcon
+  label: string
+  onClick: () => void
+  active?: boolean
+  badge?: number
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          aria-pressed={active || undefined}
+          className={cn(
+            "relative inline-grid h-10 w-10 place-items-center rounded-xl",
+            "text-foreground/65 outline-none transition-colors duration-200",
+            "hover:bg-background/70 hover:text-foreground",
+            "focus-visible:ring-2 focus-visible:ring-ring/60",
+            active &&
+              "text-foreground before:absolute before:left-0 before:top-1/2 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-r-full before:bg-foreground/90"
+          )}
+        >
+          <Icon aria-hidden="true" className="size-5" />
+          <span className="sr-only">{label}</span>
+          {badge && badge > 0 ? (
+            <span className="absolute right-0.5 top-0.5 flex size-3.5 items-center justify-center rounded-full bg-destructive text-[0.5625rem] font-semibold leading-none text-destructive-foreground">
+              {badge > 9 ? "9+" : badge}
+            </span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function Sidebar() {
   const t = useTranslations("Folder.sidebar")
+  const tTitleBar = useTranslations("Folder.folderTitleBar")
+  const tAppearance = useTranslations("AppearanceSettings")
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabActions()
@@ -141,11 +208,8 @@ export function Sidebar() {
   const { zoomLevel } = useZoomLevel()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
+  const { resolvedTheme, setTheme } = useTheme()
   const listRef = useRef<SidebarConversationListHandle>(null)
-  // On desktop the header's top-left is owned by the fixed window-chrome overlay
-  // (sidebar toggle + remote); reserve exactly its width so the view controls
-  // and drag region clear it. The reserve scales with the app zoom to track the
-  // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
   // `showCompleted` defaults OFF; `showWorktrees` and `showRecent` default ON
@@ -257,6 +321,101 @@ export function Sidebar() {
     toggle,
   ])
 
+  const handleOpenSettings = useCallback(() => {
+    openSettingsWindow("appearance").catch((err) => {
+      console.error("[Sidebar] failed to open settings:", err)
+    })
+  }, [])
+
+  const handleToggleTheme = useCallback(() => {
+    const nextTheme = resolvedTheme === "dark" ? "light" : "dark"
+    setTheme(nextTheme)
+
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      import("@/lib/tauri").then((tauri) =>
+        tauri.updateAppearanceMode(nextTheme).catch(() => {})
+      )
+    }
+  }, [resolvedTheme, setTheme])
+
+  if (!isOpen && !isMobile) {
+    const nextThemeLabel =
+      resolvedTheme === "dark" ? tAppearance("light") : tAppearance("dark")
+    const themeToggleLabel = `${tAppearance("themeMode")}: ${nextThemeLabel}`
+
+    return (
+      <TooltipProvider delayDuration={350}>
+        <aside className="relative flex h-full min-h-0 w-full border-r border-border/80 bg-muted text-foreground ws-transparent-bg ws-chrome-border select-none">
+          {/* The fixed desktop toggle sits above the rail. Keep the first action
+              one 40px row plus a 20px gap below it, matching the reference
+              activity-rail rhythm. */}
+          <div className="flex h-full w-full min-w-0 flex-col items-center pb-4 pt-[4.75rem]">
+            <nav
+              aria-label={t("title")}
+              className="flex w-full flex-col items-center gap-1 px-2"
+            >
+              <ActivityRailButton
+                icon={MessageSquareText}
+                label={t("title")}
+                onClick={toggle}
+              />
+              <ActivityRailButton
+                icon={SquarePen}
+                label={t("newChat")}
+                onClick={handleNewConversation}
+              />
+              <ActivityRailButton
+                icon={History}
+                label={t("title")}
+                onClick={toggle}
+              />
+              <ActivityRailButton
+                icon={Search}
+                label={t("search")}
+                onClick={() => setSearchOpen(true)}
+              />
+            </nav>
+
+            <div className="my-3 h-px w-7 bg-border/55" />
+
+            <nav
+              aria-label={t("moreOptions")}
+              className="flex w-full flex-col items-center gap-1 px-2"
+            >
+              <ActivityRailButton
+                icon={Zap}
+                label={t("automations")}
+                active={routeId === "automations"}
+                badge={unseenFailures}
+                onClick={() => setRoute("automations")}
+              />
+              <ActivityRailButton
+                icon={ListTodo}
+                label={t("tasks")}
+                active={routeId === "tasks"}
+                badge={attentionCount}
+                onClick={() => setRoute("tasks")}
+              />
+            </nav>
+
+            <div className="mt-auto flex w-full flex-col items-center gap-2 px-2">
+              <ActivityRailButton
+                icon={Settings}
+                label={tTitleBar("openSettings")}
+                onClick={handleOpenSettings}
+              />
+              <ActivityRailButton
+                icon={resolvedTheme === "dark" ? Sun : Moon}
+                label={themeToggleLabel}
+                onClick={handleToggleTheme}
+              />
+            </div>
+          </div>
+        </aside>
+      </TooltipProvider>
+    )
+  }
+
   if (!isOpen) return null
 
   return (
@@ -264,15 +423,6 @@ export function Sidebar() {
       <div
         className={cn(
           "flex h-10 shrink-0 items-center gap-2 pr-2",
-          // Desktop: the fixed left window-chrome overlay (reserved below) owns
-          // the top-left, so drop the header's own left padding. Off-image the
-          // divider is border-border/50, matching the conversation / file detail
-          // headers. But the sidebar sits on a FROSTED surface (ws-surface-sidebar)
-          // while those headers sit on the transparent canvas: with a workspace
-          // background image on, a border-border/50 hairline washes out against the
-          // frosted shade, so it takes the boosted `ws-chrome-border` (like the
-          // frosted status bar) to stay legible. Mobile (Sheet): keep the original
-          // title padding + a full-strength divider — mobile is unchanged.
           isMobile
             ? "border-b border-border pl-4"
             : "border-b border-border/50 ws-chrome-border pl-0"
@@ -285,16 +435,12 @@ export function Sidebar() {
             </h2>
           </div>
         ) : (
-          // Reserve exactly the fixed left overlay's width so the view controls
-          // clear it; the empty reserved space is a window-drag region.
           <div
             data-tauri-drag-region
             className="h-full shrink-0"
             style={{ width: leftReserve }}
           />
         )}
-        {/* Draggable filler between the two clusters — the header is the
-            window's top edge, so its empty space must move the window. */}
         <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
         <div className="flex items-center gap-0.5">
           {/* Locate the active conversation in the list below (moved here from
@@ -311,8 +457,6 @@ export function Sidebar() {
           >
             <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
           </Button>
-          {/* Expand/collapse-all keeps a standalone header button on mobile; on
-              desktop it's folded into the view-options menu below. */}
           {isMobile && (
             <Button
               variant="ghost"
@@ -352,8 +496,6 @@ export function Sidebar() {
                 clips overflow-x — 48 would start truncating longer localized
                 section names (and already wrapped the checkbox labels). */}
             <DropdownMenuContent align="end" className="min-w-56">
-              {/* Desktop only: expand/collapse lives in this menu (it kept its
-                  standalone header button on mobile). */}
               {!isMobile && (
                 <>
                   <DropdownMenuItem onSelect={handleToggleExpandAll}>

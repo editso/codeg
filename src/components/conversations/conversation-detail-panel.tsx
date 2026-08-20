@@ -65,7 +65,10 @@ import { GroupSplitHandle } from "@/components/conversations/group-split-handle"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { TabBar } from "@/components/tabs/tab-bar"
 import { TabDragGhost } from "@/components/tabs/tab-drag-ghost"
-import { useSidebarContext } from "@/contexts/sidebar-context"
+import {
+  SIDEBAR_COLLAPSED_WIDTH,
+  useSidebarContext,
+} from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useWorkspaceView } from "@/contexts/workspace-context"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -106,7 +109,6 @@ import {
 import {
   type AgentType,
   type ContentBlock,
-  type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
   type PlanApprovalAnswer,
@@ -149,7 +151,6 @@ import {
 } from "@/lib/export-conversation"
 import { useExportLabels } from "@/lib/use-export-labels"
 import { resolveActiveSessionDetails } from "./active-session-details"
-import { ConversationDetailHeader } from "./conversation-detail-header"
 import { SessionDetailsDialog } from "./session-details-dialog"
 
 interface ConversationTabViewProps {
@@ -2062,7 +2063,11 @@ function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
     side === "left"
       ? sidebarOpen
         ? 0
-        : leftChromeReserve(isMac && isDesktop(), zoomLevel)
+        : Math.max(
+            0,
+            leftChromeReserve(isMac && isDesktop(), zoomLevel) -
+              SIDEBAR_COLLAPSED_WIDTH
+          )
       : !auxOpen && mode === "conversation"
         ? rightChromeReserve(isDesktop() && (isWindows || isLinux), zoomLevel)
         : 0
@@ -2546,16 +2551,7 @@ export function ConversationDetailPanel() {
     const touchesLeft = touchesTop && rect.x <= GROUP_EDGE_EPSILON
     const touchesRight =
       touchesTop && rect.x + rect.w >= 100 - GROUP_EDGE_EPSILON
-    // The group's SELECTED tab drives its header — each split group keeps the
-    // full "tabs + conversation title bar" pairing of the unsplit layout.
-    const selTab =
-      groupTabs.find((tab) => tab.id === groupSelection[groupId]) ??
-      groupTabs[0] ??
-      null
-    const selTabFolder = selTab
-      ? allFolders.find((f) => f.id === selTab.folderId)
-      : undefined
-    // NOTE: the strip / header / content stay PLAIN SIBLING SLOTS (no fragment
+    // NOTE: the strip and content stay PLAIN SIBLING SLOTS (no fragment
     // around any pair) — a `false` conditional is a reconciliation hole, so the
     // content keeps its slot across split flips; wrapping would shift slots and
     // remount every live view (see group-shell-reconciliation.test.tsx).
@@ -2581,30 +2577,6 @@ export function ConversationDetailPanel() {
             {touchesRight && <SplitStripCornerReserve side="right" />}
           </div>
         )}
-        {isSplit && selTab && (
-          <div
-            className="shrink-0"
-            // Clicking a non-focused group's title bar focuses that group
-            // (same gesture as clicking its content) — capture phase so the
-            // header's own controls still receive the event afterwards.
-            onPointerDownCapture={() => {
-              const selected = groupSelection[groupId]
-              if (selected && selected !== useTabStore.getState().activeTabId) {
-                switchTab(selected)
-              }
-            }}
-          >
-            <ConversationDetailHeader
-              tabId={selTab.id}
-              conversationId={selTab.conversationId}
-              runtimeConversationId={selTab.runtimeConversationId ?? null}
-              folderId={selTab.folderId}
-              folderPath={selTabFolder?.path}
-              title={selTab.title}
-              status={selTab.status as ConversationStatus | undefined}
-            />
-          </div>
-        )}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <TileScrollContainer canTile={canTileG}>
             <div
@@ -2627,31 +2599,9 @@ export function ConversationDetailPanel() {
     )
   }
 
-  // While UNSPLIT, a single header sits fixed above the horizontally-scrolling
-  // tile row, so it never scrolls on the x-axis when conversations are tiled.
-  // It reflects the ACTIVE conversation (title + owning folder). On mobile
-  // there's no tile row — it's simply the sole conversation's header. While
-  // SPLIT, every group shell renders its own header under its strip (the
-  // "tabs + title bar" pairing per group), so the global one steps aside.
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
-  const activeTabFolder = activeTab
-    ? allFolders.find((f) => f.id === activeTab.folderId)
-    : undefined
-
   return (
     <>
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        {!isSplit && activeTab && (
-          <ConversationDetailHeader
-            tabId={activeTab.id}
-            conversationId={activeTab.conversationId}
-            runtimeConversationId={activeTab.runtimeConversationId ?? null}
-            folderId={activeTab.folderId}
-            folderPath={activeTabFolder?.path}
-            title={activeTab.title}
-            status={activeTab.status as ConversationStatus | undefined}
-          />
-        )}
         <ContextMenu onOpenChange={handleContextMenuOpenChange}>
           <ContextMenuTrigger asChild>
             <div
