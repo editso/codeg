@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import type { KeyboardEventHandler, ReactNode } from "react"
 import type {
   AgentType,
   ConnectionStatus,
@@ -100,6 +100,9 @@ interface ConversationShellProps {
    *  (e.g. the "restart to apply" config-stale banner). Renders nothing when
    *  omitted. */
   topBanner?: ReactNode
+  /** Captures typing from the conversation surface before the browser applies
+   *  its default key action (used to redirect it into the message composer). */
+  onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>
 }
 
 export function ConversationShell({
@@ -152,9 +155,13 @@ export function ConversationShell({
   onForkSend,
   onSteer,
   topBanner,
+  onKeyDownCapture,
 }: ConversationShellProps) {
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div
+      className="relative flex h-full min-h-0 flex-col"
+      onKeyDownCapture={onKeyDownCapture}
+    >
       {topBanner}
       <div className="flex-1 min-h-0">{children}</div>
 

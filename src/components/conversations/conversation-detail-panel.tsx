@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react"
 import {
@@ -172,6 +173,60 @@ interface ConversationTabViewProps {
   groupId: string
 }
 
+// These elements own their own keyboard behavior. Type-to-focus should only
+// redirect keys that originated from the passive conversation surface.
+const COMPOSER_KEYBOARD_EXCLUDED_SELECTOR =
+  'a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="link"],[role="checkbox"],[role="switch"],[role="radio"],[role="tab"],[role="textbox"],[role="menuitem"],[role="option"],[role="combobox"],[role="slider"]'
+
+function shouldFocusComposerForKey(
+  event: ReactKeyboardEvent<HTMLDivElement>
+): boolean {
+  if (event.defaultPrevented) return false
+
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest(COMPOSER_KEYBOARD_EXCLUDED_SELECTOR)) return false
+
+  const key = event.key.toLowerCase()
+  const hasPrimaryModifier = event.metaKey || event.ctrlKey
+  if (hasPrimaryModifier) {
+    // Preserve copies of a selected transcript range. With no selection these
+    // shortcuts belong to the composer: select-all, copy/cut, and both paste
+    // variants all work once focus moves before the browser's default action.
+    if (!["a", "c", "v", "x"].includes(key)) return false
+    if (
+      (key === "c" || key === "x") &&
+      window.getSelection()?.toString().trim()
+    ) {
+      return false
+    }
+    return true
+  }
+
+  // Navigation and Escape retain their normal page / control semantics. Every
+  // text-producing key (including dead keys and IME processing) enters the
+  // composer, as do the editing keys that are useful before a draft exists.
+  if (
+    event.key === "Tab" ||
+    event.key === "Escape" ||
+    event.key.startsWith("Arrow") ||
+    event.key === "PageUp" ||
+    event.key === "PageDown" ||
+    event.key === "Home" ||
+    event.key === "End"
+  ) {
+    return false
+  }
+  return (
+    event.key.length === 1 ||
+    event.key === "Dead" ||
+    event.key === "Process" ||
+    event.key === "Enter" ||
+    event.key === "Backspace" ||
+    event.key === "Delete" ||
+    event.nativeEvent.keyCode === 229
+  )
+}
+
 function buildOptimisticUserTurnFromDraft(
   draft: PromptDraft,
   attachedResourcesFallback: string
@@ -247,6 +302,21 @@ const ConversationTabView = memo(function ConversationTabView({
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
+  const handleConversationKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (!isActive || !shouldFocusComposerForKey(event)) return
+
+      // Do not prevent the original event. After focus changes, its native
+      // default action writes the first character or dispatches paste to the
+      // rich composer, including its existing image-attachment paste handler.
+      event.currentTarget
+        .querySelector<HTMLElement>(
+          '[role="textbox"][contenteditable="true"]'
+        )
+        ?.focus({ preventScroll: true })
+    },
+    [isActive]
+  )
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -1794,6 +1864,7 @@ const ConversationTabView = memo(function ConversationTabView({
 
   return (
     <ConversationShell
+      onKeyDownCapture={handleConversationKeyDownCapture}
       topBanner={
         <>
           <SessionConfigStaleBanner contextKey={tabId} />
