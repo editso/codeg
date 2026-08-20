@@ -6,10 +6,11 @@ services:
     ports:
       - "3080:3080"
     volumes:
-      - codeg-data:/data
+      - /workspace/devbox/codeg:/data
       # Mount your project directories (optional):
-      # - /path/to/projects:/projects
+      - /workspace:/workspace
     environment:
+      - CODEX_HOME=/workspace/devbox/codex
       - CODEG_TOKEN=${CODEG_TOKEN:-}
       - CODEG_PORT=3080
       - CODEG_HOST=0.0.0.0
