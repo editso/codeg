@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type ReactNode } from "react"
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 import {
   classifyToolKind,
@@ -16,7 +16,7 @@ import { parseBackgroundLaunch } from "@/lib/background-task"
 import { normalizePriority, normalizeStatus } from "@/lib/plan-parse"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import { useTranslations } from "next-intl"
-import { cn } from "@/lib/utils"
+import { cn, copyTextToClipboard } from "@/lib/utils"
 import {
   countUnifiedDiffLineChanges,
   estimateChangedLineStats,
@@ -79,6 +79,10 @@ import { PlanCard, PlanEntriesList } from "./plan-card"
 import { PlanModeCard } from "./plan-mode-card"
 import { PlainTextWithBadges } from "./plain-text-with-badges"
 import {
+  AssistantActivityGroup,
+  type AssistantActivityItem,
+} from "./assistant-activity-group"
+import {
   FileTextIcon,
   FilePenLineIcon,
   FilePlusIcon,
@@ -94,6 +98,7 @@ import {
   MinusIcon,
   PlusIcon,
   WrenchIcon,
+  CopyIcon,
   ChevronRightIcon,
   BrainIcon,
   CodeIcon,
@@ -2221,15 +2226,13 @@ const TextPart = memo(function TextPart({
 }) {
   if (isUser) {
     return (
-      <div className="break-words text-sm">
+      <div className="break-words">
         <PlainTextWithBadges text={text} />
       </div>
     )
   }
   return (
-    <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
-      <MessageResponse>{text}</MessageResponse>
-    </div>
+    <MessageResponse className="codeg-assistant-prose">{text}</MessageResponse>
   )
 })
 
@@ -2989,17 +2992,367 @@ const ToolGroupPart = memo(function ToolGroupPart({
   )
 })
 
+type AssistantContentBlock =
+  | {
+      type: "part"
+      id: string
+      part: AdaptedContentPart
+    }
+  | {
+      type: "activity"
+      id: string
+      items: AssistantActivityItem[]
+    }
+
+type PendingActivityPart = {
+  index: number
+  items: AssistantActivityItem[]
+}
+
+function activityItemsFromPart(
+  part: AdaptedContentPart,
+  index: number
+): AssistantActivityItem[] | null {
+  if (part.type === "reasoning") {
+    return [{ id: `reasoning-${index}`, type: "reasoning", part }]
+  }
+
+  if (part.type === "tool-group" && part.items.length > 0) {
+    return part.items.map((item, itemIndex) => ({
+      id: `tool-${index}-${item.toolCallId ?? itemIndex}-${itemIndex}`,
+      type: "tool-call" as const,
+      part: item,
+    }))
+  }
+
+  // A regular tool call is normally inside a `tool-group`, but the adapter
+  // intentionally leaves task/delegation and other specialized tool cards on
+  // their own. They still belong to the same assistant activity thread; the
+  // group merely owns their outer disclosure, not their card rendering.
+  if (part.type === "tool-call" && !isContextCompactionMeta(part.meta)) {
+    return [
+      {
+        id: `tool-${index}-${part.toolCallId}`,
+        type: "tool-call",
+        part,
+      },
+    ]
+  }
+
+  if (part.type === "tool-result") {
+    return [
+      {
+        id: `tool-result-${index}-${part.toolCallId}`,
+        type: "tool-result",
+        part,
+      },
+    ]
+  }
+
+  if (part.type === "plan") {
+    return [{ id: `plan-${index}`, type: "plan", part }]
+  }
+
+  if (part.type === "goal-run") {
+    return [{ id: `goal-run-${index}`, type: "goal-run", part }]
+  }
+
+  if (part.type === "delegation-status-group") {
+    return [
+      {
+        id: `delegation-status-${index}`,
+        type: "delegation-status-group",
+        part,
+      },
+    ]
+  }
+
+  if (part.type === "background-task-group") {
+    return [
+      {
+        id: `background-task-${index}`,
+        type: "background-task-group",
+        part,
+      },
+    ]
+  }
+
+  return null
+}
+
+/**
+ * Project a whole assistant reply into one activity disclosure. This runs
+ * after `mergeConsecutiveAssistantTurns`, so the projection sees a complete
+ * assistant thread instead of a parser fragment. Text emitted before the last
+ * operational item is process narration and moves into that activity chain;
+ * only the final text after the activity remains the assistant's formal reply.
+ * Existing generic tool groups are flattened so the thread group, rather than
+ * a nested `N tools` chip, owns the disclosure.
+ */
+function buildAssistantContentBlocks(
+  parts: AdaptedContentPart[],
+  keepTextInActivity = false
+): AssistantContentBlock[] {
+  const operationalItems = parts.map((part, index) =>
+    activityItemsFromPart(part, index)
+  )
+  const lastOperationalIndex = operationalItems.reduce(
+    (lastIndex, items, index) => (items ? index : lastIndex),
+    -1
+  )
+
+  if (lastOperationalIndex < 0) {
+    return parts.map((part, index) => ({
+      type: "part" as const,
+      id: `part-${index}`,
+      part,
+    }))
+  }
+
+  const activityEntries: PendingActivityPart[] = []
+  parts.forEach((part, index) => {
+    const items = operationalItems[index]
+    if (items) {
+      activityEntries.push({ index, items })
+    } else if (
+      part.type === "text" &&
+      (keepTextInActivity || index < lastOperationalIndex)
+    ) {
+      const text = part.text.trim()
+      if (text) {
+        activityEntries.push({
+          index,
+          items: [{ id: `message-${index}`, type: "message", text }],
+        })
+      }
+    }
+  })
+
+  const activityIndexes = new Set(activityEntries.map((entry) => entry.index))
+  const firstActivity = activityEntries[0]!
+  const activityBlock: AssistantContentBlock = {
+    // The run can grow while streaming, so key from its first source part
+    // rather than its trailing part. That preserves a user's manual close.
+    id: `activity-${firstActivity.index}`,
+    type: "activity",
+    items: activityEntries.flatMap((entry) => entry.items),
+  }
+  const result: AssistantContentBlock[] = []
+  let finalText: { id: string; text: string } | null = null
+
+  const flushFinalText = () => {
+    if (!finalText) return
+    result.push({
+      type: "part",
+      id: finalText.id,
+      part: { type: "text", text: finalText.text },
+    })
+    finalText = null
+  }
+
+  parts.forEach((part, index) => {
+    if (index === firstActivity.index) {
+      flushFinalText()
+      result.push(activityBlock)
+    }
+
+    if (activityIndexes.has(index)) return
+
+    // The source can split the terminal answer into several adjacent text
+    // parts. Keep it one visible formal response rather than one bubble per
+    // stream fragment.
+    if (part.type === "text" && index > lastOperationalIndex) {
+      if (finalText) {
+        finalText.text += part.text
+      } else {
+        finalText = { id: `text-${index}`, text: part.text }
+      }
+      return
+    }
+
+    flushFinalText()
+    result.push({ type: "part", id: `part-${index}`, part })
+  })
+  flushFinalText()
+
+  return result
+}
+
+function activityPreviewSource(value: unknown): string | null {
+  if (typeof value === "string") return value
+  if (value === null || value === undefined) return null
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value)
+  }
+  try {
+    const serialized = JSON.stringify(value, null, 2)
+    return typeof serialized === "string" ? serialized : null
+  } catch {
+    return null
+  }
+}
+
+function formatActivityPreviewText(value: unknown): string | null {
+  const source = activityPreviewSource(value)
+  if (!source?.trim()) return null
+  const parsed = tryParseJson(source)
+  return parsed ? JSON.stringify(parsed, null, 2) : source.trim()
+}
+
+const ActivityPreviewCode = memo(function ActivityPreviewCode({
+  text,
+  className,
+}: {
+  text: string
+  className?: string
+}) {
+  const copy = useCallback(() => {
+    void copyTextToClipboard(text)
+  }, [text])
+
+  return (
+    <div className="group/activity-code relative min-w-0 max-w-full">
+      <pre
+        className={cn(
+          "m-0 max-h-[min(18rem,34vh)] max-w-full overflow-auto rounded-md border border-border/30 bg-muted/30 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/85 scrollbar-thin",
+          className
+        )}
+      >
+        <code className="whitespace-pre-wrap break-words">{text}</code>
+      </pre>
+      <button
+        aria-label="Copy activity detail"
+        className="absolute end-1.5 top-1.5 inline-grid size-6 place-items-center rounded-sm text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/activity-code:opacity-100"
+        onClick={copy}
+        title="Copy"
+        type="button"
+      >
+        <CopyIcon aria-hidden="true" className="size-3.5" />
+      </button>
+    </div>
+  )
+})
+
+function activityToolOutput(
+  part: Extract<AdaptedContentPart, { type: "tool-call" }>,
+  command: boolean
+): string | null {
+  const source = activityPreviewSource(part.output ?? part.errorText)
+  if (!source) return null
+
+  const normalized = commandOutputFromJsonString(source) ?? source
+  if (!command) return formatActivityPreviewText(normalized)
+
+  return stripMarkdownCodeFence(
+    parseCliExecutionEnvelope(normalized).output
+  ).trim()
+}
+
+const ActivityToolPreview = memo(function ActivityToolPreview({
+  part,
+}: {
+  part?: Extract<AdaptedContentPart, { type: "tool-call" }>
+}) {
+  if (!part) return null
+
+  let command = false
+  let commandText: string | null = null
+  let input: string | null = null
+  let output: string | null = null
+
+  try {
+    const toolName =
+      typeof part.toolName === "string" && part.toolName.trim()
+        ? part.toolName
+        : "tool"
+    const normalizedToolName = normalizeToolName(toolName)
+    command =
+      normalizedToolName === "bash" ||
+      normalizedToolName === "exec_command" ||
+      isShellSessionToolName(normalizedToolName)
+    const rawInput = activityPreviewSource(part.input)
+    commandText = command
+      ? (extractDisplayCommandFromToolInput(rawInput) ?? null)
+      : null
+    input = commandText ? null : formatActivityPreviewText(rawInput)
+    output = activityToolOutput(part, command)
+  } catch {
+    // A malformed historical tool payload must not take down the whole thread.
+    return null
+  }
+
+  if (!commandText && !input && !output) return null
+
+  return (
+    <div className="grid max-w-[48rem] gap-1.5 py-0.5">
+      {commandText ? <ActivityPreviewCode text={`$ ${commandText}`} /> : null}
+      {input ? <ActivityPreviewCode text={input} /> : null}
+      {output ? (
+        <ActivityPreviewCode
+          text={output}
+          className={
+            part.errorText
+              ? "border-destructive/30 text-destructive"
+              : undefined
+          }
+        />
+      ) : null}
+    </div>
+  )
+})
+
+const ActivityToolResultPreview = memo(function ActivityToolResultPreview({
+  part,
+}: {
+  part?: Extract<AdaptedContentPart, { type: "tool-result" }>
+}) {
+  if (!part) return null
+
+  const text = formatActivityPreviewText(part.output ?? part.errorText)
+  if (!text) return null
+
+  return (
+    <div className="max-w-[48rem] py-0.5">
+      <ActivityPreviewCode
+        text={text}
+        className={
+          part.errorText ? "border-destructive/30 text-destructive" : undefined
+        }
+      />
+    </div>
+  )
+})
+
 // ── Main renderer ─────────────────────────────────────────────────────
 
 interface ContentPartsRendererProps {
   parts: AdaptedContentPart[]
   role?: MessageRole
+  activityDurationMs?: number | null
+  isResponseComplete?: boolean
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
+  activityDurationMs,
+  isResponseComplete = true,
 }: ContentPartsRendererProps) {
+  const activityStreaming = role === "assistant" && !isResponseComplete
+  const contentBlocks = useMemo(
+    () =>
+      role === "assistant"
+        ? buildAssistantContentBlocks(parts, activityStreaming)
+        : parts.map(
+            (part, index): AssistantContentBlock => ({
+              type: "part",
+              id: `part-${index}`,
+              part,
+            })
+          ),
+    [activityStreaming, parts, role]
+  )
+
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
       return (
@@ -3071,9 +3424,54 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     return null
   }
 
+  const renderActivityItem = (item: AssistantActivityItem): ReactNode => {
+    if (item.type === "message") return null
+    if (item.type === "reasoning") return null
+    if (item.type === "tool-call") {
+      return <ActivityToolPreview part={item.part} />
+    }
+    if (item.type === "tool-result") {
+      return <ActivityToolResultPreview part={item.part} />
+    }
+    if (item.type === "plan") {
+      return (
+        <div className="max-w-[48rem] py-0.5">
+          <PlanEntriesList
+            entries={Array.isArray(item.part.entries) ? item.part.entries : []}
+            isStreaming={item.part.isStreaming}
+          />
+        </div>
+      )
+    }
+    if (item.type === "goal-run") {
+      return <ActivityToolPreview part={item.part.end ?? item.part.start} />
+    }
+    if (item.type === "delegation-status-group") {
+      const poll = item.part.polls[item.part.polls.length - 1]
+      return poll ? <ActivityToolPreview part={poll} /> : null
+    }
+    if (item.type === "background-task-group") {
+      const poll = item.part.polls[item.part.polls.length - 1]
+      return poll ? <ActivityToolPreview part={poll} /> : null
+    }
+    return null
+  }
+
   return (
     <div className="space-y-4">
-      {parts.map((part, i) => renderPart(part, `${i}`))}
+      {contentBlocks.map((block) =>
+        block.type === "activity" ? (
+          <AssistantActivityGroup
+            key={block.id}
+            items={block.items}
+            renderItem={renderActivityItem}
+            durationMs={activityDurationMs}
+            streaming={activityStreaming}
+          />
+        ) : (
+          renderPart(block.part, block.id)
+        )
+      )}
     </div>
   )
 })

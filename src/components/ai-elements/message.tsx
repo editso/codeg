@@ -1,7 +1,12 @@
 "use client"
 
 import type { UIMessage } from "ai"
-import type { ComponentProps, HTMLAttributes, ReactElement } from "react"
+import type {
+  ComponentProps,
+  HTMLAttributes,
+  ReactElement,
+  ReactNode,
+} from "react"
 
 import { Button } from "@/components/ui/button"
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group"
@@ -11,11 +16,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { cn } from "@/lib/utils"
+import { cn, copyTextToClipboard } from "@/lib/utils"
 import { useTranslations } from "next-intl"
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
+import { ChevronLeftIcon, ChevronRightIcon, CopyIcon } from "lucide-react"
 import {
+  Children,
   createContext,
+  isValidElement,
   memo,
   useCallback,
   useContext,
@@ -46,10 +53,10 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
       "group flex flex-col gap-2",
       from === "user"
         ? // Outer user capsule hugs its content (`w-fit`) instead of always
-          // reserving the full `max-w-[88%]` box — the inner bubble
+          // reserving the full `max-w-[min(700px,78%)]` box — the inner bubble
           // (`MessageContent`) is already `w-fit`, so this just drops the
           // phantom full-width wrapper. Assistant keeps `w-full`.
-          "is-user ml-auto justify-end w-fit max-w-[88%]"
+          "is-user ml-auto justify-end w-fit max-w-[min(700px,78%)]"
         : "is-assistant w-full",
       className
     )}
@@ -66,15 +73,15 @@ export const MessageContent = ({
 }: MessageContentProps) => (
   <div
     className={cn(
-      "is-user:dark flex min-w-0 flex-col gap-2 overflow-hidden text-sm",
+      "is-user:dark flex min-w-0 flex-col gap-2 overflow-hidden text-[15px] leading-7",
       // `ws-msg-secondary` pairs with the user bubble's `bg-secondary`: with
       // a workspace background image on it turns the bubble translucent + frosted
       // with a hairline ring (fixed `--ws-msg-alpha` + backdrop blur — see
       // globals.css, scoped to `.is-user`) so it stays legible over a busy
       // background. Off / assistant messages: inert (no base rule, no `.is-user`
       // ancestor).
-      "group-[.is-user]:ml-auto group-[.is-user]:w-fit group-[.is-user]:max-w-full group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground ws-msg-secondary",
-      "group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground",
+      "group-[.is-user]:ml-auto group-[.is-user]:w-fit group-[.is-user]:max-w-full group-[.is-user]:rounded-2xl group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-2.5 group-[.is-user]:text-foreground group-[.is-user]:shadow-sm ws-msg-secondary",
+      "group-[.is-assistant]:w-full group-[.is-assistant]:py-1 group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}
@@ -475,6 +482,61 @@ const remarkPlugins = [
 // MarkdownLink → ReferenceBadge. See rehype-allow-codeg for the full rationale.
 const rehypePlugins = rehypePluginsAllowingCodeg(defaultRehypePlugins)
 
+function markdownNodeText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return ""
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node)
+  }
+  if (Array.isArray(node)) return node.map(markdownNodeText).join("")
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return markdownNodeText(node.props.children)
+  }
+  return ""
+}
+
+function markdownCodeText(children: ReactNode): string {
+  const code = Children.toArray(children).find((child) =>
+    isValidElement<{ children?: ReactNode }>(child)
+  )
+  return markdownNodeText(code ?? children).replace(/\n$/, "")
+}
+
+// Streamdown's default fenced-code chrome is intentionally feature-rich, but
+// it is too visually heavy in a conversation. Match the reference's quiet
+// code surface: no permanent language toolbar, with copy available on hover.
+function CompactMarkdownCodeBlock({
+  children,
+  className: _className,
+  ...props
+}: ComponentProps<"pre">) {
+  const code = useMemo(() => markdownCodeText(children), [children])
+  const copy = useCallback(() => {
+    void copyTextToClipboard(code)
+  }, [code])
+
+  return (
+    <div className="group/markdown-code relative min-w-0 max-w-full">
+      <pre
+        {...props}
+        className="m-0 max-h-[min(22rem,44vh)] max-w-full overflow-auto rounded-md border border-border/35 bg-muted/35 px-3 py-2.5 font-mono text-[13px] leading-5 text-foreground/85 scrollbar-thin"
+      >
+        <code className="whitespace-pre-wrap break-words">{code}</code>
+      </pre>
+      <button
+        aria-label="Copy code"
+        className="absolute end-1.5 top-1.5 inline-grid size-6 place-items-center rounded-sm text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/markdown-code:opacity-100"
+        onClick={copy}
+        title="Copy code"
+        type="button"
+      >
+        <CopyIcon aria-hidden="true" className="size-3.5" />
+      </button>
+    </div>
+  )
+}
+
 function MessageResponseImpl({
   className,
   children,
@@ -503,7 +565,11 @@ function MessageResponseImpl({
       {...props}
       // Merge after spreading props so a caller can still override other
       // elements, but the link icon + safety routing on `a` always wins.
-      components={{ ...props.components, ...markdownLinkComponents }}
+      components={{
+        ...props.components,
+        pre: CompactMarkdownCodeBlock,
+        ...markdownLinkComponents,
+      }}
     >
       {normalized}
     </Streamdown>

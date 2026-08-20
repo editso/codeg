@@ -594,7 +594,12 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           </div>
         ) : (
           <MessageContent>
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
+            <ContentPartsRenderer
+              parts={group.parts}
+              role={group.role}
+              activityDurationMs={group.duration_ms}
+              isResponseComplete={isResponseComplete}
+            />
           </MessageContent>
         )}
         {group.role === "user" && group.resources.length > 0 ? (
