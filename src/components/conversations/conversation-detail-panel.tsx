@@ -1962,7 +1962,6 @@ const ConversationTabView = memo(function ConversationTabView({
                 injectContent={quickActionInject}
                 onInjectConsumed={handleQuickActionConsumed}
                 flush
-                tall
               />
             </div>
             <div className="flex-1" />

@@ -77,10 +77,6 @@ interface ChatInputProps {
   /** Drop the input's own horizontal padding when an ancestor already supplies
    *  the gutter (the welcome column wraps this in its own `px-4`). */
   flush?: boolean
-  /** Use a taller minimum height for the composer. Set for the welcome
-   *  (new-conversation) composer, which sits in a roomy empty state; active and
-   *  historical conversations keep the compact default. */
-  tall?: boolean
 }
 
 export const ChatInput = memo(function ChatInput({
@@ -124,7 +120,6 @@ export const ChatInput = memo(function ChatInput({
   injectContent,
   onInjectConsumed,
   flush = false,
-  tall = false,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
   const isConnected = status === "connected"
@@ -222,7 +217,7 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className={cn(tall ? "min-h-48" : "min-h-32", "max-h-60")}
+        className="min-h-32 max-h-60"
       />
     </div>
   )
