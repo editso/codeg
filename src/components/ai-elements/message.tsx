@@ -35,6 +35,7 @@ import {
   defaultRehypePlugins,
   defaultRemarkPlugins,
 } from "streamdown"
+import type { Components } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
 import { maskLiteralSpans } from "./markdown-mask"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
@@ -508,7 +509,6 @@ function markdownCodeText(children: ReactNode): string {
 // code surface: no permanent language toolbar, with copy available on hover.
 function CompactMarkdownCodeBlock({
   children,
-  className: _className,
   ...props
 }: ComponentProps<"pre">) {
   const code = useMemo(() => markdownCodeText(children), [children])
@@ -568,7 +568,11 @@ function MessageResponseImpl({
       // elements, but the link icon + safety routing on `a` always wins.
       components={{
         ...props.components,
-        pre: CompactMarkdownCodeBlock,
+        // Streamdown's component map has a string index signature that is
+        // wider than React's precise `pre` DOM props. The renderer receives the
+        // normal pre props at runtime; this mirrors the typed bridge used for
+        // our custom markdown link component.
+        pre: CompactMarkdownCodeBlock as Components["pre"],
         ...markdownLinkComponents,
       }}
     >
