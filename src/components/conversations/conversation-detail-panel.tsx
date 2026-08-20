@@ -1732,6 +1732,17 @@ const ConversationTabView = memo(function ConversationTabView({
         conversationId={effectiveConversationId}
         agentType={selectedAgent}
         connStatus={connStatus}
+        sessionFailures={conn.sessionFailures}
+        onSessionFailureAction={
+          // Owners of a live connection only — mirrors the goal-control gate:
+          // viewers may inspect failures but cannot drive session recovery.
+          conn.connectionId !== null && !conn.isViewer
+            ? handleSessionFailureAction
+            : undefined
+        }
+        onSessionFailureDismiss={handleSessionFailureDismiss}
+        claudeApiRetry={conn.claudeApiRetry}
+        connectionError={conn.error}
         isActive={isActive}
         sendSignal={sendSignal}
         detailLoading={detailLoading}
@@ -1797,17 +1808,6 @@ const ConversationTabView = memo(function ConversationTabView({
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}
       agentName={getAgentLabel(selectedAgent)}
-      error={conn.error}
-      claudeApiRetry={conn.claudeApiRetry}
-      sessionFailures={conn.sessionFailures}
-      onSessionFailureAction={
-        // Owners of a live connection only — mirrors the goal-control gate:
-        // viewers must see the strips but not drive recovery.
-        conn.connectionId !== null && !conn.isViewer
-          ? handleSessionFailureAction
-          : undefined
-      }
-      onSessionFailureDismiss={handleSessionFailureDismiss}
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}

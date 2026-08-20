@@ -34,6 +34,15 @@ interface VirtualizedMessageThreadProps<T> {
   /** Shown when `items` is empty. */
   emptyState?: ReactNode
   /**
+   * Optional conversation-scoped state rendered as the final virtual row.
+   * Unlike a sibling below the thread, this participates in Virtua's layout
+   * and therefore scrolls with the transcript and remains compatible with
+   * stick-to-bottom behavior.
+   */
+  tailContent?: ReactNode
+  /** Stable identity for `tailContent` while its internal state changes. */
+  tailKey?: string
+  /**
    * Hint for the initial height (px) of an unmeasured item.
    * Virtua auto-measures every item once mounted, so this only
    * affects the very first paint — omit it if you don't care.
@@ -105,6 +114,8 @@ function VirtualizedMessageThreadImpl<T>({
   getItemKey,
   renderItem,
   emptyState,
+  tailContent,
+  tailKey = "thread-tail",
   itemSize,
   bufferSize = 800,
   gap = 16,
@@ -291,7 +302,7 @@ function VirtualizedMessageThreadImpl<T>({
         scrollClassName="scrollbar-thin overscroll-contain [overflow-anchor:none] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[focus-origin=pointer]:focus-visible:ring-0"
         {...contentProps}
       >
-        {items.length === 0 ? (
+        {items.length === 0 && !tailContent ? (
           (emptyState ?? null)
         ) : (
           <Virtualizer
@@ -326,13 +337,23 @@ function VirtualizedMessageThreadImpl<T>({
             {items.map((item, index) => (
               <div
                 key={getItemKey(item, index)}
-                style={itemStyle(index, items.length)}
+                style={itemStyle(index, items.length + (tailContent ? 1 : 0))}
               >
                 <div className={cn("mx-auto max-w-3xl px-4", className)}>
                   {renderItem(item, index)}
                 </div>
               </div>
             ))}
+            {tailContent ? (
+              <div
+                key={tailKey}
+                style={itemStyle(items.length, items.length + 1)}
+              >
+                <div className={cn("mx-auto max-w-3xl px-4", className)}>
+                  {tailContent}
+                </div>
+              </div>
+            ) : null}
           </Virtualizer>
         )}
       </MessageThreadContent>

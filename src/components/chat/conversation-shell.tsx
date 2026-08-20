@@ -1,5 +1,4 @@
-import { useMemo, type ReactNode } from "react"
-import { useTranslations } from "next-intl"
+import type { ReactNode } from "react"
 import type {
   AgentType,
   ConnectionStatus,
@@ -11,19 +10,14 @@ import type {
   PromptInputBlock,
   QuestionAnswer,
   SessionConfigOptionInfo,
-  SessionFailureRecord,
   SessionModeInfo,
   AvailableCommandInfo,
 } from "@/lib/types"
-import type { SessionFailureAction } from "@/lib/session-failures"
-import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
 import type {
   PendingPermission,
   PendingQuestion,
-  ClaudeApiRetryState,
 } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
-import { Loader2 } from "lucide-react"
 import { ChatInput } from "@/components/chat/chat-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
@@ -35,21 +29,6 @@ interface ConversationShellProps {
   promptCapabilities: PromptCapabilitiesInfo
   defaultPath?: string
   agentName?: string
-  error: string | null
-  claudeApiRetry: ClaudeApiRetryState | null
-  /** AIR typed session failures for this connection (active + resolved; the
-   *  banner splits them itself). Omit/empty renders nothing. */
-  sessionFailures?: SessionFailureRecord[]
-  /** Wires the failure strips' suggested actions (retry/login/new_session);
-   *  omitted for read-only surfaces — the buttons are then hidden. */
-  onSessionFailureAction?: (
-    action: SessionFailureAction,
-    failure: SessionFailureRecord
-  ) => void
-  /** Closes a failure strip, taking every record it stands for. Passed for
-   *  every surface with a live store — dismissing is client-local, so viewers
-   *  get it too. */
-  onSessionFailureDismiss?: (ids: string[]) => void
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question`. */
@@ -128,11 +107,6 @@ export function ConversationShell({
   promptCapabilities,
   defaultPath,
   agentName,
-  error,
-  claudeApiRetry,
-  sessionFailures,
-  onSessionFailureAction,
-  onSessionFailureDismiss,
   pendingPermission,
   pendingQuestion,
   pendingAskQuestion,
@@ -179,62 +153,6 @@ export function ConversationShell({
   onSteer,
   topBanner,
 }: ConversationShellProps) {
-  const tAcp = useTranslations("Folder.chat.acpConnections")
-  const retryLineText = useMemo(() => {
-    const retry = claudeApiRetry
-    if (!retry) return null
-
-    const retryAttempt =
-      retry.attempt !== null && retry.attempt !== undefined
-        ? Math.trunc(retry.attempt)
-        : null
-    const retryMax =
-      retry.maxRetries !== null && retry.maxRetries !== undefined
-        ? Math.trunc(retry.maxRetries)
-        : null
-    const retryDelaySeconds =
-      retry.retryDelayMs !== null && retry.retryDelayMs !== undefined
-        ? (retry.retryDelayMs / 1000).toFixed(1)
-        : null
-    const errorLabel = retry.error ?? tAcp("claudeApiRetry.fallbackError")
-    const statusLabel =
-      retry.errorStatus !== null && retry.errorStatus !== undefined
-        ? tAcp("claudeApiRetry.httpStatus", {
-            status: Math.trunc(retry.errorStatus),
-          })
-        : ""
-    const retryLabel =
-      retryAttempt !== null && retryMax !== null
-        ? tAcp("claudeApiRetry.retryingWithMax", {
-            attempt: retryAttempt,
-            max: retryMax,
-          })
-        : retryAttempt !== null
-          ? tAcp("claudeApiRetry.retryingAttempt", {
-              attempt: retryAttempt,
-            })
-          : tAcp("claudeApiRetry.retrying")
-    const delayLabel =
-      retryDelaySeconds !== null
-        ? tAcp("claudeApiRetry.nextRetryIn", {
-            seconds: retryDelaySeconds,
-          })
-        : null
-
-    return delayLabel !== null
-      ? tAcp("claudeApiRetry.lineWithDelay", {
-          error: errorLabel,
-          status: statusLabel,
-          retry: retryLabel,
-          delay: delayLabel,
-        })
-      : tAcp("claudeApiRetry.line", {
-          error: errorLabel,
-          status: statusLabel,
-          retry: retryLabel,
-        })
-  }, [claudeApiRetry, tAcp])
-
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {topBanner}
@@ -325,31 +243,6 @@ export function ConversationShell({
           </div>
         )}
       </div>
-
-      {sessionFailures && sessionFailures.length > 0 && (
-        <SessionFailureBanner
-          failures={sessionFailures}
-          onAction={onSessionFailureAction}
-          onDismiss={onSessionFailureDismiss}
-        />
-      )}
-
-      {retryLineText && (
-        <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">
-          <div className="flex items-center gap-2 font-medium">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-              {retryLineText}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="px-4 py-2 text-xs text-destructive bg-destructive/5 border-t border-destructive/20">
-          {error}
-        </div>
-      )}
     </div>
   )
 }

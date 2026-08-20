@@ -1,8 +1,8 @@
 "use client"
 
 /**
- * JetBrains AIR typed session-failure strips, docked under the composer next
- * to the Claude API-retry line (`conversation-shell`). One strip per record:
+ * JetBrains AIR typed session-failure rows, rendered at the active
+ * conversation's trailing edge beside the streaming state. One row per record:
  *
  * - ACTIVE severity-"error" records use the destructive palette (matching the
  *   shell's error strip) and carry the record's suggested action buttons
@@ -19,7 +19,7 @@
  *
  * - Of the RESOLVED records only the most recent recovered WARNING renders,
  *   as one muted "recovered" line — evidence of what happened mid-turn
- *   without stacking history under the composer. It is a TRANSIENT
+ *   without stacking transcript history. It is a TRANSIENT
  *   confirmation: it self-dismisses after `RECOVERED_VISIBLE_MS`, because
  *   records are retained forever as revision watermarks and nothing else
  *   would ever take it down. Resolved records still live in the reducer table
@@ -161,6 +161,16 @@ export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
   )
 }
 
+/** Whether this connection has a failure worth reserving a transcript row for. */
+export function hasVisibleSessionFailure(failures: SessionFailureRecord[]) {
+  const { errors, warning } = activeSessionFailureView(failures)
+  return (
+    errors.length > 0 ||
+    warning !== null ||
+    mostRecentRecoveredWarning(failures) !== null
+  )
+}
+
 function ActiveFailureStrip({
   failure,
   hiddenCount = 0,
@@ -193,10 +203,8 @@ function ActiveFailureStrip({
     <div
       role="alert"
       className={cn(
-        "border-t px-4 py-2 text-xs",
-        warning
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-          : "border-destructive/20 bg-destructive/5 text-destructive"
+        "px-1 py-1.5 text-xs",
+        warning ? "text-amber-700 dark:text-amber-300" : "text-destructive"
       )}
     >
       <div className="flex items-center gap-2">
@@ -218,7 +226,7 @@ function ActiveFailureStrip({
             <Button
               key={action}
               size="sm"
-              variant="outline"
+              variant="ghost"
               className="h-6 shrink-0 px-2 text-xs"
               onClick={() => onAction?.(action, failure)}
             >
@@ -288,7 +296,7 @@ function RecoveredStrip({
     return () => clearTimeout(timer)
   }, [dismiss, id])
   return (
-    <div className="border-t border-border/50 bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground">
+    <div className="px-1 py-1.5 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-2">
         <CheckCircle2 aria-hidden="true" className="h-3 w-3 shrink-0" />
         <span className="min-w-0 flex-1 truncate">

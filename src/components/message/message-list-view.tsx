@@ -72,11 +72,27 @@ import type { MessageScrollContextValue } from "@/components/message/message-scr
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
+import {
+  ConversationStatusTail,
+  hasVisibleConversationStatus,
+} from "./conversation-status-tail"
+import type { ClaudeApiRetryState } from "@/contexts/acp-connections-context"
+import type { SessionFailureAction } from "@/lib/session-failures"
 
 interface MessageListViewProps {
   conversationId: number
   agentType: AgentType
   connStatus?: ConnectionStatus | null
+  /** Connection incidents are rendered as the final transcript row, where
+   *  they stay attached to the turn instead of appearing below the composer. */
+  sessionFailures?: import("@/lib/types").SessionFailureRecord[]
+  onSessionFailureAction?: (
+    action: SessionFailureAction,
+    failure: import("@/lib/types").SessionFailureRecord
+  ) => void
+  onSessionFailureDismiss?: (ids: string[]) => void
+  claudeApiRetry?: ClaudeApiRetryState | null
+  connectionError?: string | null
   isActive?: boolean
   sendSignal?: number
   detailLoading?: boolean
@@ -670,6 +686,11 @@ export function MessageListView({
   conversationId,
   agentType,
   connStatus,
+  sessionFailures,
+  onSessionFailureAction,
+  onSessionFailureDismiss,
+  claudeApiRetry = null,
+  connectionError = null,
   isActive = true,
   sendSignal = 0,
   detailLoading = false,
@@ -944,6 +965,27 @@ export function MessageListView({
     [hideEmptyState, t]
   )
 
+  // Kept inside the virtualized list rather than beneath the composer. This
+  // makes reconnect/failure feedback part of the active turn's flow and gives
+  // it the same scroll anchoring as the streaming ellipsis above it.
+  const conversationStatusTail = useMemo(() => {
+    const statusProps = {
+      sessionFailures,
+      onSessionFailureAction,
+      onSessionFailureDismiss,
+      claudeApiRetry,
+      connectionError,
+    }
+    if (!hasVisibleConversationStatus(statusProps)) return null
+    return <ConversationStatusTail {...statusProps} />
+  }, [
+    sessionFailures,
+    onSessionFailureAction,
+    onSessionFailureDismiss,
+    claudeApiRetry,
+    connectionError,
+  ])
+
   // Namespaced with `plan-` so this key can never equal `subAgentOverlayKey`
   // below: the two overlays are siblings in one container, and both fall back
   // to a per-conversation string when there's no live message / assistant reply
@@ -1132,6 +1174,8 @@ export function MessageListView({
           getItemKey={getThreadItemKey}
           renderItem={renderThreadItem}
           emptyState={emptyState}
+          tailContent={conversationStatusTail}
+          tailKey={`conversation-status-${conversationId}`}
           scrollApiRef={scrollApiRef}
           hasOlder={hasOlderTurns}
           isLoadingOlder={loadingOlderTurns}
