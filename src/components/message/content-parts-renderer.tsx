@@ -3096,12 +3096,14 @@ function activityItemsFromPart(
  * assistant thread instead of a parser fragment. Text emitted before the last
  * operational item is process narration and moves into that activity chain;
  * only the final text after the activity remains the assistant's formal reply.
+ * The boundary is applied while streaming too: holding the candidate final
+ * answer inside Activity until completion makes its first visible text jump to
+ * a different place when the turn settles.
  * Existing generic tool groups are flattened so the thread group, rather than
  * a nested `N tools` chip, owns the disclosure.
  */
 function buildAssistantContentBlocks(
-  parts: AdaptedContentPart[],
-  keepTextInActivity = false
+  parts: AdaptedContentPart[]
 ): AssistantContentBlock[] {
   const operationalItems = parts.map((part, index) =>
     activityItemsFromPart(part, index)
@@ -3124,10 +3126,7 @@ function buildAssistantContentBlocks(
     const items = operationalItems[index]
     if (items) {
       activityEntries.push({ index, items })
-    } else if (
-      part.type === "text" &&
-      (keepTextInActivity || index < lastOperationalIndex)
-    ) {
+    } else if (part.type === "text" && index < lastOperationalIndex) {
       const text = part.text.trim()
       if (text) {
         activityEntries.push({
@@ -3353,7 +3352,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   const contentBlocks = useMemo(
     () =>
       role === "assistant"
-        ? buildAssistantContentBlocks(parts, activityStreaming)
+        ? buildAssistantContentBlocks(parts)
         : parts.map(
             (part, index): AssistantContentBlock => ({
               type: "part",
@@ -3361,7 +3360,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
               part,
             })
           ),
-    [activityStreaming, parts, role]
+    [parts, role]
   )
 
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
