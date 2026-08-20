@@ -240,6 +240,7 @@ function VirtualizedMessageThreadImpl<T>({
     const el = scrollRef.current
     if (!el) return
     el.tabIndex = 0
+    el.dataset.codegScrollbar = "true"
     const clearPointerFocus = () => {
       el.removeAttribute("data-focus-origin")
     }
@@ -260,6 +261,56 @@ function VirtualizedMessageThreadImpl<T>({
       el.setAttribute("data-focus-origin", "pointer")
       el.focus({ preventScroll: true })
     }
+
+    const isScrollable = (candidate: HTMLElement) =>
+      candidate.scrollHeight > candidate.clientHeight + 1 ||
+      candidate.scrollWidth > candidate.clientWidth + 1
+
+    const clearActiveScrollbar = () => {
+      el.querySelectorAll<HTMLElement>("[data-codeg-scrollbar-active]").forEach(
+        (candidate) => {
+          delete candidate.dataset.codegScrollbarActive
+        }
+      )
+      delete el.dataset.codegScrollbarActive
+    }
+
+    const setActiveScrollbarForTarget = (target: EventTarget | null) => {
+      const targetElement = target instanceof Element ? target : null
+      let candidate = targetElement?.closest<HTMLElement>(
+        "[data-codeg-scrollbar]"
+      )
+      let active: HTMLElement | null = null
+
+      while (candidate && el.contains(candidate)) {
+        if (isScrollable(candidate)) {
+          active = candidate
+          break
+        }
+        candidate = candidate.parentElement?.closest<HTMLElement>(
+          "[data-codeg-scrollbar]"
+        )
+      }
+
+      const current = el.querySelector<HTMLElement>(
+        "[data-codeg-scrollbar-active]"
+      )
+      if (current === active) return
+
+      clearActiveScrollbar()
+      if (active) active.dataset.codegScrollbarActive = "true"
+    }
+
+    // `:hover` applies to every ancestor of a nested code or activity
+    // surface. Resolve the target in one place instead, so exactly the
+    // deepest scrollable surface owns the visible native scrollbar.
+    const onPointerMove = (e: PointerEvent) => {
+      setActiveScrollbarForTarget(e.target)
+    }
+    const onPointerLeave = () => {
+      clearActiveScrollbar()
+    }
+
     el.addEventListener("pointerdown", onPointerDown)
     el.addEventListener("blur", clearPointerFocus)
     // Once the user drives the viewport with the keyboard (Arrow/Page/Home/End
@@ -268,11 +319,17 @@ function VirtualizedMessageThreadImpl<T>({
     // only suppressed for the mouse click that focused the viewport, not for
     // subsequent keyboard use.
     el.addEventListener("keydown", clearPointerFocus)
+    el.addEventListener("pointermove", onPointerMove)
+    el.addEventListener("pointerleave", onPointerLeave)
     return () => {
       el.removeEventListener("pointerdown", onPointerDown)
       el.removeEventListener("blur", clearPointerFocus)
       el.removeEventListener("keydown", clearPointerFocus)
+      el.removeEventListener("pointermove", onPointerMove)
+      el.removeEventListener("pointerleave", onPointerLeave)
       clearPointerFocus()
+      clearActiveScrollbar()
+      delete el.dataset.codegScrollbar
     }
   }, [scrollRef])
 
@@ -299,7 +356,7 @@ function VirtualizedMessageThreadImpl<T>({
     <MessageScrollProvider value={scrollContextValue}>
       <MessageThreadContent
         className={cn("mx-0 max-w-none p-0", contentClassName)}
-        scrollClassName="scrollbar-thin overscroll-contain [overflow-anchor:none] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[focus-origin=pointer]:focus-visible:ring-0"
+        scrollClassName="codeg-scrollbar-hover overscroll-contain [overflow-anchor:none] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[focus-origin=pointer]:focus-visible:ring-0"
         {...contentProps}
       >
         {items.length === 0 && !tailContent ? (

@@ -2,6 +2,7 @@
 
 import {
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -92,6 +93,8 @@ interface AssistantActivityGroupProps {
 const ACTIVITY_VIRTUALIZE_AT = 24
 const ACTIVITY_ESTIMATED_ROW_HEIGHT = 32
 const ACTIVITY_BUFFER_SIZE = 720
+const ACTIVITY_FOLLOW_THRESHOLD_PX = 28
+const ACTIVITY_SCROLL_REPIN_FRAMES = 2
 
 const FILE_TOOL_NAMES = new Set([
   "read",
@@ -425,21 +428,94 @@ function ActivityRow({
   return <ActivityDetailRow item={item} renderItem={renderItem} />
 }
 
+/**
+ * Keep a live activity run pinned to its newest row until the reader scrolls
+ * away. Growing content can emit a scroll event without user input, so retain
+ * the previous geometry and only let an actual scroll position change alter
+ * the follow decision.
+ */
+function usePinnedActivityScroll(enabled: boolean, dependency: unknown) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const shouldFollowRef = useRef(true)
+  const previousScrollTopRef = useRef(0)
+  const previousScrollHeightRef = useRef(0)
+
+  const handleScroll = useCallback(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+
+    const scrollTopChanged =
+      Math.abs(scroller.scrollTop - previousScrollTopRef.current) > 1
+    const scrollHeightChanged =
+      Math.abs(scroller.scrollHeight - previousScrollHeightRef.current) > 1
+
+    previousScrollTopRef.current = scroller.scrollTop
+    previousScrollHeightRef.current = scroller.scrollHeight
+
+    // Content growth must not make a reader who was following the tail look
+    // as though they deliberately scrolled away from it.
+    if (scrollHeightChanged && !scrollTopChanged) return
+
+    shouldFollowRef.current =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <=
+      ACTIVITY_FOLLOW_THRESHOLD_PX
+  }, [])
+
+  useEffect(() => {
+    if (!enabled) {
+      shouldFollowRef.current = true
+      return
+    }
+    if (!shouldFollowRef.current) return
+
+    let frameId = 0
+    let frameCount = 0
+    const pinToLatest = () => {
+      const scroller = scrollerRef.current
+      if (!scroller || !shouldFollowRef.current) return
+
+      // Directly driving the physical scroll container is more reliable than
+      // a virtualizer index while measured row heights are still settling.
+      scroller.scrollTop = scroller.scrollHeight
+      previousScrollTopRef.current = scroller.scrollTop
+      previousScrollHeightRef.current = scroller.scrollHeight
+
+      frameCount += 1
+      if (frameCount < ACTIVITY_SCROLL_REPIN_FRAMES) {
+        frameId = requestAnimationFrame(pinToLatest)
+      }
+    }
+
+    frameId = requestAnimationFrame(pinToLatest)
+    return () => cancelAnimationFrame(frameId)
+  }, [dependency, enabled])
+
+  return { scrollerRef, handleScroll }
+}
+
 function ActivityItemList({
   items,
   renderItem,
-}: Pick<AssistantActivityGroupProps, "items" | "renderItem">) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+  streaming,
+}: Pick<AssistantActivityGroupProps, "items" | "renderItem"> & {
+  streaming: boolean
+}) {
+  const { scrollerRef, handleScroll } = usePinnedActivityScroll(
+    streaming,
+    items
+  )
   const virtualized = items.length >= ACTIVITY_VIRTUALIZE_AT
 
   return (
     <div
-      ref={scrollRef}
-      className="relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto overscroll-contain pe-1 text-muted-foreground scrollbar-thin [overflow-anchor:none]"
+      ref={scrollerRef}
+      onScroll={handleScroll}
+      data-codeg-scrollbar="true"
+      className="codeg-scrollbar-hover relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto overscroll-contain pe-1 text-muted-foreground [overflow-anchor:none]"
     >
       {virtualized ? (
         <Virtualizer
-          scrollRef={scrollRef}
+          scrollRef={scrollerRef}
           itemSize={ACTIVITY_ESTIMATED_ROW_HEIGHT}
           bufferSize={ACTIVITY_BUFFER_SIZE}
         >
@@ -472,27 +548,25 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   // tool-call states can briefly settle while another part is still streaming;
   // deriving disclosure state from the last item makes the whole group flap.
   const active = streaming ?? items.some(isStreaming)
-  const failed = items.some(hasError)
-  const [open, setOpen] = useState(() => active || failed)
+  const [open, setOpen] = useState(() => active)
   const previousActiveRef = useRef(active)
 
   // Live activity stays visible while it progresses, then returns to a compact
-  // historical summary after the terminal stream update.
+  // historical summary after the terminal stream update. A failed tool is a
+  // row-level result, not a failed assistant reply, so it must not pin or tint
+  // the entire activity group.
   useEffect(() => {
     const wasActive = previousActiveRef.current
     previousActiveRef.current = active
 
-    if (failed) {
-      setOpen(true)
-    } else if (!wasActive && active) {
+    if (!wasActive && active) {
       setOpen(true)
     } else if (wasActive && !active) {
       setOpen(false)
     }
-  }, [active, failed])
+  }, [active])
 
   const summary = useMemo(() => {
-    let errors = 0
     let thoughts = 0
     let tools = 0
     let todos = 0
@@ -509,31 +583,22 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
       } else {
         tools += 1
       }
-
-      if (hasError(item)) errors += 1
     }
 
     const summaryParts = [
       tools > 0 ? t("other", { count: tools }) : null,
       todos > 0 ? t("todo", { count: todos }) : null,
       thoughts > 0 ? t("think", { count: thoughts }) : null,
-      errors > 0 ? t("errorSuffix", { count: errors }) : null,
       formatDuration(durationMs),
     ].filter((part): part is string => Boolean(part))
 
     return summaryParts.join(t("joiner"))
   }, [durationMs, items, t])
 
-  const statusLabel = failed
-    ? statusT("outputError")
-    : active
-      ? statusT("inputAvailable")
-      : statusT("outputAvailable")
-  const toneClass = failed
-    ? "text-destructive"
-    : active
-      ? "text-foreground/85"
-      : "text-muted-foreground/85"
+  const statusLabel = active
+    ? statusT("inputAvailable")
+    : statusT("outputAvailable")
+  const toneClass = active ? "text-foreground/85" : "text-muted-foreground/85"
 
   return (
     <Collapsible
@@ -570,7 +635,11 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
         ) : null}
       </div>
       <CollapsibleContent className="w-full outline-none">
-        <ActivityItemList items={items} renderItem={renderItem} />
+        <ActivityItemList
+          items={items}
+          renderItem={renderItem}
+          streaming={active}
+        />
       </CollapsibleContent>
     </Collapsible>
   )

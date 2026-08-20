@@ -1323,6 +1323,39 @@
   scrollbar-color: var(--border) transparent;
 }
 
+/* Scrollbars in a transcript can nest (thread → activity → code). Their
+   active surface is selected by the thread's pointer handler, rather than
+   CSS `:hover`, because ancestors also match while a nested surface is
+   hovered. Keep the native scrollbar geometry constant and only fade its
+   thumb: revealing it must never change the available text width. */
+.codeg-scrollbar-hover {
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: auto !important;
+  scrollbar-width: thin;
+}
+
+.codeg-scrollbar-hover[data-codeg-scrollbar-active="true"] {
+  scrollbar-color: var(--border) transparent;
+}
+
+.codeg-scrollbar-hover::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.codeg-scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+}
+
+.codeg-scrollbar-hover[data-codeg-scrollbar-active="true"]::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+}
+
+.codeg-scrollbar-hover::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
 /* OverlayScrollbars custom theme — 6px track, grows to 8px on hover.
    Use compound selector to beat the base `.os-scrollbar` defaults
    (--os-size:0, --os-handle-bg:none) regardless of CSS load order. */

@@ -3213,8 +3213,9 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
   return (
     <div className="group/activity-code relative min-w-0 max-w-full">
       <pre
+        data-codeg-scrollbar="true"
         className={cn(
-          "m-0 max-h-[min(18rem,34vh)] max-w-full overflow-auto rounded-md border border-border/30 bg-muted/30 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/85 scrollbar-thin",
+          "codeg-scrollbar-hover m-0 max-h-[min(18rem,34vh)] max-w-full overflow-auto rounded-md border border-border/30 bg-muted/30 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/85",
           className
         )}
       >

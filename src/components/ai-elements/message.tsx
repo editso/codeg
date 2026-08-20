@@ -520,7 +520,8 @@ function CompactMarkdownCodeBlock({
     <div className="group/markdown-code relative min-w-0 max-w-full">
       <pre
         {...props}
-        className="m-0 max-h-[min(22rem,44vh)] max-w-full overflow-auto rounded-md border border-border/35 bg-muted/35 px-3 py-2.5 font-mono text-[13px] leading-5 text-foreground/85 scrollbar-thin"
+        data-codeg-scrollbar="true"
+        className="codeg-scrollbar-hover m-0 max-h-[min(22rem,44vh)] max-w-full overflow-auto rounded-md border border-border/35 bg-muted/35 px-3 py-2.5 font-mono text-[13px] leading-5 text-foreground/85"
       >
         <code className="whitespace-pre-wrap break-words">{code}</code>
       </pre>
