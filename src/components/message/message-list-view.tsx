@@ -170,6 +170,8 @@ export type ThreadRenderItem =
       key: string
       kind: "compaction"
       meta: Record<string, unknown> | null
+      /** Number of consecutive compactions represented by this marker. */
+      count?: number
     }
 
 // Module-scope so the reference is stable across renders — lets the memoized
@@ -340,6 +342,31 @@ function compactionOnlyMeta(
     return null
   }
   return only.meta ?? null
+}
+
+/**
+ * Repeated compactions are usually transport-level checkpoints emitted back to
+ * back. Preserve their place between assistant turns, but show one quiet
+ * marker instead of stacking indistinguishable timeline rows.
+ */
+function mergeAdjacentCompactionMarkers(
+  items: ThreadRenderItem[]
+): ThreadRenderItem[] {
+  const result: ThreadRenderItem[] = []
+
+  for (const item of items) {
+    const previous = result[result.length - 1]
+    if (item.kind === "compaction" && previous?.kind === "compaction") {
+      result[result.length - 1] = {
+        ...previous,
+        count: (previous.count ?? 1) + 1,
+      }
+      continue
+    }
+    result.push(item)
+  }
+
+  return result
 }
 
 /**
@@ -840,7 +867,10 @@ export function MessageListView({
 
     // Collapse consecutive assistant turn render items into a single rendered
     // turn, so tool-groups straddling a turn boundary fold into one collapsible.
-    const items = mergeConsecutiveAssistantTurns(rawItems, mergedRunCache)
+    const items = mergeConsecutiveAssistantTurns(
+      mergeAdjacentCompactionMarkers(rawItems),
+      mergedRunCache
+    )
 
     // Compute showStats, isRoleTransition, and previousUserIndex for each turn.
     // previousUserIndex points at the closest preceding user turn (used by the
@@ -940,10 +970,11 @@ export function MessageListView({
         case "typing":
           return <PendingTypingIndicator />
         case "compaction":
-          // Chrome-less centered divider between turns (no avatar / stats footer).
+          // A quiet checkpoint aligned with the assistant activity column, with
+          // no avatar or stats footer and no full-width divider.
           return (
-            <div className="px-1 py-2">
-              <ContextCompactionCard meta={item.meta} />
+            <div className="flex py-0.5 ps-7">
+              <ContextCompactionCard meta={item.meta} count={item.count} />
             </div>
           )
         default:

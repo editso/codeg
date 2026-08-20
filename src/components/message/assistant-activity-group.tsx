@@ -329,6 +329,9 @@ function ActivityDetailRow({
   const active = isStreaming(item)
   const failed = hasError(item)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
+  const revealFrameRef = useRef<number | null>(null)
   const {
     label,
     icon: Icon,
@@ -346,53 +349,124 @@ function ActivityDetailRow({
       ? "text-foreground/80"
       : "text-muted-foreground/75"
 
+  const revealExpandedDetail = useCallback(() => {
+    const row = rowRef.current
+    const detail = detailRef.current
+    const activityScroller = detail?.closest<HTMLElement>(
+      "[data-codeg-scrollbar]"
+    )
+    if (!row || !detail || !activityScroller) return
+
+    const revealDetailStart = (scroller: HTMLElement, inset: number) => {
+      const scrollerRect = scroller.getBoundingClientRect()
+      const detailRect = detail.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const visibleBottom = scrollerRect.bottom - inset
+      const minimumVisibleDetail = Math.min(48, detailRect.height)
+
+      // A detail block may be taller than either nested viewport. Only bring
+      // its beginning into view, and never scroll farther than the distance
+      // that keeps the clicked row above the viewport's top inset.
+      if (detailRect.top + minimumVisibleDetail <= visibleBottom) return
+      const needed = detailRect.top + minimumVisibleDetail - visibleBottom
+      const available = Math.max(0, rowRect.top - scrollerRect.top - inset)
+      const amount = Math.min(needed, available)
+      if (amount > 1) scroller.scrollTop += amount
+    }
+
+    revealDetailStart(activityScroller, 8)
+
+    const transcriptScroller =
+      activityScroller.parentElement?.closest<HTMLElement>(
+        "[data-codeg-scrollbar]"
+      )
+    if (transcriptScroller) revealDetailStart(transcriptScroller, 16)
+  }, [])
+
+  const handleDetailsOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      setDetailsOpen(nextOpen)
+      if (!nextOpen) return
+
+      if (revealFrameRef.current !== null) {
+        cancelAnimationFrame(revealFrameRef.current)
+      }
+
+      let passes = 0
+      const revealAfterLayout = () => {
+        revealExpandedDetail()
+        passes += 1
+        if (passes < 2) {
+          revealFrameRef.current = requestAnimationFrame(revealAfterLayout)
+        } else {
+          revealFrameRef.current = null
+        }
+      }
+      revealFrameRef.current = requestAnimationFrame(revealAfterLayout)
+    },
+    [revealExpandedDetail]
+  )
+
+  useEffect(
+    () => () => {
+      if (revealFrameRef.current !== null) {
+        cancelAnimationFrame(revealFrameRef.current)
+      }
+    },
+    []
+  )
+
   return (
-    <Collapsible
-      open={detailsOpen}
-      onOpenChange={setDetailsOpen}
-      className="group/activity-row relative z-10 min-w-0"
-    >
-      <CollapsibleTrigger
-        className={cn(
-          "inline-flex min-h-6 max-w-full items-center gap-2 rounded-md px-1.5 py-0.5 text-left text-[13px] leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-          failed ? "text-destructive" : "text-muted-foreground"
-        )}
+    <div ref={rowRef}>
+      <Collapsible
+        open={detailsOpen}
+        onOpenChange={handleDetailsOpenChange}
+        className="group/activity-row relative z-10 min-w-0"
       >
-        <span className="relative z-10 inline-grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-background">
-          {active ? (
-            <LoaderCircleIcon
-              aria-hidden="true"
-              className="size-3.5 animate-spin"
-            />
-          ) : failed ? (
-            <TriangleAlertIcon
-              aria-hidden="true"
-              className="size-3.5 text-destructive/85"
-            />
-          ) : (
-            <Icon aria-hidden="true" className={cn("size-3.5", iconClass)} />
-          )}
-        </span>
-        <span className="min-w-0 truncate text-muted-foreground/85">
-          {label}
-        </span>
-        {duration ? (
-          <span className="shrink-0 text-[12px] text-muted-foreground/60">
-            {duration}
-          </span>
-        ) : null}
-        <ChevronRightIcon
-          aria-hidden="true"
+        <CollapsibleTrigger
           className={cn(
-            "size-3.5 shrink-0 text-muted-foreground/55 opacity-0 transition-[color,opacity,transform] group-hover/activity-row:opacity-100 group-focus-within/activity-row:opacity-100",
-            detailsOpen && "rotate-90"
+            "inline-flex min-h-6 max-w-full items-center gap-2 rounded-md px-1.5 py-0.5 text-left text-[13px] leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            failed ? "text-destructive" : "text-muted-foreground"
           )}
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="ms-7 mt-1 min-w-0 border-s border-border/45 ps-3">
-        <div className="pb-2 pt-1">{renderItem(item)}</div>
-      </CollapsibleContent>
-    </Collapsible>
+        >
+          <span className="relative z-10 inline-grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-background">
+            {active ? (
+              <LoaderCircleIcon
+                aria-hidden="true"
+                className="size-3.5 animate-spin"
+              />
+            ) : failed ? (
+              <TriangleAlertIcon
+                aria-hidden="true"
+                className="size-3.5 text-destructive/85"
+              />
+            ) : (
+              <Icon aria-hidden="true" className={cn("size-3.5", iconClass)} />
+            )}
+          </span>
+          <span className="min-w-0 truncate text-muted-foreground/85">
+            {label}
+          </span>
+          {duration ? (
+            <span className="shrink-0 text-[12px] text-muted-foreground/60">
+              {duration}
+            </span>
+          ) : null}
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/55 opacity-0 transition-[color,opacity,transform] group-hover/activity-row:opacity-100 group-focus-within/activity-row:opacity-100",
+              detailsOpen && "rotate-90"
+            )}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="ms-7 mt-1 min-w-0 border-s border-border/45 ps-3">
+          <div ref={detailRef} className="pb-2 pt-1">
+            {renderItem(item)}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
   )
 }
 
@@ -511,7 +585,7 @@ function ActivityItemList({
       ref={scrollerRef}
       onScroll={handleScroll}
       data-codeg-scrollbar="true"
-      className="codeg-scrollbar-hover relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto overscroll-contain pe-1 text-muted-foreground [overflow-anchor:none]"
+      className="codeg-scrollbar-hover relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto pe-1 text-muted-foreground [overflow-anchor:none]"
     >
       {virtualized ? (
         <Virtualizer

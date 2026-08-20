@@ -13,13 +13,12 @@
  * top-level `tokensBefore`/`tokensAfter`, so the delta label reads both
  * namings.
  *
- * Rendered as a centered, chrome-less divider (a horizontal rule flanking a
- * token-delta label) so it reads as a conversation boundary marker — "context
- * was compacted here" — not a real tool call. Recognition is by `_meta`, so it
- * works for the live stream and DB/snapshot reloads. In history the compaction
- * is hoisted to a dedicated standalone timeline item (see `message-list-view`'s
- * `"compaction"` render kind) so it sits BETWEEN turns rather than folding into
- * the preceding assistant reply.
+ * Rendered as a compact system marker so it reads as a conversation checkpoint
+ * — "context was compacted here" — not a real tool call. Recognition is by
+ * `_meta`, so it works for the live stream and DB/snapshot reloads. In history
+ * the compaction is hoisted to a dedicated standalone timeline item (see
+ * `message-list-view`'s `"compaction"` render kind) so it sits BETWEEN turns
+ * rather than folding into the preceding assistant reply.
  */
 
 import { useTranslations } from "next-intl"
@@ -62,6 +61,8 @@ function formatDuration(durationMs: number | null): string | null {
 
 interface Props {
   state?: ToolCallState
+  /** Consecutive persisted compaction events share one compact marker. */
+  count?: number
   /**
    * ACP tool-call `_meta`. grok stamps top-level `tokensBefore`/`tokensAfter`
    * next to its boolean marker; codex 1.3.0+ nests reserved fields inside the
@@ -72,7 +73,7 @@ interface Props {
   meta?: Record<string, unknown> | null
 }
 
-export function ContextCompactionCard({ state, meta }: Props) {
+export function ContextCompactionCard({ state, meta, count = 1 }: Props) {
   const t = useTranslations("Folder.chat.contextCompaction")
   const isRunning = state === "input-streaming" || state === "input-available"
   const payload = contextCompactionPayload(meta)
@@ -100,19 +101,37 @@ export function ContextCompactionCard({ state, meta }: Props) {
           })
         : t("compacted")
   return (
-    <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground/80 select-none">
-      <div className="h-px flex-1 bg-gradient-to-r from-transparent to-border/70" />
-      <div
-        className={`flex shrink-0 items-center gap-1.5${failed ? " text-destructive/80" : ""}`}
-        title={tooltip}
+    <div
+      aria-label={count > 1 ? `${label} (${count})` : undefined}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] leading-4 text-muted-foreground/80 select-none${
+        failed
+          ? " border-destructive/25 bg-destructive/5 text-destructive/85"
+          : " border-border/55 bg-muted/35"
+      }`}
+      title={tooltip}
+    >
+      <Archive
+        aria-hidden="true"
+        className={`size-3 shrink-0${failed ? " text-destructive/85" : ""}`}
+      />
+      <span
+        className={
+          isRunning ? "min-w-0 animate-pulse truncate" : "min-w-0 truncate"
+        }
       >
-        <Archive className="size-3.5" />
-        <span className={isRunning ? "animate-pulse" : undefined}>{label}</span>
-        {!failed && !isRunning && duration ? (
-          <span className="text-muted-foreground/60">· {duration}</span>
-        ) : null}
-      </div>
-      <div className="h-px flex-1 bg-gradient-to-l from-transparent to-border/70" />
+        {label}
+      </span>
+      {!failed && !isRunning && duration ? (
+        <span className="shrink-0 text-muted-foreground/60">{duration}</span>
+      ) : null}
+      {count > 1 ? (
+        <span
+          aria-hidden="true"
+          className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-sm bg-background/70 px-1 text-[10px] font-medium tabular-nums text-muted-foreground/75"
+        >
+          {count}
+        </span>
+      ) : null}
     </div>
   )
 }
