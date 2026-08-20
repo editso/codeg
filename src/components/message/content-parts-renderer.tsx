@@ -3025,11 +3025,21 @@ function activityItemsFromPart(
     }))
   }
 
+  if (part.type === "tool-call" && isContextCompactionMeta(part.meta)) {
+    return [
+      {
+        id: `context-compaction-${index}-${part.toolCallId}`,
+        type: "context-compaction",
+        part,
+      },
+    ]
+  }
+
   // A regular tool call is normally inside a `tool-group`, but the adapter
   // intentionally leaves task/delegation and other specialized tool cards on
   // their own. They still belong to the same assistant activity thread; the
   // group merely owns their outer disclosure, not their card rendering.
-  if (part.type === "tool-call" && !isContextCompactionMeta(part.meta)) {
+  if (part.type === "tool-call") {
     return [
       {
         id: `tool-${index}-${part.toolCallId}`,
@@ -3428,6 +3438,11 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   const renderActivityItem = (item: AssistantActivityItem): ReactNode => {
     if (item.type === "message") return null
     if (item.type === "reasoning") return null
+    if (item.type === "context-compaction") {
+      return (
+        <ContextCompactionCard state={item.part.state} meta={item.part.meta} />
+      )
+    }
     if (item.type === "tool-call") {
       return <ActivityToolPreview part={item.part} />
     }

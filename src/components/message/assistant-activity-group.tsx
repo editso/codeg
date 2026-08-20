@@ -62,6 +62,11 @@ export type AssistantActivityItem =
     }
   | {
       id: string
+      type: "context-compaction"
+      part: Extract<AdaptedContentPart, { type: "tool-call" }>
+    }
+  | {
+      id: string
       type: "plan"
       part: Extract<AdaptedContentPart, { type: "plan" }>
     }
@@ -210,7 +215,7 @@ function extractWallTime(source: unknown): string | null {
 function detailPresentation(
   item: Exclude<
     AssistantActivityItem,
-    { type: "reasoning" } | { type: "message" }
+    { type: "reasoning" } | { type: "message" } | { type: "context-compaction" }
   >,
   resultLabel: string,
   todoLabel: (count: number) => string,
@@ -314,13 +319,40 @@ function ActivityReasoningRow({
   )
 }
 
+function ActivityContextCompactionRow({
+  item,
+  renderItem,
+}: {
+  item: Extract<AssistantActivityItem, { type: "context-compaction" }>
+  renderItem: (item: AssistantActivityItem) => ReactNode
+}) {
+  const active = isStreaming(item)
+
+  return (
+    <div className="relative z-10 flex min-w-0 gap-2 px-1.5 py-1 text-[13px] leading-5 text-muted-foreground">
+      <span
+        aria-hidden="true"
+        className="relative z-10 inline-grid h-5 w-5 shrink-0 place-items-center"
+      >
+        <span
+          className={cn(
+            "size-1.5 rounded-full",
+            active ? "bg-foreground/70" : "bg-muted-foreground/55"
+          )}
+        />
+      </span>
+      {renderItem(item)}
+    </div>
+  )
+}
+
 function ActivityDetailRow({
   item,
   renderItem,
 }: {
   item: Exclude<
     AssistantActivityItem,
-    { type: "reasoning" } | { type: "message" }
+    { type: "reasoning" } | { type: "message" } | { type: "context-compaction" }
   >
   renderItem: (item: AssistantActivityItem) => ReactNode
 }) {
@@ -499,6 +531,9 @@ function ActivityRow({
 }) {
   if (item.type === "reasoning") return <ActivityReasoningRow item={item} />
   if (item.type === "message") return <ActivityMessageRow item={item} />
+  if (item.type === "context-compaction") {
+    return <ActivityContextCompactionRow item={item} renderItem={renderItem} />
+  }
   return <ActivityDetailRow item={item} renderItem={renderItem} />
 }
 
@@ -654,7 +689,7 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
         tools += Math.max(1, item.part.polls.length)
       } else if (item.type === "background-task-group") {
         tools += Math.max(1, item.part.polls.length)
-      } else {
+      } else if (item.type !== "context-compaction") {
         tools += 1
       }
     }
