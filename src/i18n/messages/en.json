@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "Reconnecting restarts the agent and interrupts the work in progress.",
         "reconnect": "Reconnect",
         "reconnecting": "Reconnecting...",
+        "restart": "Restart agent",
+        "restarting": "Restarting agent...",
         "reconnectUnavailable": "Nothing to reconnect to yet."
       },
       "tasks": {

@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "다시 연결하면 에이전트가 재시작되어 진행 중인 작업이 중단됩니다.",
         "reconnect": "다시 연결",
         "reconnecting": "다시 연결하는 중...",
+        "restart": "에이전트 다시 시작",
+        "restarting": "에이전트 다시 시작 중...",
         "reconnectUnavailable": "아직 다시 연결할 세션이 없습니다."
       },
       "tasks": {

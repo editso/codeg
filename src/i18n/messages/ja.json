@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "再接続するとエージェントが再起動し、進行中の処理が中断されます。",
         "reconnect": "再接続",
         "reconnecting": "再接続中...",
+        "restart": "エージェントを再起動",
+        "restarting": "エージェントを再起動中...",
         "reconnectUnavailable": "再接続できるセッションがまだありません。"
       },
       "tasks": {

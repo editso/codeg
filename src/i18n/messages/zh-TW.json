@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "重新連線會重啟智慧體，並中斷進行中的工作。",
         "reconnect": "重新連線",
         "reconnecting": "正在重新連線...",
+        "restart": "重新啟動",
+        "restarting": "正在重新啟動...",
         "reconnectUnavailable": "目前沒有可重新連線的工作階段。"
       },
       "tasks": {

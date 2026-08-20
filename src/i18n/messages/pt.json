@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "Reconectar reinicia o agente e interrompe o trabalho em andamento.",
         "reconnect": "Reconectar",
         "reconnecting": "Reconectando...",
+        "restart": "Reiniciar agente",
+        "restarting": "Reiniciando agente...",
         "reconnectUnavailable": "Ainda não há sessão para reconectar."
       },
       "tasks": {

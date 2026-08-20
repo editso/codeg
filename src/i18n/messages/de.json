@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "Neu verbinden startet den Agenten neu und unterbricht die laufende Arbeit.",
         "reconnect": "Neu verbinden",
         "reconnecting": "Verbinde neu...",
+        "restart": "Agent neu starten",
+        "restarting": "Agent wird neu gestartet...",
         "reconnectUnavailable": "Noch keine Sitzung zum Neuverbinden."
       },
       "tasks": {

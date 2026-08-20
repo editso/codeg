@@ -8,6 +8,7 @@ import {
   HeartCrack,
   HeartOff,
   RefreshCw,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -97,9 +98,11 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   const t = useTranslations("Folder.statusBar.connection")
   const store = useConnectionStore()
-  const { reconnect, getReconnectInfo } = useAcpActions()
+  const { reconnect, reapplyConfig, getReconnectInfo } = useAcpActions()
   const [open, setOpen] = useState(false)
-  const [pending, setPending] = useState(false)
+  const [pendingAction, setPendingAction] = useState<
+    "reconnect" | "restart" | null
+  >(null)
 
   const subscribeConn = useCallback(
     (cb: () => void) => {
@@ -152,17 +155,29 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
       backgroundOutstanding: conn?.backgroundOutstanding ?? 0,
     })
   const canReconnect = reconnectInfo !== null
+  const canRestart = conn != null && !conn.isViewer && !conn.isDelegationChild
 
   const handleReconnect = useCallback(() => {
     if (!tabId) return
-    setPending(true)
+    setPendingAction("reconnect")
     void reconnect(tabId)
       .catch(() => {
         // connect() surfaces its own failures (alert banner / agent-settings
         // action); the status icon flipping to `error` is the local signal.
       })
-      .finally(() => setPending(false))
+      .finally(() => setPendingAction(null))
   }, [reconnect, tabId])
+
+  const handleRestart = useCallback(() => {
+    if (!tabId || !canRestart || destructive) return
+    setPendingAction("restart")
+    void reapplyConfig(tabId)
+      .catch(() => {
+        // The connection status and the conversation-level stale banner expose
+        // the failure state without duplicating an alert from this compact menu.
+      })
+      .finally(() => setPendingAction(null))
+  }, [canRestart, destructive, reapplyConfig, tabId])
 
   // The trigger keeps the native `title` (hover tooltip) it had as a plain span,
   // so the detail is still one hover away now that a click opens the popover.
@@ -231,12 +246,30 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
           size="xs"
           variant="outline"
           className="w-full"
-          disabled={!canReconnect || pending}
+          disabled={!canReconnect || pendingAction !== null}
           onClick={handleReconnect}
         >
-          <RefreshCw className={cn(pending && "animate-spin")} />
-          {pending ? t("reconnecting") : t("reconnect")}
+          <RefreshCw
+            className={cn(pendingAction === "reconnect" && "animate-spin")}
+          />
+          {pendingAction === "reconnect" ? t("reconnecting") : t("reconnect")}
         </Button>
+
+        {canRestart ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            className="w-full"
+            disabled={destructive || pendingAction !== null}
+            onClick={handleRestart}
+          >
+            <RotateCcw
+              className={cn(pendingAction === "restart" && "animate-spin")}
+            />
+            {pendingAction === "restart" ? t("restarting") : t("restart")}
+          </Button>
+        ) : null}
 
         {!canReconnect ? (
           <p className="text-[11px] leading-snug text-muted-foreground">

@@ -1823,6 +1823,8 @@
         "reconnectInterrupts": "重连会重启智能体，并中断正在进行的工作。",
         "reconnect": "重新连接",
         "reconnecting": "正在重新连接...",
+        "restart": "重新启动",
+        "restarting": "正在重新启动...",
         "reconnectUnavailable": "暂无可重连的会话。"
       },
       "tasks": {
