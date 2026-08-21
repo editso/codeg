@@ -1429,7 +1429,7 @@ export function MessageInput({
             isModelConfigOption(option) &&
             Boolean(
               availableConfigOptions[index + 1] &&
-                isThinkingLevelConfigOption(availableConfigOptions[index + 1])
+              isThinkingLevelConfigOption(availableConfigOptions[index + 1])
             )
           const isThinkingFollowingModel =
             isThinkingLevelConfigOption(option) &&
@@ -1868,13 +1868,13 @@ export function MessageInput({
                 // Keep the large composer surface completely static: motion on
                 // this primary editing target makes pointer movement feel jittery.
                 "codeg-composer-chrome codeg-message-composer-surface @container relative flex flex-col rounded-[1.75rem] border border-border bg-card shadow-[0_18px_36px_-28px_rgb(0_0_0_/_0.42)]",
-                // Active session, tiled across multiple sessions: a gradient
-                // flows around the border to mark which tile is active — but ONLY
-                // while the composer itself is not focused. Focusing it hides the
-                // flow (globals.css) so an active editor keeps its plain chrome.
-                // A lone/non-tiled session (showActiveFlow=false) and inactive
-                // tiles show the plain default border.
+                // In a tiled workspace the flow identifies the active session.
+                // Independently, an active agent keeps the same fine animated
+                // border while the model is working — including while the user
+                // writes a queued follow-up — so a single-session conversation
+                // also exposes clear processing feedback.
                 showActiveFlow && "codeg-composer-flow",
+                isPrompting && "codeg-composer-processing",
                 showDragActive && "ring-1 ring-primary/40",
                 className
               )}

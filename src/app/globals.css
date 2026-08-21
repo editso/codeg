@@ -2271,59 +2271,48 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   }
 }
 
-/* Active-session composer: a gradient that flows around the input border as the
-   active-conversation cue (replaces the old top-center icon). The ::before
-   overlays the element's existing 1px border — `inset:-1px` reaches the
-   border-box edge and the conic gradient is masked down to a thin ring — so
-   adding/removing this class never changes the box model: no layout shift when
-   the active tab switches. Rotating the gradient's start angle makes it "flow";
-   stops start and end on the same color so the conic seam is invisible. The
-   `, 0deg` fallback keeps `background` valid where @property is unsupported,
-   degrading to a static gradient border. Intentionally NOT gated behind
-   prefers-reduced-motion: this is an explicitly-requested accent and the
-   maintainer runs reduced-motion ON but wants requested motion to play (repo
-   convention, matches the always-on spinners); at most one composer animates at
-   a time over a 1px ring, so the repaint cost is negligible. */
-@property --codeg-flow-angle {
+/* The composer uses one animated border for two related states: identifying the
+   active tile in a multi-session workspace, and showing that the model is
+   currently working. The gradient lives on the composer itself: its opaque
+   first layer fills the padding box, leaving the second layer visible only in
+   the existing 1px border. Animating the conic gradient's start angle makes the
+   colour travel around the perimeter without rotating an element or pseudo
+   element, so the effect remains strictly inside the rounded input. */
+@property --codeg-composer-flow-angle {
   syntax: "<angle>";
-  initial-value: 0deg;
   inherits: false;
+  initial-value: 0deg;
 }
-.codeg-composer-flow::before {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  z-index: 1;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(
-    from var(--codeg-flow-angle, 0deg),
-    #ff453a,
-    #32d74b,
-    #0a84ff,
-    #ff453a
-  );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-  animation: codeg-composer-flow 2.5s linear infinite;
+
+.codeg-composer-flow,
+.codeg-composer-processing {
+  border-color: transparent;
+  background-color: var(--card);
+  background-image:
+    linear-gradient(var(--card), var(--card)),
+    conic-gradient(
+      from var(--codeg-composer-flow-angle),
+      color-mix(in oklch, var(--chart-1) 72%, var(--card)),
+      color-mix(in oklch, var(--chart-2) 72%, var(--card)),
+      color-mix(in oklch, var(--chart-3) 72%, var(--card)),
+      color-mix(in oklch, var(--chart-1) 72%, var(--card))
+    );
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  animation: codeg-composer-flow 2.8s linear infinite;
 }
-/* The flow is the "active session, input not focused" cue: the moment the
-   composer itself gains focus, hide it so the input reverts to its plain default
-   style (the standard focus ring applied in the composer className).
-   `display:none` also stops the animation while the input is focused. */
-.codeg-composer-flow:focus-within::before {
-  display: none;
+/* The active-tile cue yields to the focused editor. The processing cue does
+   not: while the model works, the flow remains visible even as the user types
+   a queued follow-up. */
+.codeg-composer-flow:not(.codeg-composer-processing):focus-within {
+  border-color: var(--border);
+  background-color: var(--card);
+  background-image: none;
+  animation: none;
 }
 @keyframes codeg-composer-flow {
   to {
-    --codeg-flow-angle: 360deg;
+    --codeg-composer-flow-angle: 1turn;
   }
 }
 
