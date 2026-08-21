@@ -48,6 +48,15 @@ type CollapsibleProps = ComponentProps<"div"> & {
   disabled?: boolean
 }
 
+type CollapsibleContentProps = ComponentProps<"div"> & {
+  /**
+   * Opt into the chat drawer treatment. It is deliberately not the default:
+   * streaming tool bodies can change height many times per second and must stay
+   * in normal document flow while their content is still arriving.
+   */
+  drawer?: boolean
+}
+
 function Collapsible({
   open: openProp,
   defaultOpen,
@@ -136,8 +145,9 @@ function exitTimeoutMs(styles: CSSStyleDeclaration): number {
 function CollapsibleContent({
   children,
   className,
+  drawer = false,
   ...props
-}: ComponentProps<"div">) {
+}: CollapsibleContentProps) {
   const context = useInstantCollapsible("CollapsibleContent")
   const nodeRef = useRef<HTMLDivElement | null>(null)
   const [present, setPresent] = useState(context.open)
@@ -194,13 +204,19 @@ function CollapsibleContent({
       data-state={open ? "open" : "closed"}
       id={context.contentId}
       className={
-        className
-          ? `codeg-collapsible-drawer ${className}`
-          : "codeg-collapsible-drawer"
+        drawer
+          ? className
+            ? `codeg-collapsible-drawer ${className}`
+            : "codeg-collapsible-drawer"
+          : className
       }
       {...props}
     >
-      <div className="codeg-collapsible-drawer-body">{children}</div>
+      {drawer ? (
+        <div className="codeg-collapsible-drawer-body">{children}</div>
+      ) : (
+        children
+      )}
     </div>
   )
 }

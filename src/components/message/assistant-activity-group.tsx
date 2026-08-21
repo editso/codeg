@@ -767,7 +767,7 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
           </span>
         ) : null}
       </div>
-      <CollapsibleContent className="w-full outline-none">
+      <CollapsibleContent drawer={!active} className="w-full outline-none">
         <ActivityItemList
           items={items}
           renderItem={renderItem}

@@ -1686,30 +1686,37 @@
 }
 
 /*
- * Chat disclosures use a vertical drawer treatment. The transcript itself is
- * virtualized, so animating an unknown content height would continuously
- * invalidate row measurements and make the scroll position jump. Instead the
- * layout commits at once while the body is clipped and pulled out from just
- * under its trigger. On close it travels back into that edge before the
- * lightweight presence implementation unmounts it.
+ * Completed activity streams use a vertical drawer treatment. This stays a
+ * pure CSS grid-track animation: no synchronous layout reads or hand-measured
+ * height. The body pulls out from just under its trigger and its actual layout
+ * height closes with it, so later transcript content follows the drawer rather
+ * than waiting below a blank gap.
  *
- * `instant-collapsible` owns the body wrapper and adds this class to every
- * message disclosure, giving reasoning, tool output, activity rows, and
- * agent capsules one deliberate motion language rather than several unrelated
- * fade/slide variants.
+ * The class is explicit rather than global. Streaming tool details can change
+ * height rapidly (especially Monaco-backed large input previews), and wrapping
+ * those in a grid track turns their transient height into a visible blank
+ * surface. They intentionally stay in normal document flow until completed.
  */
 .codeg-collapsible-drawer {
+  display: grid;
+  grid-template-rows: 1fr;
   overflow: clip;
 }
 
+.codeg-collapsible-drawer[data-state="closed"] {
+  grid-template-rows: 0fr;
+}
+
 .codeg-collapsible-drawer-body {
+  min-height: 0;
   min-width: 0;
+  overflow: clip;
   transform-origin: top;
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .codeg-collapsible-drawer[data-state="open"] {
-    animation: codeg-drawer-presence 220ms linear;
+    animation: codeg-drawer-open 220ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .codeg-collapsible-drawer[data-state="open"]
@@ -1718,7 +1725,7 @@
   }
 
   .codeg-collapsible-drawer[data-state="closed"] {
-    animation: codeg-drawer-presence 180ms linear;
+    animation: codeg-drawer-close 180ms cubic-bezier(0.4, 0, 1, 1);
   }
 
   .codeg-collapsible-drawer[data-state="closed"]
@@ -1727,12 +1734,21 @@
   }
 }
 
-@keyframes codeg-drawer-presence {
+@keyframes codeg-drawer-open {
   from {
-    opacity: 0.999;
+    grid-template-rows: 0fr;
   }
   to {
-    opacity: 1;
+    grid-template-rows: 1fr;
+  }
+}
+
+@keyframes codeg-drawer-close {
+  from {
+    grid-template-rows: 1fr;
+  }
+  to {
+    grid-template-rows: 0fr;
   }
 }
 

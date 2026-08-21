@@ -677,6 +677,8 @@ function isCanonicalEditPayload(parsed: Record<string, unknown>): boolean {
     typeof parsed.path === "string" ||
     typeof parsed.old_string === "string" ||
     typeof parsed.new_string === "string" ||
+    typeof parsed.old_text === "string" ||
+    typeof parsed.new_text === "string" ||
     parsed.replace_all === true
   )
 }
@@ -1330,9 +1332,10 @@ function localizeDerivedToolTitle(
 
 /** Edit tool: file path + unified diff view */
 function EditToolInput({ input }: { input: Record<string, unknown> }) {
-  const filePath = str(input, "file_path")
-  const oldString = str(input, "old_string") ?? ""
-  const newString = str(input, "new_string") ?? ""
+  const filePath =
+    str(input, "file_path") ?? str(input, "filePath") ?? str(input, "path")
+  const oldString = str(input, "old_string") ?? str(input, "old_text") ?? ""
+  const newString = str(input, "new_string") ?? str(input, "new_text") ?? ""
   const startLine = num(input, "_start_line")
 
   const diffCode = useMemo(() => {
@@ -3221,6 +3224,58 @@ function formatActivityPreviewText(value: unknown): string | null {
   return parsed ? JSON.stringify(parsed, null, 2) : text
 }
 
+/**
+ * The live activity rail receives the same edit payloads as the final tool
+ * card, but used to render all of them as a generic JSON code block. Recognize
+ * an edit shape separately so `{ file_path, new_text }`, string replacement,
+ * and multi-file `changes` payloads can use the same structured diff preview.
+ */
+function hasActivityEditPayload(input: string): boolean {
+  const parsed = aliasToolInputKeys(tryParseJson(input))
+  if (parsed) {
+    if (extractEditChangesPayload(parsed).length > 0) return true
+    return (
+      typeof parsed.old_string === "string" ||
+      typeof parsed.new_string === "string" ||
+      typeof parsed.old_text === "string" ||
+      typeof parsed.new_text === "string" ||
+      parsed.replace_all === true
+    )
+  }
+
+  // The input often remains syntactically incomplete while a large `new_text`
+  // string streams. It is still an edit, not an unstructured code payload.
+  return /"(?:old_string|new_string|old_text|new_text|changes)"\s*:/.test(input)
+}
+
+const ActivityStructuredEditInput = memo(function ActivityStructuredEditInput({
+  input,
+}: {
+  input: string
+}) {
+  const parsed = useMemo(() => aliasToolInputKeys(tryParseJson(input)), [input])
+  const patchInput = useMemo(
+    () => extractApplyPatchTextFromUnknownInput(input, parsed),
+    [input, parsed]
+  )
+  const changes = useMemo(
+    () => (parsed ? extractEditChangesPayload(parsed) : []),
+    [parsed]
+  )
+
+  if (patchInput) {
+    return <UnifiedDiffPreview diffText={patchInput} clickableFilePath />
+  }
+  if (!parsed) return null
+  if (changes.length > 0) {
+    return <EditChangesToolInput changes={changes} />
+  }
+  if (isCanonicalEditPayload(parsed)) {
+    return <EditToolInput input={parsed} />
+  }
+  return null
+})
+
 const ActivityPreviewCode = memo(function ActivityPreviewCode({
   text,
   label,
@@ -3333,18 +3388,25 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
         presentation.kind === "script" ? parseCodexScriptCard(part.input) : null
       const isCommandSurface =
         presentation.kind === "command" || presentation.kind === "session"
-      const rawInput = activityPreviewSource(part.input)
+      const rawInput = activityPreviewSource(part.input) ?? ""
+      const structuredEditInput =
+        Boolean(rawInput) &&
+        (presentation.kind === "edit" || hasActivityEditPayload(rawInput))
       const input = script
         ? { text: script.source, language: "javascript" as const }
         : presentation.command
           ? null
-          : (() => {
-              const text = formatActivityPreviewText(rawInput)
-              return text ? { text, language: "json" as const } : null
-            })()
+          : structuredEditInput
+            ? null
+            : (() => {
+                const text = formatActivityPreviewText(rawInput)
+                return text ? { text, language: "json" as const } : null
+              })()
       const output = activityToolOutput(part, isCommandSurface)
       return {
         presentation,
+        rawInput,
+        structuredEditInput,
         input,
         output: output
           ? { text: output, language: codeLanguageForOutput(output) }
@@ -3357,8 +3419,22 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
   })()
 
   if (!detail) return null
-  const { presentation, input, output } = detail
-  if (!presentation.command && !input && !output) return null
+  const { presentation, rawInput, structuredEditInput, input, output } = detail
+  if (!presentation.command && !structuredEditInput && !input && !output) {
+    return null
+  }
+  // A streamed file-write payload often contains the full new file as one JSON
+  // line. It is useful once the call has settled (the reader may intentionally
+  // open its virtualized viewer), but showing Monaco's fixed-height large-file
+  // viewport while the input is still arriving leaves a large, mostly empty
+  // panel under the active row. The target path and spinner already identify
+  // the in-flight operation, so defer only this oversized transient preview.
+  const inputStreaming =
+    part.state === "input-available" || part.state === "input-streaming"
+  const deferStreamingLargeInput =
+    inputStreaming &&
+    input !== null &&
+    shouldUseLargeToolOutputViewer(input.text)
 
   return (
     <div className="grid w-full max-w-none gap-2 py-0.5">
@@ -3385,7 +3461,10 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
           text={`$ ${presentation.command}`}
         />
       ) : null}
-      {input ? (
+      {structuredEditInput ? (
+        <ActivityStructuredEditInput input={rawInput} />
+      ) : null}
+      {input && !deferStreamingLargeInput ? (
         <ActivityPreviewCode
           label={toolT("parameters")}
           language={input.language}

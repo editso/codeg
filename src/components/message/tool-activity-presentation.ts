@@ -161,6 +161,37 @@ function patchPaths(source: string | null | undefined): string[] {
   return uniquePaths(paths)
 }
 
+/**
+ * Recover a string field before a live JSON payload is complete. File edits
+ * commonly stream the large replacement text last, so waiting for JSON.parse
+ * would briefly erase the target file from the activity row.
+ */
+function rawJsonStringField(
+  input: string | null | undefined,
+  keys: readonly string[]
+): string | null {
+  if (!input) return null
+
+  for (const key of keys) {
+    const match = input.match(
+      new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`)
+    )
+    const rawValue = match?.[1]
+    if (!rawValue) continue
+
+    try {
+      const decoded: unknown = JSON.parse(`"${rawValue}"`)
+      if (typeof decoded === "string" && decoded.trim()) return decoded.trim()
+    } catch {
+      // Keep the readable prefix when a malformed escape sequence is still
+      // being streamed; the complete payload will replace it on the next frame.
+      return rawValue.trim() || null
+    }
+  }
+
+  return null
+}
+
 function pathsFromInput(input: string | null | undefined): string[] {
   const parsed = asRecord(input)
   const paths: string[] = []
@@ -175,7 +206,16 @@ function pathsFromInput(input: string | null | undefined): string[] {
         "path",
       ])
     : null
-  if (direct) paths.push(direct)
+  const rawDirect = rawJsonStringField(input, [
+    "file_path",
+    "filePath",
+    "target_file",
+    "targetFile",
+    "filename",
+    "notebook_path",
+    "path",
+  ])
+  if (direct ?? rawDirect) paths.push(direct ?? rawDirect ?? "")
 
   if (parsed && typeof parsed.changes === "object" && parsed.changes) {
     paths.push(...Object.keys(parsed.changes as JsonRecord))
