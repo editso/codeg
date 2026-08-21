@@ -1901,7 +1901,11 @@ export function MessageInput({
                       isPrompting={isPrompting}
                     />
                     <ComposerContextUsage tabId={attachmentTabId ?? null} />
-                    <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
+                    <ComposerConnectionStatus
+                      tabId={attachmentTabId ?? null}
+                      conversationId={conversationId}
+                      draftConfig={draftConversationConfig}
+                    />
                   </div>
                 </div>
               )}

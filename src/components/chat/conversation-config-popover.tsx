@@ -21,6 +21,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import {
   getDraftConversationMcpCatalog,
@@ -629,25 +635,41 @@ export function ConversationConfigPopover({
         if (!nextOpen) setPanel("overview")
       }}
     >
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          disabled={isLocked}
-          className={cn(
-            "relative shrink-0 text-muted-foreground",
-            isLocked && "cursor-not-allowed opacity-45"
-          )}
-          title={t("conversationSettings")}
-          aria-label={t("conversationSettings")}
-        >
-          <SlidersHorizontal className="size-3.5" />
-          {overrideCount > 0 ? (
-            <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-primary ring-1 ring-card" />
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {/* A disabled button cannot receive pointer events. Keep the
+                wrapper interactive so the reason for the turn-time lock is
+                discoverable without letting the Popover open. */}
+            <span className="inline-flex">
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={isLocked}
+                  className={cn(
+                    "relative shrink-0 text-muted-foreground",
+                    isLocked && "cursor-not-allowed opacity-45"
+                  )}
+                  title={t("conversationSettings")}
+                  aria-label={t("conversationSettings")}
+                >
+                  <SlidersHorizontal className="size-3.5" />
+                  {overrideCount > 0 ? (
+                    <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-primary ring-1 ring-card" />
+                  ) : null}
+                </Button>
+              </PopoverTrigger>
+            </span>
+          </TooltipTrigger>
+          {isPrompting ? (
+            <TooltipContent side="top" sideOffset={8}>
+              {t("conversationConfigLockedDuringTurn")}
+            </TooltipContent>
           ) : null}
-        </Button>
-      </PopoverTrigger>
+        </Tooltip>
+      </TooltipProvider>
       <PopoverContent
         side="top"
         align="end"

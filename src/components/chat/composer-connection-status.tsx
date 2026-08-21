@@ -1,6 +1,11 @@
 "use client"
 
-import { useCallback, useState, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   HeartHandshake,
@@ -23,7 +28,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { getConversationConfig, listModelProviders } from "@/lib/api"
 import { isConnectionBusy } from "@/lib/connection-teardown"
+import type { DraftConversationConfig } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 // Connection-only states. The session "prompting" state is intentionally
@@ -95,11 +102,20 @@ function DetailRow({ label, value }: { label: string; value: string }) {
  * `disconnected`, where the store holds no entry at all and the params come
  * from what `connect()` last recorded for this key.
  */
-export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
+export function ComposerConnectionStatus({
+  tabId,
+  conversationId,
+  draftConfig,
+}: {
+  tabId: string | null
+  conversationId?: number | null
+  draftConfig?: DraftConversationConfig | null
+}) {
   const t = useTranslations("Folder.statusBar.connection")
   const store = useConnectionStore()
   const { reconnect, restart, getReconnectInfo } = useAcpActions()
   const [open, setOpen] = useState(false)
+  const [providerName, setProviderName] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<
     "reconnect" | "restart" | null
   >(null)
@@ -120,6 +136,45 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
     getConnSnapshot,
     getConnSnapshot
   )
+
+  // Provider selection lives in the persisted conversation config (or in the
+  // draft before its first message), not on the live ACP state. Resolve it only
+  // while this detail card is open so the compact status row stays subscription-
+  // only and does not create background requests for every open composer.
+  useEffect(() => {
+    if (!open) {
+      setProviderName(null)
+      return
+    }
+
+    let active = true
+    const loadProvider = async () => {
+      const providerId =
+        conversationId == null
+          ? (draftConfig?.model_provider_id ?? null)
+          : (await getConversationConfig(conversationId)).config
+              .model_provider_id
+
+      if (providerId == null) {
+        if (active) setProviderName(t("modelProviderGlobal"))
+        return
+      }
+
+      const providers = await listModelProviders()
+      const provider = providers.find((item) => item.id === providerId)
+      if (active) {
+        setProviderName(provider?.name ?? t("modelProviderUnavailable"))
+      }
+    }
+
+    void loadProvider().catch(() => {
+      if (active) setProviderName(null)
+    })
+
+    return () => {
+      active = false
+    }
+  }, [conversationId, draftConfig?.model_provider_id, open, t])
 
   const statusKey = toConnStatus(conn?.status ?? null)
   const statusLabel = t(statusKey)
@@ -227,12 +282,19 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
 
         {workingDir || sessionId ? (
           <dl className="space-y-2">
+            {providerName ? (
+              <DetailRow label={t("modelProvider")} value={providerName} />
+            ) : null}
             {workingDir ? (
               <DetailRow label={t("workingDir")} value={workingDir} />
             ) : null}
             {sessionId ? (
               <DetailRow label={t("sessionId")} value={sessionId} />
             ) : null}
+          </dl>
+        ) : providerName ? (
+          <dl>
+            <DetailRow label={t("modelProvider")} value={providerName} />
           </dl>
         ) : null}
 
