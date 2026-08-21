@@ -21,6 +21,7 @@ pub mod chat_channel;
 pub mod commands;
 pub mod db;
 pub mod folder_links;
+pub mod forge;
 pub mod git_credential;
 pub mod git_repo;
 pub mod intern;
@@ -76,7 +77,7 @@ mod tauri_app {
         session_info as session_info_commands,
         system_settings, terminal as terminal_commands,
         token_usage as token_usage_commands,
-        version_control, windows, work_task as work_task_commands,
+        forge as forge_commands, version_control, windows, work_task as work_task_commands,
         workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -1222,6 +1223,7 @@ mod tauri_app {
                 version_control::update_git_settings,
                 version_control::get_github_accounts,
                 version_control::validate_github_token,
+                version_control::validate_gitlab_token,
                 version_control::update_github_accounts,
                 version_control::save_account_token,
                 version_control::get_account_token,
@@ -1374,6 +1376,7 @@ mod tauri_app {
                 work_task_commands::work_task_cancel,
                 work_task_commands::work_task_merge,
                 work_task_commands::work_task_merge_unqueue,
+                work_task_commands::work_task_deliver_pr,
                 work_task_commands::work_task_complete,
                 work_task_commands::work_task_archive,
                 work_task_commands::work_task_cleanup,
@@ -1387,6 +1390,14 @@ mod tauri_app {
                 work_task_commands::work_task_template_list,
                 work_task_commands::work_task_template_save,
                 work_task_commands::work_task_template_delete,
+                forge_commands::folder_forge_remote,
+                forge_commands::forge_list_issues,
+                forge_commands::forge_tab_count,
+                forge_commands::forge_list_labels,
+                forge_commands::work_task_create_from_forge,
+                forge_commands::work_task_lookup_by_source,
+                forge_commands::forge_settings_get,
+                forge_commands::forge_settings_set,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

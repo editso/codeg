@@ -38,6 +38,8 @@ mod m20260803_000001_token_usage;
 mod m20260807_000001_work_task_scheduled_at;
 mod m20260808_000001_custom_agent_supports_mcp;
 mod m20260817_000001_work_task_conversation_title;
+mod m20260818_000001_work_task_source;
+mod m20260819_000001_work_task_completion_kind;
 mod m20260821_000001_conversation_config;
 mod m20260821_000002_conversation_config_session_selectors;
 pub struct Migrator;
@@ -84,6 +86,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260807_000001_work_task_scheduled_at::Migration),
             Box::new(m20260808_000001_custom_agent_supports_mcp::Migration),
             Box::new(m20260817_000001_work_task_conversation_title::Migration),
+            Box::new(m20260818_000001_work_task_source::Migration),
+            Box::new(m20260819_000001_work_task_completion_kind::Migration),
             Box::new(m20260821_000001_conversation_config::Migration),
             Box::new(m20260821_000002_conversation_config_session_selectors::Migration),
         ]

@@ -8,11 +8,9 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react"
 import {
   AlertCircle,
-  Copy,
   Download,
   FileCode,
   FileImage,
@@ -38,7 +36,8 @@ import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
-import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
+import { cn, randomUUID } from "@/lib/utils"
+import { buildQuotedMarkdown } from "@/lib/message-quote"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
@@ -50,7 +49,6 @@ import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
-import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
@@ -112,6 +110,7 @@ import {
 import {
   type AgentType,
   type ContentBlock,
+  type ConversationStatus,
   type DraftConversationConfig,
   type EventEnvelope,
   type MessageTurn,
@@ -162,6 +161,7 @@ import {
 } from "@/lib/export-conversation"
 import { useExportLabels } from "@/lib/use-export-labels"
 import { resolveActiveSessionDetails } from "./active-session-details"
+import { ConversationDetailHeader } from "./conversation-detail-header"
 import { SessionDetailsDialog } from "./session-details-dialog"
 
 interface ConversationTabViewProps {
@@ -469,7 +469,11 @@ const ConversationTabView = memo(function ConversationTabView({
     null
   )
   const [hasSentMessage, setHasSentMessage] = useState(false)
-  const [quickActionInject, setQuickActionInject] =
+  // One inbox for everything pushed into this tab's composer from outside it:
+  // welcome-page quick actions (replace) and quoted transcript selections
+  // (append). Exactly one composer is mounted at a time — the welcome one or the
+  // docked one — so a single slot can serve both.
+  const [composerInject, setComposerInject] =
     useState<ComposerInjectContent | null>(null)
 
   const hasPersistedConversation = dbConversationId != null
@@ -516,8 +520,9 @@ const ConversationTabView = memo(function ConversationTabView({
   // accepted it; if that save fails, a retry must persist the same complete
   // configuration before sending rather than silently falling through to
   // agent-wide preferences.
-  const initialConversationConfigRef =
-    useRef<InitialConversationConfig | null>(null)
+  const initialConversationConfigRef = useRef<InitialConversationConfig | null>(
+    null
+  )
   const initialSessionConfigPersistPendingRef = useRef(false)
   // Single-flight guard for the eager scratch-dir prepare (on chat-mode select).
   const prepareChatDirPendingRef = useRef(false)
@@ -730,8 +735,7 @@ const ConversationTabView = memo(function ConversationTabView({
     // Drives cross-client viewer discovery: when another client is already
     // live on this conversation, attach to its connection instead of spawning.
     conversationId: dbConversationId ?? undefined,
-    draftConfig:
-      dbConversationId == null ? draftConversationConfig : undefined,
+    draftConfig: dbConversationId == null ? draftConversationConfig : undefined,
     // A cross-group move / unsplit reparents this view (React remounts it)
     // while the tab stays open — that unmount must not tear the connection
     // down. See `isReparentUnmount` for why "still open" alone is too broad.
@@ -1780,11 +1784,19 @@ const ConversationTabView = memo(function ConversationTabView({
   const isWelcomeMode = showDraftHeader
 
   const handleQuickAction = useCallback((payload: ComposerInjectContent) => {
-    setQuickActionInject(payload)
+    setComposerInject(payload)
   }, [])
 
-  const handleQuickActionConsumed = useCallback(() => {
-    setQuickActionInject(null)
+  const handleComposerInjectConsumed = useCallback(() => {
+    setComposerInject(null)
+  }, [])
+
+  // Quote a transcript selection into the composer. A fresh object every time so
+  // quoting the same passage twice still re-fires the composer's inject effect.
+  const handleQuoteSelection = useCallback((selected: string) => {
+    const quoted = buildQuotedMarkdown(selected)
+    if (!quoted) return
+    setComposerInject({ text: quoted, mode: "append" })
   }, [])
 
   const canShowDetailErrorActions =
@@ -1965,6 +1977,12 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpActions, tabId]
   )
 
+  // The docked composer is the only place a quote can land, so the selection
+  // bubble offers "quote" exactly when that composer is on screen (see
+  // `hideInput` below). Without a composer the inject would never be consumed
+  // and the action would silently do nothing.
+  const composerAvailable = !isWelcomeMode && !acpLoadError
+
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
@@ -1992,6 +2010,7 @@ const ConversationTabView = memo(function ConversationTabView({
         onNewSession={
           canShowDetailErrorActions ? handleOpenNewSession : undefined
         }
+        onQuoteSelection={composerAvailable ? handleQuoteSelection : undefined}
       />
     </GoalControlProvider>
   )
@@ -2041,7 +2060,6 @@ const ConversationTabView = memo(function ConversationTabView({
             agentType={selectedAgent}
             workingDir={workingDirForConnection}
           />
-          <BackgroundTasksChip contextKey={tabId} />
         </>
       }
       status={connStatus}
@@ -2081,6 +2099,8 @@ const ConversationTabView = memo(function ConversationTabView({
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
       hideInput={isWelcomeMode || Boolean(acpLoadError)}
+      injectContent={composerInject}
+      onInjectConsumed={handleComposerInjectConsumed}
       composerBanner={acpLoadErrorBanner}
       feedbackList={
         feedback.showList ? (
@@ -2216,8 +2236,8 @@ const ConversationTabView = memo(function ConversationTabView({
                   feedback.featureEnabled ? feedback.openDialog : undefined
                 }
                 feedbackAddDisabled={!feedback.canSubmit}
-                injectContent={quickActionInject}
-                onInjectConsumed={handleQuickActionConsumed}
+                injectContent={composerInject}
+                onInjectConsumed={handleComposerInjectConsumed}
                 flush
               />
             </div>
@@ -2467,68 +2487,6 @@ export function ConversationDetailPanel() {
       [activeConversationTab.id]: (prev[activeConversationTab.id] ?? 0) + 1,
     }))
   }, [activeConversationTab])
-
-  const [contextMenuSelectedText, setContextMenuSelectedText] = useState("")
-  const savedSelectionRangeRef = useRef<Range | null>(null)
-  const isContextMenuOpenRef = useRef(false)
-
-  const handleContextMenuOpenChange = useCallback((open: boolean) => {
-    isContextMenuOpenRef.current = open
-    if (!open) {
-      savedSelectionRangeRef.current = null
-      return
-    }
-    const selection = window.getSelection()
-    const text = selection?.toString() ?? ""
-    setContextMenuSelectedText(text)
-    savedSelectionRangeRef.current =
-      selection && selection.rangeCount > 0 && !selection.isCollapsed
-        ? selection.getRangeAt(0).cloneRange()
-        : null
-  }, [])
-
-  const handleContextMenuTriggerPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 2) return
-      const selection = window.getSelection()
-      if (selection && !selection.isCollapsed) {
-        event.preventDefault()
-      }
-    },
-    []
-  )
-
-  useEffect(() => {
-    const handler = () => {
-      if (!isContextMenuOpenRef.current) return
-      const range = savedSelectionRangeRef.current
-      if (!range) return
-      if (
-        !document.contains(range.startContainer) ||
-        !document.contains(range.endContainer)
-      ) {
-        savedSelectionRangeRef.current = null
-        return
-      }
-      const selection = window.getSelection()
-      if (!selection) return
-      if (selection.toString().length > 0) return
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }
-    document.addEventListener("selectionchange", handler)
-    return () => document.removeEventListener("selectionchange", handler)
-  }, [])
-
-  const handleCopySelectedText = useCallback(async () => {
-    if (!contextMenuSelectedText) return
-    const ok = await copyTextFromMenu(contextMenuSelectedText)
-    if (ok) {
-      toast.success(t("copyTextSuccess"))
-    } else {
-      toast.error(t("copyTextFailed"))
-    }
-  }, [contextMenuSelectedText, t])
 
   const handleNewConversation = useCallback(() => {
     if (!folder) return
@@ -2807,7 +2765,16 @@ export function ConversationDetailPanel() {
     const touchesLeft = touchesTop && rect.x <= GROUP_EDGE_EPSILON
     const touchesRight =
       touchesTop && rect.x + rect.w >= 100 - GROUP_EDGE_EPSILON
-    // NOTE: the strip and content stay PLAIN SIBLING SLOTS (no fragment
+    // The group's selected tab drives its header, so every split keeps the
+    // same tabs-and-title-bar pairing as the unsplit workspace.
+    const selectedTab =
+      groupTabs.find((tab) => tab.id === groupSelection[groupId]) ??
+      groupTabs[0] ??
+      null
+    const selectedTabFolder = selectedTab
+      ? allFolders.find((item) => item.id === selectedTab.folderId)
+      : undefined
+    // NOTE: the strip, header, and content stay PLAIN SIBLING SLOTS (no fragment
     // around any pair) — a `false` conditional is a reconciliation hole, so the
     // content keeps its slot across split flips; wrapping would shift slots and
     // remount every live view (see group-shell-reconciliation.test.tsx).
@@ -2833,6 +2800,27 @@ export function ConversationDetailPanel() {
             {touchesRight && <SplitStripCornerReserve side="right" />}
           </div>
         )}
+        {isSplit && selectedTab && (
+          <div
+            className="shrink-0"
+            onPointerDownCapture={() => {
+              const selected = groupSelection[groupId]
+              if (selected && selected !== useTabStore.getState().activeTabId) {
+                switchTab(selected)
+              }
+            }}
+          >
+            <ConversationDetailHeader
+              tabId={selectedTab.id}
+              conversationId={selectedTab.conversationId}
+              runtimeConversationId={selectedTab.runtimeConversationId ?? null}
+              folderId={selectedTab.folderId}
+              folderPath={selectedTabFolder?.path}
+              title={selectedTab.title}
+              status={selectedTab.status as ConversationStatus | undefined}
+            />
+          </div>
+        )}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <TileScrollContainer canTile={canTileG}>
             <div
@@ -2855,15 +2843,32 @@ export function ConversationDetailPanel() {
     )
   }
 
+  // In the unsplit layout, keep the active tab's title bar above the horizontal
+  // tile row. Split groups render their own title bars in `renderGroupShell`.
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  const activeTabFolder = activeTab
+    ? allFolders.find((item) => item.id === activeTab.folderId)
+    : undefined
+
   return (
     <>
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+        {!isSplit && activeTab && (
+          <ConversationDetailHeader
+            tabId={activeTab.id}
+            conversationId={activeTab.conversationId}
+            runtimeConversationId={activeTab.runtimeConversationId ?? null}
+            folderId={activeTab.folderId}
+            folderPath={activeTabFolder?.path}
+            title={activeTab.title}
+            status={activeTab.status as ConversationStatus | undefined}
+          />
+        )}
+        <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
               ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
-              onPointerDown={handleContextMenuTriggerPointerDown}
             >
               {/* Flat sibling shells keyed by stable group id + divider
                   overlays — stable across every split/tile flip, otherwise
@@ -2882,14 +2887,6 @@ export function ConversationDetailPanel() {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem
-              disabled={!contextMenuSelectedText}
-              onSelect={handleCopySelectedText}
-            >
-              <Copy className="h-4 w-4" />
-              {t("copyText")}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
             <ContextMenuItem
               disabled={!folder?.path}
               onSelect={handleNewConversation}

@@ -14,6 +14,7 @@ import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
@@ -1610,14 +1611,12 @@ export function McpSettings() {
                   </p>
 
                   {marketDetail.homepage ? (
-                    <a
+                    <BrowserLink
                       href={marketDetail.homepage}
-                      target="_blank"
-                      rel="noreferrer"
                       className="text-xs text-primary underline break-all"
                     >
                       {marketDetail.homepage}
-                    </a>
+                    </BrowserLink>
                   ) : null}
 
                   <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">

@@ -64,6 +64,7 @@ import {
 import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
+import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
 import {
   ConversationMessageNav,
   type MessageNavEntry,
@@ -121,6 +122,13 @@ interface MessageListViewProps {
    * items render in arbitrary order and multiplicity. `null` = no divider.
    */
   userTurnHeader?: ((group: ResolvedMessageGroup) => string | null) | null
+  /**
+   * Quote a text selection made in this transcript into the conversation
+   * composer. Enables the "quote" entry on the selection bubble; omitted on
+   * read-only surfaces (sub-agent dialog, task transcripts), which then offer
+   * copy alone. MUST be referentially stable.
+   */
+  onQuoteSelection?: (text: string) => void
 }
 
 export interface ResolvedMessageGroup {
@@ -738,6 +746,7 @@ export function MessageListView({
   onNewSession,
   showMessageNav = true,
   userTurnHeader = null,
+  onQuoteSelection,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1085,6 +1094,11 @@ export function MessageListView({
   // `navEntries` is computed only while the panel is open.
   const [navExpanded, setNavExpanded] = useState(false)
 
+  // Positioning box for the text-selection bubble. It is the transcript's outer
+  // (non-scrolling) frame, so the bubble is clipped to the message area and
+  // never overlaps the composer or the tab strip.
+  const selectionBoxRef = useRef<HTMLDivElement | null>(null)
+
   // Cheap user-message tally for the collapsed chip — counts user turns without
   // parsing any file diffs.
   const userMessageCount = useMemo(() => {
@@ -1216,7 +1230,10 @@ export function MessageListView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div
+      ref={selectionBoxRef}
+      className="relative flex h-full min-h-0 flex-col"
+    >
       <MessageThread
         className="flex-1 min-h-0"
         resize={shouldUseSmoothResize ? "smooth" : undefined}
@@ -1280,6 +1297,10 @@ export function MessageListView({
           overlayKey={subAgentOverlayKey}
         />
       </div>
+      <SelectionActionBubble
+        containerRef={selectionBoxRef}
+        onQuote={onQuoteSelection}
+      />
     </div>
   )
 }

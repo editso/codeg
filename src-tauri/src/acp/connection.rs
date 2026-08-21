@@ -8724,6 +8724,98 @@ fn grok_live_tool_output(
     grok_mcp_output_text(raw)
 }
 
+/// Resolve the live `raw_output` string for a pi tool call.
+///
+/// pi-acp hands ACP the pi tool result VERBATIM as `rawOutput` — the MCP-shaped
+/// envelope `{"content":[{"type":"text","text":…}]}` — while putting that very
+/// same text, already flattened, on the `content[]` channel
+/// (`toolResultToText`; both `tool_execution_update` and `tool_execution_end`
+/// emit the pair). Stringifying the envelope shadows the clean text, because the
+/// live renderer's `raw_output_chunks` win over `content`
+/// (`conversation-runtime-store.ts`), and nothing downstream unwraps that shape
+/// (`commandOutputFromJsonString` bails on a `content` array) — so a finished
+/// `bash` painted its terminal body with the JSON source string.
+///
+/// Same parity rule as Grok (see `grok_live_tool_output`): whenever `content`
+/// carries anything, it IS pi-acp's own flattening of this very result — emit
+/// `None` and let it render (that also covers the `details.diff` / `stdout` /
+/// `output` shapes `toolResultToText` flattens, which the envelope alone does
+/// not reach). Only with no `content` is the envelope unwrapped, through the
+/// SAME flattener the history parser uses so both surfaces show one string.
+///
+/// pi's empty opening announcement is excluded up front — emitting anything for
+/// it would strand a placeholder chunk over the whole call (see
+/// `pi_result_is_empty_announcement`). Every OTHER result that carries something
+/// but whose block array holds no text still stringifies exactly as before:
+/// `toolResultToText` reaches `details.diff`, `stdout`/`stderr` and `output` that
+/// the block array alone does not, so dropping those would lose a real result.
+///
+/// (pi ≥0.0.33 routes `bash` through `_meta.terminal_*` and sends no `rawOutput`
+/// for it at all — see `pi_bash_terminal_chunk`. This is the path every OTHER pi
+/// tool takes, and the one `bash` itself takes on earlier pi-acp builds.)
+fn pi_live_tool_output(
+    content: &Option<String>,
+    raw_output: &Option<serde_json::Value>,
+) -> Option<String> {
+    let raw = raw_output.as_ref()?;
+    if pi_result_is_empty_announcement(raw) {
+        return None;
+    }
+    if content.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+        return None;
+    }
+    raw.get("content")
+        .and_then(crate::parsers::pi::tool_result_content_text)
+        .or_else(|| json_value_to_text(raw_output))
+        .map(|text| structurize_live_output(&text))
+}
+
+/// Is this `rawOutput` pi's "I have started, and have nothing yet" announcement —
+/// literally `{"content": []}`?
+///
+/// pi's bash tool fires `onUpdate({content: [], details: undefined})` before the
+/// process writes a byte (`bash.js`), so this is the opening frame of EVERY pi
+/// command. Both channels then carry noise: `rawOutput` is the empty envelope,
+/// and pi-acp — with no text, diff, stdout or stderr to flatten — falls back to
+/// `JSON.stringify(result, null, 2)` for `content[]` (`toolResultToText`), which
+/// puts a literal `{\n  "content": []\n}` in the terminal card until the first
+/// line of real output arrives. Worse, stringifying the envelope into
+/// `raw_output` seeds it as the call's chunk, and since every later frame prefers
+/// `content` and emits `None` — which the reducer treats as "keep the previous
+/// chunks" (`acp-connections-context.tsx`) — that placeholder would outrank the
+/// real output for the rest of the call.
+///
+/// So both channels are suppressed for this frame, and ONLY for this frame: the
+/// predicate is deliberately the narrowest thing that identifies it — an empty
+/// `content` array and no other non-null member. Any richer result (a diff,
+/// `stdout`/`stderr`, an exit code, a truncation record) is something
+/// `toolResultToText` may have flattened into real text, so it is left alone even
+/// when its block array is empty. Keyed off the STRUCTURED payload, never off the
+/// rendered string, so a command whose own output looks like an empty envelope is
+/// untouched.
+fn pi_result_is_empty_announcement(raw_output: &serde_json::Value) -> bool {
+    let Some(obj) = raw_output.as_object() else {
+        return false;
+    };
+    obj.get("content")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|blocks| blocks.is_empty())
+        && obj
+            .iter()
+            .all(|(key, value)| key == "content" || value.is_null())
+}
+
+/// pi-gated wrapper for the `content` channel: see `pi_result_is_empty_announcement`.
+fn pi_result_content_is_stringify_noise(
+    agent_type: AgentType,
+    raw_output: &Option<serde_json::Value>,
+) -> bool {
+    matches!(agent_type, AgentType::Pi)
+        && raw_output
+            .as_ref()
+            .is_some_and(pi_result_is_empty_announcement)
+}
+
 /// Grok wraps every MCP tool invocation in a generic `use_tool` envelope whose
 /// `raw_input` is `{"tool_name": "<server>__<tool>", "tool_input": {..real args..}}`.
 /// Peel it so the call is correlated (delegation `lifecycle.rs`), classified, and
@@ -10403,9 +10495,6 @@ fn map_grok_subagent_notification_inner(
                     summary: None,
                     tool_use_id: Some(call_id),
                     result,
-                    // The settle itself flips the card in-memory; no later
-                    // overlay content follows, so the syncing hint would dangle.
-                    wire_visible: true,
                 }],
                 watermark: 0,
             }])
@@ -10742,7 +10831,10 @@ async fn emit_conversation_update(
             };
             let content =
                 serialize_tool_call_content(content_blocks, synthesized_edit.is_none())
-                    .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c));
+                    .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c))
+                    // pi announces a command with an empty result, which pi-acp
+                    // renders as JSON source (see fn doc).
+                    .filter(|_| !pi_result_content_is_stringify_noise(agent_type, &tc.raw_output));
             let images = extract_tool_call_images(content_blocks);
             let codex_subagent_launch = codex_subagent.is_some();
             let raw_input = codex_subagent
@@ -10757,6 +10849,11 @@ async fn emit_conversation_update(
                 // Grok's structured rawOutput would shadow `content` and render
                 // empty; take the parity path (see grok_live_tool_output).
                 grok_live_tool_output(&content, &tc.raw_output)
+            } else if matches!(agent_type, AgentType::Pi) {
+                // pi's rawOutput is the MCP envelope around the SAME text
+                // `content` already carries; shipping it shadows the clean text
+                // with JSON source (see pi_live_tool_output).
+                pi_live_tool_output(&content, &tc.raw_output)
             } else {
                 json_value_to_text(&tc.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -10935,7 +11032,12 @@ async fn emit_conversation_update(
             };
             let content = content_blocks
                 .and_then(|c| serialize_tool_call_content(c, synthesized_edit.is_none()))
-                .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c));
+                .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c))
+                // Symmetric with the ToolCall arm — and the arm that matters:
+                // pi's empty opening frame is a `tool_call_update`.
+                .filter(|_| {
+                    !pi_result_content_is_stringify_noise(agent_type, &tcu.fields.raw_output)
+                });
             let images = content_blocks.and_then(extract_tool_call_images);
             let codex_subagent_launch = codex_subagent.is_some();
             let raw_input = codex_subagent
@@ -10953,6 +11055,10 @@ async fn emit_conversation_update(
                 // Grok's structured rawOutput would shadow `content` and render
                 // empty; take the parity path (see grok_live_tool_output).
                 grok_live_tool_output(&content, &tcu.fields.raw_output)
+            } else if matches!(agent_type, AgentType::Pi) {
+                // Symmetric with the ToolCall arm — and the arm that matters:
+                // pi delivers the result on the update (see pi_live_tool_output).
+                pi_live_tool_output(&content, &tcu.fields.raw_output)
             } else {
                 json_value_to_text(&tcu.fields.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -10972,8 +11078,10 @@ async fn emit_conversation_update(
             // deliberately BYPASSES `raw_output_cache`: the cache diffs cumulative
             // snapshots, while pi already sends deltas, which is exactly why
             // `emit_terminal_output_update` bypasses it too. pi never sends
-            // `rawOutput` for these calls, so the branch above resolved to
-            // `(None, None)` and nothing is being overwritten.
+            // `rawOutput` for a `_meta`-hosted call, so the branch above resolved
+            // to `(None, None)` and nothing is being overwritten. (Older pi-acp
+            // has no `_meta` channel at all: there `bash` streams like any other
+            // tool and `pi_live_tool_output` above is what carries its output.)
             let (raw_output, raw_output_append) = match pi_bash_terminal_chunk(
                 agent_type,
                 tcu.meta.as_ref(),
@@ -13462,7 +13570,6 @@ mod tests {
                 assert_eq!(s.status, "completed");
                 assert_eq!(s.tool_use_id.as_deref(), Some("call-1"));
                 assert_eq!(s.result.as_deref(), Some("## Findings"));
-                assert!(s.wire_visible, "settle flips the card in-memory — no syncing hint");
             }
             other => panic!("expected BackgroundActivity, got {other:?}"),
         }
@@ -15428,6 +15535,317 @@ mod tests {
             "another agent's identically-named meta must not stream: {raw_output:?}"
         );
         assert!(cb.pi_terminal_calls.is_empty());
+    }
+
+    /// A pi `bash` that does NOT ride the `_meta` channel (every pi-acp build
+    /// before the terminal bridge — and every non-bash pi tool on all of them)
+    /// reports its result twice: flattened into `content[]`, and verbatim as the
+    /// MCP envelope in `rawOutput`. Regression: the envelope was stringified into
+    /// `raw_output`, which WINS over `content` in the live store, so the terminal
+    /// card printed `{"content":[{"text":"$ next build…","type":"text"}]}`.
+    #[tokio::test]
+    async fn pi_tool_result_envelope_does_not_shadow_content() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (content, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_fb7",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": {"type": "text", "text": "$ next build\n✓ Compiled\n"},
+                }],
+                "rawOutput": {
+                    "content": [{"type": "text", "text": "$ next build\n✓ Compiled\n"}],
+                },
+            }),
+        )
+        .await;
+
+        assert!(
+            raw_output.is_none(),
+            "the envelope is a second copy of `content` — shipping it renders the \
+             JSON source as the terminal body: {raw_output:?}"
+        );
+        assert_eq!(
+            content.as_deref(),
+            Some("$ next build\n✓ Compiled\n"),
+            "the clean content channel carries the command output"
+        );
+    }
+
+    /// Sequence guard for the whole command, not one frame in isolation.
+    ///
+    /// pi's bash tool fires `onUpdate({content: []})` before the process writes a
+    /// byte, so frame 1 of EVERY command is the empty envelope — and pi-acp, with
+    /// nothing to flatten, puts its own `JSON.stringify(result)` on `content[]`.
+    /// Emitting either one poisons the card: the stringified `{"content":[]}`
+    /// becomes the tool call's raw-output chunk, every later frame prefers
+    /// `content` and emits `None`, the reducer keeps the last chunks, and the
+    /// chunk outranks `content` — so the finished build would render
+    /// `{"content":[]}` instead of its log.
+    #[tokio::test]
+    async fn pi_empty_opening_frame_never_outranks_the_real_output() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (content, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_fb7",
+                "status": "in_progress",
+                // pi-acp's stringify fallback over the empty envelope, verbatim.
+                "content": [{
+                    "type": "content",
+                    "content": {"type": "text", "text": "{\n  \"content\": []\n}"},
+                }],
+                "rawOutput": {"content": []},
+            }),
+        )
+        .await;
+        assert!(
+            raw_output.is_none(),
+            "the empty envelope must not be seeded as a chunk — it would outrank \
+             every later frame's content: {raw_output:?}"
+        );
+        assert!(
+            content.is_none(),
+            "pi-acp's JSON.stringify fallback is not command output: {content:?}"
+        );
+
+        // Frame 2 — the real result, on the SAME tool call id.
+        let (content, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_fb7",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": {"type": "text", "text": "$ next build\n✓ Compiled\n"},
+                }],
+                "rawOutput": {"content": [{"type": "text", "text": "$ next build\n✓ Compiled\n"}]},
+            }),
+        )
+        .await;
+        assert_eq!(
+            content.as_deref(),
+            Some("$ next build\n✓ Compiled\n"),
+            "the command output reaches the card"
+        );
+        assert!(
+            raw_output.is_none(),
+            "and nothing is left in the chunk stream to shadow it: {raw_output:?}"
+        );
+    }
+
+    /// A frame whose envelope is empty because pi has produced nothing yet must
+    /// not fall through to the stringify branch even without a `content` channel.
+    #[tokio::test]
+    async fn pi_empty_envelope_is_recognized_by_shape_not_by_yielding_text() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_fb7",
+                "status": "in_progress",
+                "rawOutput": {"content": []},
+            }),
+        )
+        .await;
+        assert!(raw_output.is_none(), "{raw_output:?}");
+    }
+
+    /// The suppression must catch ONLY pi's literal `{"content":[]}` opening
+    /// announcement. `toolResultToText` also flattens `details.diff`, `stdout` /
+    /// `stderr` (with the exit code appended) and `output` from BOTH the result
+    /// and its `details` — every one of those reaches real text that the block
+    /// array alone does not, so an empty block array is not by itself evidence
+    /// that pi had nothing to say. Anything else it cannot flatten it dumps as
+    /// JSON, which is ugly but still carries the result, so that is kept too.
+    #[tokio::test]
+    async fn only_pis_empty_opening_announcement_counts_as_noise() {
+        // (label, rawOutput, the text pi-acp's `toolResultToText` flattens)
+        let real_results = [
+            (
+                "details.diff",
+                serde_json::json!({"content": [], "details": {"diff": "--- a\n+++ b\n+line\n"}}),
+                "--- a\n+++ b\n+line\n",
+            ),
+            (
+                "details.stdout + exitCode",
+                serde_json::json!({"content": [], "details": {"stdout": "build succeeded", "exitCode": 0}}),
+                "build succeeded\n\nexit code: 0",
+            ),
+            (
+                "top-level stdout",
+                serde_json::json!({"content": [], "stdout": "ok"}),
+                "ok",
+            ),
+            (
+                "details.output",
+                serde_json::json!({"content": [], "details": {"output": "from details"}}),
+                "from details",
+            ),
+            (
+                "top-level output",
+                serde_json::json!({"content": [], "output": "from result"}),
+                "from result",
+            ),
+            (
+                "stderr + exitCode",
+                serde_json::json!({"content": [], "details": {"stderr": "boom", "exitCode": 3}}),
+                "stderr:\nboom\n\nexit code: 3",
+            ),
+            (
+                // Nothing flattenable: pi-acp dumps the JSON. Ugly, but it is the
+                // result — the exit code would be lost if we called it noise.
+                "exit-code-only stringify fallback",
+                serde_json::json!({"content": [], "details": {"exitCode": 3}}),
+                "{\n  \"content\": [],\n  \"details\": {\n    \"exitCode\": 3\n  }\n}",
+            ),
+        ];
+
+        for (label, raw_output, flattened) in real_results {
+            for (surface, wire) in [
+                (
+                    "tool_call",
+                    serde_json::json!({
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "call_x",
+                        "title": "bash",
+                        "kind": "execute",
+                        "status": "completed",
+                        "content": [{
+                            "type": "content",
+                            "content": {"type": "text", "text": flattened},
+                        }],
+                        "rawOutput": raw_output.clone(),
+                    }),
+                ),
+                (
+                    "tool_call_update",
+                    serde_json::json!({
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "call_x",
+                        "status": "completed",
+                        "content": [{
+                            "type": "content",
+                            "content": {"type": "text", "text": flattened},
+                        }],
+                        "rawOutput": raw_output.clone(),
+                    }),
+                ),
+            ] {
+                let mut cache = ToolCallOutputCache::default();
+                let mut cb = CodeBuddyLiveState::default();
+                let (content, _, _, _) =
+                    pi_emit(AgentType::Pi, &mut cache, &mut cb, wire).await;
+                assert_eq!(
+                    content.as_deref(),
+                    Some(flattened),
+                    "{label} is a real result, not pi's empty announcement ({surface})"
+                );
+            }
+        }
+
+        // The one shape that IS the announcement — and only in its exact form.
+        assert!(pi_result_is_empty_announcement(&serde_json::json!({
+            "content": []
+        })));
+        assert!(
+            pi_result_is_empty_announcement(&serde_json::json!({"content": [], "details": null})),
+            "an explicit null `details` is the same announcement"
+        );
+        assert!(
+            !pi_result_is_empty_announcement(&serde_json::json!({"content": [], "details": {}})),
+            "any other non-null member means pi is reporting something"
+        );
+        assert!(
+            !pi_result_is_empty_announcement(&serde_json::json!({
+                "content": [{"type": "text", "text": ""}]
+            })),
+            "a populated block array is not the announcement, empty text or not"
+        );
+        assert!(!pi_result_is_empty_announcement(&serde_json::json!({})));
+        assert!(!pi_result_is_empty_announcement(&serde_json::json!("text")));
+    }
+
+    /// With no `content` the envelope IS the result, so it must be unwrapped to
+    /// the same text the history parser produces — not dropped, and not shipped
+    /// as JSON.
+    #[tokio::test]
+    async fn pi_tool_result_envelope_unwrapped_when_content_absent() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_fb7",
+                "status": "completed",
+                "rawOutput": {"content": [{"type": "text", "text": "v24.14.0\n"}]},
+            }),
+        )
+        .await;
+        assert_eq!(raw_output.as_deref(), Some("v24.14.0\n"));
+
+        // An unrecognized shape keeps the generic stringified behavior rather
+        // than silently dropping output we have never seen on this wire.
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::Pi,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_other",
+                "status": "completed",
+                "rawOutput": {"details": {"exitCode": 0}},
+            }),
+        )
+        .await;
+        assert_eq!(raw_output.as_deref(), Some(r#"{"details":{"exitCode":0}}"#));
+    }
+
+    /// Contrast guard: the unwrap is pi-gated — `{"content":[…]}` is a generic
+    /// MCP shape, and another agent's identical `rawOutput` still stringifies.
+    #[tokio::test]
+    async fn non_pi_agents_keep_the_stringified_mcp_envelope() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::ClaudeCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_1",
+                "status": "completed",
+                "rawOutput": {"content": [{"type": "text", "text": "ok"}]},
+            }),
+        )
+        .await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(r#"{"content":[{"text":"ok","type":"text"}]}"#),
+            "non-pi agents keep the existing json_value_to_text behavior"
+        );
     }
 
     #[test]

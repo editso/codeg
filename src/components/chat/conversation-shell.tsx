@@ -20,6 +20,7 @@ import type {
 } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 import { ChatInput } from "@/components/chat/chat-input"
+import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
@@ -107,6 +108,11 @@ interface ConversationShellProps {
   /** Captures typing from the conversation surface before the browser applies
    *  its default key action (used to redirect it into the message composer). */
   onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>
+  /** Content pushed into the docked composer from outside it — currently a
+   *  quoted transcript selection. Cleared by the host via `onInjectConsumed`
+   *  once the composer has taken it. */
+  injectContent?: ComposerInjectContent | null
+  onInjectConsumed?: () => void
 }
 
 export function ConversationShell({
@@ -163,6 +169,8 @@ export function ConversationShell({
   onSteer,
   topBanner,
   onKeyDownCapture,
+  injectContent,
+  onInjectConsumed,
 }: ConversationShellProps) {
   return (
     <div
@@ -237,9 +245,7 @@ export function ConversationShell({
               agentType={agentType}
               conversationId={conversationId}
               draftConversationConfig={draftConversationConfig}
-              onDraftConversationConfigChange={
-                onDraftConversationConfigChange
-              }
+              onDraftConversationConfigChange={onDraftConversationConfigChange}
               availableCommands={availableCommands}
               attachmentTabId={attachmentTabId}
               draftStorageKey={draftStorageKey}
@@ -260,6 +266,8 @@ export function ConversationShell({
               onSteer={onSteer}
               onAddFeedback={onAddFeedback}
               feedbackAddDisabled={feedbackAddDisabled}
+              injectContent={injectContent}
+              onInjectConsumed={onInjectConsumed}
             />
           </div>
         )}
