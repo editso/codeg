@@ -91,25 +91,23 @@ export function ReferenceIcon({
 }
 
 /**
- * Per-kind text color (light + dark) — no background or border, so the badge
- * reads as a colored inline token that sits cleanly on the user-message bubble
- * (`bg-secondary`). `text-*` colors the label and, since the icon strokes with
- * `currentColor`, the icon too. Commands/skills/experts share one color (they
- * aren't distinguished). Light shades are `-700` so they clear WCAG AA contrast
- * on the near-white bubble; dark shades are `-400` for the near-black one.
+ * A reference is an inline object, not an in-prose hyperlink. Keep its label
+ * in the reading color and use a restrained accent on the glyph alone: the
+ * type is still scannable without a run of blue / violet / green text pulling
+ * focus away from the message itself.
  */
-function badgeColorClass(data: ReferenceAttrs): string {
+function badgeIconToneClass(data: ReferenceAttrs): string {
   switch (data.refType) {
     case "file":
-      return "text-blue-700 dark:text-blue-400"
+      return "text-sky-700/80 dark:text-sky-300/80"
     case "agent":
-      return "text-violet-700 dark:text-violet-400"
+      return "text-violet-700/80 dark:text-violet-300/80"
     case "session":
-      return "text-emerald-700 dark:text-emerald-400"
+      return "text-emerald-700/80 dark:text-emerald-300/80"
     case "commit":
-      return "text-amber-700 dark:text-amber-400"
+      return "text-amber-700/80 dark:text-amber-300/80"
     case "skill":
-      return "text-rose-700 dark:text-rose-400"
+      return "text-rose-700/80 dark:text-rose-300/80"
   }
 }
 
@@ -136,12 +134,13 @@ export function ReferenceBadge({ data, className }: ReferenceBadgeProps) {
       role="img"
       aria-label={`${data.refType}: ${data.label || data.id}`}
       className={cn(
-        "inline-flex max-w-[18rem] items-center gap-0.5 align-middle text-[0.85em] font-medium leading-snug",
-        badgeColorClass(data),
+        "inline-flex max-w-[18rem] items-center gap-1 rounded-md border border-border/55 bg-muted/45 px-1.5 py-0.5 align-middle text-[0.8em] font-medium leading-none text-foreground/80 transition-[background-color,border-color,color] duration-150 group-hover/file-reference:border-border/80 group-hover/file-reference:bg-muted/75 group-hover/file-reference:text-foreground group-focus-visible/file-reference:border-ring/60 group-focus-visible/file-reference:bg-muted/75",
         className
       )}
     >
-      <ReferenceIcon data={data} />
+      <span className={badgeIconToneClass(data)}>
+        <ReferenceIcon data={data} />
+      </span>
       <span className="truncate">{data.label || data.id}</span>
     </span>
   )

@@ -34,26 +34,28 @@ describe("ReferenceBadge", () => {
     expect(badge).not.toHaveClass("align-baseline")
   })
 
-  it("colors a file reference blue with no background or border", () => {
+  it("renders a file reference as a neutral compact chip", () => {
     const { container } = render(
       <ReferenceBadge data={ref({ refType: "file", label: "app.ts" })} />
     )
     const badge = badgeOf(container)
     expect(badge).toHaveAttribute("data-ref-type", "file")
-    // Text-only: a color, but no background / border (req 3).
-    expect(badge).toHaveClass("text-blue-700")
-    expect(badge.className).not.toMatch(/\bbg-/)
-    expect(badge.className).not.toMatch(/\bborder\b/)
+    // Reference objects read as compact entities, not browser-blue links.
+    expect(badge).toHaveClass("bg-muted/45")
+    expect(badge).toHaveClass("border")
+    expect(badge).toHaveClass("rounded-md")
+    expect(badge).toHaveClass("text-foreground/80")
+    expect(badge.firstElementChild).toHaveClass("text-sky-700/80")
     expect(container.querySelector(".lucide-file-text")).not.toBeNull()
   })
 
-  it("colors a session reference emerald with the conversation glyph", () => {
+  it("uses an emerald icon accent for a session reference", () => {
     const { container } = render(
       <ReferenceBadge data={ref({ refType: "session", label: "#42" })} />
     )
     const badge = badgeOf(container)
     expect(badge).toHaveAttribute("data-ref-type", "session")
-    expect(badge).toHaveClass("text-emerald-700")
+    expect(badge.firstElementChild).toHaveClass("text-emerald-700/80")
     // A session badge always shows the neutral conversation glyph (not the
     // owning agent's icon, not Hash) — see the `session` case in ReferenceIcon.
     expect(container.querySelector(".lucide-message-square")).not.toBeNull()
@@ -81,7 +83,7 @@ describe("ReferenceBadge", () => {
     expect(container.querySelector(".rounded-full")).toBeNull()
   })
 
-  it("renders a command/skill with the command glyph, colored rose", () => {
+  it("renders a command/skill with the command glyph and rose icon accent", () => {
     const { container } = render(
       <ReferenceBadge
         data={ref({
@@ -94,7 +96,7 @@ describe("ReferenceBadge", () => {
     )
     const badge = badgeOf(container)
     expect(badge).toHaveAttribute("data-ref-type", "skill")
-    expect(badge).toHaveClass("text-rose-700")
+    expect(badge.firstElementChild).toHaveClass("text-rose-700/80")
     expect(container.querySelector(".lucide-command")).not.toBeNull()
   })
 
@@ -111,8 +113,8 @@ describe("ReferenceBadge", () => {
     )
     const badge = badgeOf(container)
     expect(badge).toHaveAttribute("data-ref-type", "skill")
-    // Experts are no longer distinguished — same rose color, command glyph.
-    expect(badge).toHaveClass("text-rose-700")
+    // Experts are no longer distinguished — same rose accent and command glyph.
+    expect(badge.firstElementChild).toHaveClass("text-rose-700/80")
     expect(container.querySelector(".lucide-command")).not.toBeNull()
     expect(container.querySelector(".lucide-sparkles")).toBeNull()
   })

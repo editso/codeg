@@ -1685,17 +1685,80 @@
   will-change: auto !important;
 }
 
-/* Tool collapsible: fade-in on expand (height must change instantly for virtualizer) */
-.tool-collapsible-content[data-state="open"] > * {
-  animation: tool-content-fade 150ms ease-out;
+/*
+ * Chat disclosures use a vertical drawer treatment. The transcript itself is
+ * virtualized, so animating an unknown content height would continuously
+ * invalidate row measurements and make the scroll position jump. Instead the
+ * layout commits at once while the body is clipped and pulled out from just
+ * under its trigger. On close it travels back into that edge before the
+ * lightweight presence implementation unmounts it.
+ *
+ * `instant-collapsible` owns the body wrapper and adds this class to every
+ * message disclosure, giving reasoning, tool output, activity rows, and
+ * agent capsules one deliberate motion language rather than several unrelated
+ * fade/slide variants.
+ */
+.codeg-collapsible-drawer {
+  overflow: clip;
 }
 
-@keyframes tool-content-fade {
+.codeg-collapsible-drawer-body {
+  min-width: 0;
+  transform-origin: top;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .codeg-collapsible-drawer[data-state="open"] {
+    animation: codeg-drawer-presence 220ms linear;
+  }
+
+  .codeg-collapsible-drawer[data-state="open"]
+    > .codeg-collapsible-drawer-body {
+    animation: codeg-drawer-pull-out 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .codeg-collapsible-drawer[data-state="closed"] {
+    animation: codeg-drawer-presence 180ms linear;
+  }
+
+  .codeg-collapsible-drawer[data-state="closed"]
+    > .codeg-collapsible-drawer-body {
+    animation: codeg-drawer-push-in 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+}
+
+@keyframes codeg-drawer-presence {
   from {
-    opacity: 0;
+    opacity: 0.999;
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes codeg-drawer-pull-out {
+  from {
+    clip-path: inset(0 0 100% 0);
+    opacity: 0;
+    transform: translate3d(0, -0.625rem, 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes codeg-drawer-push-in {
+  from {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    clip-path: inset(0 0 100% 0);
+    opacity: 0;
+    transform: translate3d(0, -0.625rem, 0);
   }
 }
 

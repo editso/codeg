@@ -133,7 +133,11 @@ function exitTimeoutMs(styles: CSSStyleDeclaration): number {
   return longest + 100
 }
 
-function CollapsibleContent({ children, ...props }: ComponentProps<"div">) {
+function CollapsibleContent({
+  children,
+  className,
+  ...props
+}: ComponentProps<"div">) {
   const context = useInstantCollapsible("CollapsibleContent")
   const nodeRef = useRef<HTMLDivElement | null>(null)
   const [present, setPresent] = useState(context.open)
@@ -189,9 +193,14 @@ function CollapsibleContent({ children, ...props }: ComponentProps<"div">) {
       data-slot="collapsible-content"
       data-state={open ? "open" : "closed"}
       id={context.contentId}
+      className={
+        className
+          ? `codeg-collapsible-drawer ${className}`
+          : "codeg-collapsible-drawer"
+      }
       {...props}
     >
-      {children}
+      <div className="codeg-collapsible-drawer-body">{children}</div>
     </div>
   )
 }

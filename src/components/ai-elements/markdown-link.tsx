@@ -171,7 +171,7 @@ export function MarkdownLink({
             data-resource-kind="file"
             title={displayPath}
             onClick={handleClick}
-            className="inline-flex max-w-full -translate-y-[1.5px] cursor-pointer appearance-none items-center align-middle leading-none hover:opacity-80"
+            className="group/file-reference inline-flex max-w-full -translate-y-[1.5px] cursor-pointer appearance-none items-center rounded-md align-middle leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <ReferenceBadge data={fileData} />
           </button>
