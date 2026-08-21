@@ -793,9 +793,22 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
         className="relative z-10 flex max-w-full items-center gap-2 py-1"
       >
         <CollapsibleTrigger className="-ms-1.5 inline-flex min-h-6 shrink-0 items-center gap-2 rounded-md px-1.5 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-          <span className={cn("text-[13px] font-medium", toneClass)}>
-            {statusLabel}
-          </span>
+          {active ? (
+            <Shimmer
+              as="span"
+              duration={1.9}
+              spread={6}
+              shineColor="var(--foreground)"
+              bounce
+              className="text-[13px] font-medium"
+            >
+              {statusLabel}
+            </Shimmer>
+          ) : (
+            <span className={cn("text-[13px] font-medium", toneClass)}>
+              {statusLabel}
+            </span>
+          )}
           <ChevronRightIcon
             aria-hidden="true"
             className={cn(
@@ -805,14 +818,27 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
           />
         </CollapsibleTrigger>
         {summary ? (
-          <span
-            className={cn(
-              "min-w-0 truncate text-[13px] font-medium",
-              toneClass
-            )}
-          >
-            {summary}
-          </span>
+          active ? (
+            <Shimmer
+              as="span"
+              duration={1.9}
+              spread={3}
+              shineColor="var(--foreground)"
+              bounce
+              className="min-w-0 truncate text-[13px] font-medium"
+            >
+              {summary}
+            </Shimmer>
+          ) : (
+            <span
+              className={cn(
+                "min-w-0 truncate text-[13px] font-medium",
+                toneClass
+              )}
+            >
+              {summary}
+            </span>
+          )
         ) : null}
       </div>
       <CollapsibleContent drawer={!active} className="w-full outline-none">

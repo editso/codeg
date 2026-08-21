@@ -31,6 +31,8 @@ export interface TextShimmerProps {
   duration?: number
   spread?: number
   shineColor?: string
+  /** Sweep back across the text instead of jumping back to its start. */
+  bounce?: boolean
 }
 
 const ShimmerComponent = ({
@@ -40,6 +42,7 @@ const ShimmerComponent = ({
   duration = 2,
   spread = 2,
   shineColor,
+  bounce = false,
 }: TextShimmerProps) => {
   const MotionComponent = useMemo(
     () => getMotionComponent(Component as keyof JSX.IntrinsicElements),
@@ -56,7 +59,11 @@ const ShimmerComponent = ({
   return (
     // eslint-disable-next-line react-hooks/static-components -- component is cached at module level via motionComponentCache
     <MotionComponent
-      animate={{ backgroundPosition: "0% center" }}
+      animate={{
+        backgroundPosition: bounce
+          ? ["100% center", "0% center"]
+          : "0% center",
+      }}
       className={cn(
         "relative inline-block bg-[length:250%_100%,auto] bg-clip-text bg-no-repeat text-transparent",
         className
@@ -70,8 +77,9 @@ const ShimmerComponent = ({
       }
       transition={{
         duration,
-        ease: "linear",
+        ease: bounce ? "easeInOut" : "linear",
         repeat: Number.POSITIVE_INFINITY,
+        repeatType: bounce ? "reverse" : "loop",
       }}
     >
       {children}
