@@ -188,10 +188,10 @@ function ActiveFailureStrip({
         warning ? "text-amber-700 dark:text-amber-300" : "text-destructive"
       )}
     >
-      <div className="flex items-center gap-2">
-        <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+      <div className="flex items-start gap-2">
+        <Icon aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span
-          className="min-w-0 flex-1 truncate font-medium"
+          className="min-w-0 flex-1 whitespace-normal wrap-anywhere font-medium leading-5"
           title={details ?? title}
         >
           {title}

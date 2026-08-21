@@ -81,6 +81,7 @@ import {
 } from "@/components/chat/conversation-context-bar"
 import { ComposerContextUsage } from "@/components/chat/composer-context-usage"
 import { ComposerConnectionStatus } from "@/components/chat/composer-connection-status"
+import { ConversationConfigPopover } from "@/components/chat/conversation-config-popover"
 import { InlineModeSelector } from "@/components/chat/mode-selector"
 import {
   InlineSessionConfigSelector,
@@ -335,16 +336,14 @@ export function MessageInput({
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
   const tAttach = useTranslations("Folder.chat.messageInput")
-  // The `$` prefix autocomplete is Codex-only: Codex advertises very few
-  // native slash commands, so we augment the dropdown with the agent's
-  // skills read from disk. Other agents already surface their full command
-  // set through ACP `availableCommands`, so injecting skills there would
-  // be duplicate/extra UI noise — skip the skills fetch for them entirely.
-  const skillAgentType = agentType === "codex" ? "codex" : null
-  // Pass the working dir so we see both global skills and folder-scoped
-  // project skills (e.g. `{folder}/.codex/skills`). Without this, users
-  // only ever saw global skills in the `$` autocomplete.
-  const availableSkills = useAgentSkills(skillAgentType, defaultPath ?? null)
+  // The compact session-config panel reads the existing agent skill registry so
+  // it can preview a real selection. Codex is still the ONLY agent whose skill
+  // list feeds `$` autocomplete below; fetching the broader list changes no
+  // invocation behaviour for the other agents.
+  //
+  // Pass the working dir so the panel sees both global skills and folder-scoped
+  // project skills (e.g. `{folder}/.codex/skills`).
+  const availableSkills = useAgentSkills(agentType ?? null, defaultPath ?? null)
   const skillPrefix = agentType === "codex" ? "$" : "/"
   const { shortcuts } = useShortcutSettings()
   const effectiveDraftStorageKey = draftStorageKey ?? null
@@ -1885,9 +1884,21 @@ export function MessageInput({
                     <ConversationFolderBranchPicker tabId={attachmentTabId} />
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pr-1">
+                    <ConversationConfigPopover
+                      agentType={agentType}
+                      skills={availableSkills}
+                    />
                     <ComposerContextUsage tabId={attachmentTabId ?? null} />
                     <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
                   </div>
+                </div>
+              )}
+              {!hasFolderBranchPicker && (
+                <div className="flex shrink-0 justify-end px-4 pt-2.5 -mb-1">
+                  <ConversationConfigPopover
+                    agentType={agentType}
+                    skills={availableSkills}
+                  />
                 </div>
               )}
               <ConversationContextBar
