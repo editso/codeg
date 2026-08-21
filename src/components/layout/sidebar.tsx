@@ -265,6 +265,10 @@ export function Sidebar() {
     DEFAULT_SECTION_ORDER
   )
   const [allExpanded, setAllExpanded] = useState(true)
+  const searchShortcutLabel = formatShortcutLabel(
+    shortcuts.toggle_search,
+    isMac
+  )
   const newConversationShortcutLabel = formatShortcutLabel(
     shortcuts.new_conversation,
     isMac
@@ -628,6 +632,16 @@ export function Sidebar() {
               <kbd className={SHORTCUT_BADGE_CLASS}>
                 {newConversationShortcutLabel}
               </kbd>
+            ) : null
+          }
+        />
+        <SidebarNavButton
+          icon={Search}
+          label={t("search")}
+          onClick={() => setSearchOpen(true)}
+          trailing={
+            searchShortcutLabel ? (
+              <kbd className={SHORTCUT_BADGE_CLASS}>{searchShortcutLabel}</kbd>
             ) : null
           }
         />
