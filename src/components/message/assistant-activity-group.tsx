@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import { Virtualizer } from "virtua"
+import { useStickToBottomContext } from "use-stick-to-bottom"
 import {
   ChevronRightIcon,
   CodeIcon,
@@ -362,9 +363,7 @@ function ActivityDetailRow({
   const active = isStreaming(item)
   const failed = hasError(item)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const rowRef = useRef<HTMLDivElement>(null)
-  const detailRef = useRef<HTMLDivElement>(null)
-  const revealFrameRef = useRef<number | null>(null)
+  const { stopScroll } = useStickToBottomContext()
   const {
     subject,
     context,
@@ -379,75 +378,19 @@ function ActivityDetailRow({
       ? "text-foreground/70"
       : "text-muted-foreground/75"
 
-  const revealExpandedDetail = useCallback(() => {
-    const row = rowRef.current
-    const detail = detailRef.current
-    const activityScroller = detail?.closest<HTMLElement>(
-      "[data-codeg-scrollbar]"
-    )
-    if (!row || !detail || !activityScroller) return
-
-    const revealDetailStart = (scroller: HTMLElement, inset: number) => {
-      const scrollerRect = scroller.getBoundingClientRect()
-      const detailRect = detail.getBoundingClientRect()
-      const rowRect = row.getBoundingClientRect()
-      const visibleBottom = scrollerRect.bottom - inset
-      const minimumVisibleDetail = Math.min(48, detailRect.height)
-
-      // A detail block may be taller than either nested viewport. Only bring
-      // its beginning into view, and never scroll farther than the distance
-      // that keeps the clicked row above the viewport's top inset.
-      if (detailRect.top + minimumVisibleDetail <= visibleBottom) return
-      const needed = detailRect.top + minimumVisibleDetail - visibleBottom
-      const available = Math.max(0, rowRect.top - scrollerRect.top - inset)
-      const amount = Math.min(needed, available)
-      if (amount > 1) scroller.scrollTop += amount
-    }
-
-    revealDetailStart(activityScroller, 8)
-
-    const transcriptScroller =
-      activityScroller.parentElement?.closest<HTMLElement>(
-        "[data-codeg-scrollbar]"
-      )
-    if (transcriptScroller) revealDetailStart(transcriptScroller, 16)
-  }, [])
-
   const handleDetailsOpenChange = useCallback(
     (nextOpen: boolean) => {
+      // A manual disclosure is reader navigation, not new assistant output.
+      // Stop the transcript's stick-to-bottom ResizeObserver before the body
+      // changes size so the clicked row stays at its current screen position.
+      stopScroll()
       setDetailsOpen(nextOpen)
-      if (!nextOpen) return
-
-      if (revealFrameRef.current !== null) {
-        cancelAnimationFrame(revealFrameRef.current)
-      }
-
-      let passes = 0
-      const revealAfterLayout = () => {
-        revealExpandedDetail()
-        passes += 1
-        if (passes < 2) {
-          revealFrameRef.current = requestAnimationFrame(revealAfterLayout)
-        } else {
-          revealFrameRef.current = null
-        }
-      }
-      revealFrameRef.current = requestAnimationFrame(revealAfterLayout)
     },
-    [revealExpandedDetail]
-  )
-
-  useEffect(
-    () => () => {
-      if (revealFrameRef.current !== null) {
-        cancelAnimationFrame(revealFrameRef.current)
-      }
-    },
-    []
+    [stopScroll]
   )
 
   return (
-    <div ref={rowRef}>
+    <div>
       <Collapsible
         open={detailsOpen}
         onOpenChange={handleDetailsOpenChange}
@@ -509,9 +452,7 @@ function ActivityDetailRow({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="ms-7 mt-1 min-w-0 border-s border-border/45 ps-3">
-          <div ref={detailRef} className="pb-2 pt-1">
-            {renderItem(item)}
-          </div>
+          <div className="pb-2 pt-1">{renderItem(item)}</div>
         </CollapsibleContent>
       </Collapsible>
     </div>
@@ -669,6 +610,7 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
 }: AssistantActivityGroupProps) {
   const t = useTranslations("Folder.chat.contentParts.toolGroup")
   const statusT = useTranslations("Folder.chat.tool.status")
+  const { stopScroll } = useStickToBottomContext()
   // The parent assistant turn is the stable lifecycle boundary. Individual
   // tool-call states can briefly settle while another part is still streaming;
   // deriving disclosure state from the last item makes the whole group flap.
@@ -677,10 +619,16 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   const previousActiveRef = useRef(active)
   const userSetOpenRef = useRef(false)
 
-  const handleOpenChange = useCallback((nextOpen: boolean) => {
-    userSetOpenRef.current = true
-    setOpen(nextOpen)
-  }, [])
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      // Expanding/collapsing this activity run is an explicit reader action;
+      // it must not be treated as an incoming message that pins the transcript.
+      stopScroll()
+      userSetOpenRef.current = true
+      setOpen(nextOpen)
+    },
+    [stopScroll]
+  )
 
   // Live activity stays visible while it progresses, then returns to a compact
   // historical summary after the terminal stream update. A failed tool is a
