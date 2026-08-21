@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[cfg(feature = "tauri-runtime")]
 use tauri::Manager;
@@ -6,7 +6,10 @@ use tauri::Manager;
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
-use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
+use crate::db::service::{
+    conversation_config_service, conversation_service, folder_service, import_service,
+    model_provider_service, tab_service,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
@@ -30,9 +33,10 @@ use crate::parsers::{
     ParseError,
 };
 use crate::web::event_bridge::{
-    emit_event, ConversationChange, ConversationsBulkChanged, EventEmitter, ImportScanProgress,
-    TabsChanged, CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT,
-    IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
+    emit_event, ConversationChange, ConversationConfigChanged, ConversationsBulkChanged,
+    EventEmitter, ImportScanProgress, TabsChanged, CONVERSATION_CONFIG_CHANGED_EVENT,
+    CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT, IMPORT_SCAN_PROGRESS_EVENT,
+    TABS_CHANGED_EVENT,
 };
 
 #[derive(Default)]
@@ -177,6 +181,292 @@ pub async fn list_opened_tabs(
     db: tauri::State<'_, AppDatabase>,
 ) -> Result<OpenedTabsSnapshot, AppCommandError> {
     list_opened_tabs_core(&db.conn).await
+}
+
+fn conversation_config_info_from_row(
+    row: crate::db::entities::conversation_config::Model,
+) -> Result<ConversationConfigInfo, AppCommandError> {
+    let additional_mcp_refs = serde_json::from_str(&row.additional_mcp_refs_json).map_err(|error| {
+        AppCommandError::configuration_invalid(format!(
+            "conversation config for {} has invalid MCP references",
+            row.conversation_id
+        ))
+        .with_detail(error.to_string())
+    })?;
+    let session_config_values = serde_json::from_str(&row.session_config_values_json).map_err(|error| {
+        AppCommandError::configuration_invalid(format!(
+            "conversation config for {} has invalid session selector values",
+            row.conversation_id
+        ))
+        .with_detail(error.to_string())
+    })?;
+    Ok(ConversationConfigInfo {
+        conversation_id: row.conversation_id,
+        model_provider_id: row.model_provider_id,
+        additional_mcp_refs,
+        session_config_values,
+        version: row.version,
+        updated_at: row.updated_at,
+    })
+}
+
+async fn conversation_config_view_for(
+    conn: &sea_orm::DatabaseConnection,
+    conversation: &DbConversationSummary,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let config = conversation_config_info_for(conn, conversation).await?;
+    let mcp_catalog = crate::commands::mcp::conversation_mcp_catalog(conversation.agent_type)?;
+    Ok(ConversationConfigView {
+        config,
+        mcp_catalog,
+    })
+}
+
+async fn conversation_config_info_for(
+    conn: &sea_orm::DatabaseConnection,
+    conversation: &DbConversationSummary,
+) -> Result<ConversationConfigInfo, AppCommandError> {
+    Ok(match conversation_config_service::get(conn, conversation.id)
+        .await
+        .map_err(AppCommandError::from)?
+    {
+        Some(row) => conversation_config_info_from_row(row)?,
+        None => ConversationConfigInfo {
+            conversation_id: conversation.id,
+            model_provider_id: None,
+            additional_mcp_refs: Vec::new(),
+            session_config_values: BTreeMap::new(),
+            version: 0,
+            updated_at: conversation.updated_at,
+        },
+    })
+}
+
+/// Read the explicit, persisted launch overrides for a conversation. The
+/// conversation's agent is authoritative: a caller cannot apply one
+/// conversation's credentials or MCP selection to a different agent process.
+pub(crate) async fn get_conversation_config_for_agent_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    agent_type: AgentType,
+) -> Result<ConversationConfigInfo, AppCommandError> {
+    let conversation = conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    if conversation.agent_type != agent_type {
+        return Err(AppCommandError::invalid_input(format!(
+            "conversation {conversation_id} belongs to {}, not {agent_type}",
+            conversation.agent_type
+        )));
+    }
+    conversation_config_info_for(conn, &conversation).await
+}
+
+pub async fn get_conversation_config_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let conversation = conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    conversation_config_view_for(conn, &conversation).await
+}
+
+/// Return the same MCP catalog used by a persisted conversation without
+/// requiring a database row. New-conversation tabs use this while their
+/// Provider/MCP choices are still draft-local.
+pub fn get_draft_conversation_mcp_catalog_core(
+    agent_type: AgentType,
+) -> Result<ConversationMcpCatalog, AppCommandError> {
+    crate::commands::mcp::conversation_mcp_catalog(agent_type)
+}
+
+fn validate_provider_for_conversation(
+    provider: &crate::db::entities::model_provider::Model,
+    conversation: &DbConversationSummary,
+) -> Result<(), AppCommandError> {
+    let expected_agent_type = conversation.agent_type.as_wire();
+    if provider.agent_type != expected_agent_type.as_ref() {
+        return Err(AppCommandError::invalid_input(format!(
+            "model provider {} is for {}, but conversation {} uses {}",
+            provider.id, provider.agent_type, conversation.id, expected_agent_type
+        )));
+    }
+    Ok(())
+}
+
+/// Save the complete conversation-level launch configuration with optimistic
+/// concurrency. Provider and MCP references are validated before the write so
+/// a saved configuration can never silently fall back to a different runtime.
+pub async fn update_conversation_config_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    update: ConversationConfigUpdate,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let conversation = conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    if let Some(provider_id) = update.model_provider_id {
+        let provider = model_provider_service::get_by_id(conn, provider_id)
+            .await
+            .map_err(AppCommandError::from)?
+            .ok_or_else(|| {
+                AppCommandError::not_found(format!("model provider {provider_id} was not found"))
+            })?;
+        validate_provider_for_conversation(&provider, &conversation)?;
+    }
+
+    // This resolves both catalog identity and duplicate-name conflicts. It is
+    // intentionally not a best-effort probe: an unavailable MCP must be fixed
+    // by the user, not saved and ignored at the next launch.
+    crate::commands::mcp::resolve_conversation_mcp_refs(
+        conversation.agent_type,
+        &update.additional_mcp_refs,
+    )?;
+
+    let additional_mcp_refs_json = serde_json::to_string(&update.additional_mcp_refs).map_err(
+        |error| {
+            AppCommandError::configuration_invalid("failed to serialize conversation MCP references")
+                .with_detail(error.to_string())
+        },
+    )?;
+    let session_config_values_json = serde_json::to_string(&update.session_config_values).map_err(
+        |error| {
+            AppCommandError::configuration_invalid(
+                "failed to serialize conversation session selector values",
+            )
+            .with_detail(error.to_string())
+        },
+    )?;
+    let row = conversation_config_service::save(
+        conn,
+        conversation_id,
+        update.model_provider_id,
+        additional_mcp_refs_json,
+        session_config_values_json,
+        update.expected_version,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+    let config = conversation_config_info_from_row(row)?;
+    let mcp_catalog = crate::commands::mcp::conversation_mcp_catalog(conversation.agent_type)?;
+    Ok(ConversationConfigView {
+        config,
+        mcp_catalog,
+    })
+}
+
+/// Persist one value accepted by the conversation's live ACP selector surface.
+/// These values take precedence over global selector preferences when this
+/// conversation next starts, which keeps model and thinking selections attached
+/// to the conversation rather than to every session of the same agent.
+pub async fn update_conversation_session_config_value_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    config_id: String,
+    value_id: String,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let config_id = config_id.trim();
+    let value_id = value_id.trim();
+    if config_id.is_empty() || config_id.len() > 256 {
+        return Err(AppCommandError::invalid_input(
+            "conversation session config id must be between 1 and 256 characters",
+        ));
+    }
+    if value_id.is_empty() || value_id.len() > 16_384 {
+        return Err(AppCommandError::invalid_input(
+            "conversation session config value must be between 1 and 16384 characters",
+        ));
+    }
+
+    let current = get_conversation_config_core(conn, conversation_id).await?;
+    let mut session_config_values = current.config.session_config_values;
+    session_config_values.insert(config_id.to_string(), value_id.to_string());
+    update_conversation_config_core(
+        conn,
+        conversation_id,
+        ConversationConfigUpdate {
+            model_provider_id: current.config.model_provider_id,
+            additional_mcp_refs: current.config.additional_mcp_refs,
+            session_config_values,
+            expected_version: current.config.version,
+        },
+    )
+    .await
+}
+
+pub(crate) fn emit_conversation_config_changed(
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    version: i32,
+) {
+    emit_event(
+        emitter,
+        CONVERSATION_CONFIG_CHANGED_EVENT,
+        ConversationConfigChanged {
+            conversation_id,
+            version,
+        },
+    );
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_conversation_config(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+) -> Result<ConversationConfigView, AppCommandError> {
+    get_conversation_config_core(&db.conn, conversation_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub fn get_draft_conversation_mcp_catalog(
+    agent_type: AgentType,
+) -> Result<ConversationMcpCatalog, AppCommandError> {
+    get_draft_conversation_mcp_catalog_core(agent_type)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_conversation_config(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    update: ConversationConfigUpdate,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let view = update_conversation_config_core(&db.conn, conversation_id, update).await?;
+    emit_conversation_config_changed(
+        &EventEmitter::Tauri(app),
+        conversation_id,
+        view.config.version,
+    );
+    Ok(view)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_conversation_session_config_value(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    config_id: String,
+    value_id: String,
+) -> Result<ConversationConfigView, AppCommandError> {
+    let view = update_conversation_session_config_value_core(
+        &db.conn,
+        conversation_id,
+        config_id,
+        value_id,
+    )
+    .await?;
+    emit_conversation_config_changed(
+        &EventEmitter::Tauri(app),
+        conversation_id,
+        view.config.version,
+    );
+    Ok(view)
 }
 
 /// Persist the open-tab set with compare-and-set on the workspace tab version,

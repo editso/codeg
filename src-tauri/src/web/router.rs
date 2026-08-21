@@ -118,6 +118,22 @@ pub fn build_router(
             post(handlers::conversations::save_opened_tabs),
         )
         .route(
+            "/get_conversation_config",
+            post(handlers::conversations::get_conversation_config),
+        )
+        .route(
+            "/get_draft_conversation_mcp_catalog",
+            post(handlers::conversations::get_draft_conversation_mcp_catalog),
+        )
+        .route(
+            "/update_conversation_config",
+            post(handlers::conversations::update_conversation_config),
+        )
+        .route(
+            "/update_conversation_session_config_value",
+            post(handlers::conversations::update_conversation_session_config_value),
+        )
+        .route(
             "/import_local_conversations",
             post(handlers::conversations::import_local_conversations),
         )

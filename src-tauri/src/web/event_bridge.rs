@@ -149,6 +149,18 @@ impl EventEmitter {
 /// Global side-channel for cross-client conversation list/status sync.
 pub const CONVERSATION_CHANGED_EVENT: &str = "conversation://changed";
 
+/// A persisted conversation-level launch configuration changed. Kept separate
+/// from [`CONVERSATION_CHANGED_EVENT`] because this is not sidebar data, and
+/// carrying an explicit version lets concurrent composer popovers converge
+/// without guessing which local selection is newest.
+pub const CONVERSATION_CONFIG_CHANGED_EVENT: &str = "conversation-config://changed";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationConfigChanged {
+    pub conversation_id: i32,
+    pub version: i32,
+}
+
 /// Global side-channel announcing a live-feedback enable/disable. The settings
 /// UI runs in a SEPARATE window (`openSettingsWindow`), so the conversation
 /// feedback bar can't learn about a save through any frontend-only cache — it

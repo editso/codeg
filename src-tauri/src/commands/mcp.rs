@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::app_error::AppCommandError;
+use crate::models::{
+    AgentType, ConversationMcpCandidate, ConversationMcpCatalog, ConversationMcpRef,
+};
 
 const MARKETPLACE_OFFICIAL: &str = "official_registry";
 const MARKETPLACE_SMITHERY: &str = "smithery";
@@ -76,6 +79,22 @@ pub struct LocalMcpServer {
     pub id: String,
     pub spec: Value,
     pub apps: Vec<McpAppType>,
+}
+
+fn mcp_app_wire(app: McpAppType) -> String {
+    serde_json::to_value(app)
+        .expect("McpAppType must serialize")
+        .as_str()
+        .expect("McpAppType must serialize as a string")
+        .to_string()
+}
+
+/// Whether this agent can receive user-selected MCP additions through ACP. The
+/// `supports_mcp` flag rejects agents such as OpenClaw that fail session creation
+/// when server entries are present; pi accepts the field but drops every server.
+pub(crate) fn supports_session_mcp_additions(agent_type: AgentType) -> bool {
+    crate::acp::registry::get_agent_meta(agent_type).supports_mcp
+        && !matches!(agent_type, AgentType::Pi)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2627,6 +2646,145 @@ fn remove_qoder_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError
         write_json_file(path, &root)?;
     }
     Ok(removed)
+}
+
+type SessionMcpEntries = BTreeMap<(String, String), (Value, BTreeSet<McpAppType>)>;
+
+fn session_mcp_fingerprint(spec: &Value) -> Result<String, AppCommandError> {
+    use sha2::{Digest, Sha256};
+
+    let encoded = serde_json::to_vec(spec).map_err(|err| {
+        mcp_configuration_invalid(format!("failed to encode canonical MCP spec: {err}"))
+    })?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn add_session_mcp_entries(
+    merged: &mut SessionMcpEntries,
+    app: McpAppType,
+    entries: BTreeMap<String, Value>,
+) -> Result<(), AppCommandError> {
+    for (id, spec) in entries {
+        let spec = canonicalize_spec(&spec, "local MCP configuration")?;
+        let fingerprint = session_mcp_fingerprint(&spec)?;
+        let entry = merged
+            .entry((id, fingerprint))
+            .or_insert_with(|| (spec, BTreeSet::new()));
+        entry.1.insert(app);
+    }
+    Ok(())
+}
+
+fn scan_session_mcp_entries() -> Result<SessionMcpEntries, AppCommandError> {
+    let mut merged = BTreeMap::new();
+    add_session_mcp_entries(&mut merged, McpAppType::ClaudeCode, read_claude_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Codex, read_codex_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::OpenCode, read_opencode_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Gemini, read_gemini_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::OpenClaw, read_openclaw_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Cline, read_cline_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Hermes, read_hermes_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::CodeBuddy, read_codebuddy_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::KimiCode, read_kimi_code_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Grok, read_grok_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Cursor, read_cursor_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::DeepSeek, read_deepseek_servers()?)?;
+    add_session_mcp_entries(&mut merged, McpAppType::Qoder, read_qoder_servers()?)?;
+    Ok(merged)
+}
+
+fn native_session_mcp_refs(
+    agent_type: AgentType,
+) -> Result<BTreeMap<String, ConversationMcpRef>, AppCommandError> {
+    let mut refs = BTreeMap::new();
+    for (id, spec) in read_servers_for_agent_type(agent_type)? {
+        let spec = canonicalize_spec(&spec, "agent MCP configuration")?;
+        let fingerprint = session_mcp_fingerprint(&spec)?;
+        refs.insert(id.clone(), ConversationMcpRef { id, fingerprint });
+    }
+    Ok(refs)
+}
+
+/// Merge every existing local MCP source into a safe, session-selectable
+/// catalog. Exact `{id, canonical spec}` duplicates are one candidate with many
+/// source apps; same-name variants stay distinct so a user can never select a
+/// silently substituted MCP configuration.
+pub(crate) fn conversation_mcp_catalog(
+    agent_type: AgentType,
+) -> Result<ConversationMcpCatalog, AppCommandError> {
+    let native_by_name = native_session_mcp_refs(agent_type)?;
+    let candidates = scan_session_mcp_entries()?
+        .into_iter()
+        .map(|((id, fingerprint), (_, apps))| {
+            let native = native_by_name
+                .get(&id)
+                .is_some_and(|reference| reference.fingerprint == fingerprint);
+            ConversationMcpCandidate {
+                appendable: !native && !native_by_name.contains_key(&id),
+                id,
+                fingerprint,
+                source_apps: apps.into_iter().map(mcp_app_wire).collect(),
+                native,
+            }
+        })
+        .collect();
+    Ok(ConversationMcpCatalog {
+        candidates,
+        supports_session_additions: supports_session_mcp_additions(agent_type),
+    })
+}
+
+/// Resolve persisted conversation MCP references against the current unified
+/// catalog. Missing or changed entries are explicit configuration errors; an
+/// entry that has since become native is intentionally omitted so it is never
+/// registered twice.
+pub(crate) fn resolve_conversation_mcp_refs(
+    agent_type: AgentType,
+    refs: &[ConversationMcpRef],
+) -> Result<Vec<(String, Value)>, AppCommandError> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !supports_session_mcp_additions(agent_type) {
+        return Err(mcp_invalid_input(format!(
+            "{agent_type} does not support session MCP additions"
+        )));
+    }
+
+    let native_by_name = native_session_mcp_refs(agent_type)?;
+    let candidates = scan_session_mcp_entries()?;
+    let mut selected_names = BTreeSet::new();
+    let mut resolved = Vec::with_capacity(refs.len());
+    for reference in refs {
+        if !selected_names.insert(reference.id.clone()) {
+            return Err(mcp_invalid_input(format!(
+                "session MCP selection repeats server '{}'",
+                reference.id
+            )));
+        }
+        if native_by_name
+            .get(&reference.id)
+            .is_some_and(|native| native.fingerprint == reference.fingerprint)
+        {
+            continue;
+        }
+        if native_by_name.contains_key(&reference.id) {
+            return Err(mcp_invalid_input(format!(
+                "session MCP '{}' conflicts with an agent-native server of the same name",
+                reference.id
+            )));
+        }
+        let (_, spec) = candidates
+            .get_key_value(&(reference.id.clone(), reference.fingerprint.clone()))
+            .ok_or_else(|| {
+                mcp_not_found(format!(
+                    "session MCP '{}' is missing or its configuration changed",
+                    reference.id
+                ))
+            })?;
+        resolved.push((reference.id.clone(), spec.0.clone()));
+    }
+    Ok(resolved)
 }
 
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {

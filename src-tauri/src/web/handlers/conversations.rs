@@ -91,6 +91,87 @@ pub async fn save_opened_tabs(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationConfigParams {
+    pub conversation_id: i32,
+}
+
+pub async fn get_conversation_config(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ConversationConfigParams>,
+) -> Result<Json<ConversationConfigView>, AppCommandError> {
+    Ok(Json(
+        conv_commands::get_conversation_config_core(&state.db.conn, params.conversation_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftConversationMcpCatalogParams {
+    pub agent_type: AgentType,
+}
+
+pub async fn get_draft_conversation_mcp_catalog(
+    Json(params): Json<DraftConversationMcpCatalogParams>,
+) -> Result<Json<ConversationMcpCatalog>, AppCommandError> {
+    Ok(Json(
+        conv_commands::get_draft_conversation_mcp_catalog_core(params.agent_type)?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConversationConfigParams {
+    pub conversation_id: i32,
+    pub update: ConversationConfigUpdate,
+}
+
+pub async fn update_conversation_config(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateConversationConfigParams>,
+) -> Result<Json<ConversationConfigView>, AppCommandError> {
+    let view = conv_commands::update_conversation_config_core(
+        &state.db.conn,
+        params.conversation_id,
+        params.update,
+    )
+    .await?;
+    conv_commands::emit_conversation_config_changed(
+        &state.emitter,
+        view.config.conversation_id,
+        view.config.version,
+    );
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConversationSessionConfigValueParams {
+    pub conversation_id: i32,
+    pub config_id: String,
+    pub value_id: String,
+}
+
+pub async fn update_conversation_session_config_value(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateConversationSessionConfigValueParams>,
+) -> Result<Json<ConversationConfigView>, AppCommandError> {
+    let view = conv_commands::update_conversation_session_config_value_core(
+        &state.db.conn,
+        params.conversation_id,
+        params.config_id,
+        params.value_id,
+    )
+    .await?;
+    conv_commands::emit_conversation_config_changed(
+        &state.emitter,
+        view.config.conversation_id,
+        view.config.version,
+    );
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListConversationsParams {
     pub agent_type: Option<AgentType>,
     pub search: Option<String>,
