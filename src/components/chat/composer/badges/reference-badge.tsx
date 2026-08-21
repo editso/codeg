@@ -92,14 +92,15 @@ export function ReferenceIcon({
 
 /**
  * A reference is an inline object, not an in-prose hyperlink. Keep its label
- * in the reading color and use a restrained accent on the glyph alone: the
- * type is still scannable without a run of blue / violet / green text pulling
- * focus away from the message itself.
+ * in the reading color. Files deliberately keep their glyph neutral as well:
+ * the inline chip already establishes the resource type, and a saturated blue
+ * document icon reads like an unrelated browser link on the light transcript.
+ * The remaining reference kinds retain a restrained glyph accent for scanning.
  */
 function badgeIconToneClass(data: ReferenceAttrs): string {
   switch (data.refType) {
     case "file":
-      return "text-sky-700/80 dark:text-sky-300/80"
+      return "text-muted-foreground/70"
     case "agent":
       return "text-violet-700/80 dark:text-violet-300/80"
     case "session":

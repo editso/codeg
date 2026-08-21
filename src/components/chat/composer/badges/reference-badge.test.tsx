@@ -45,7 +45,7 @@ describe("ReferenceBadge", () => {
     expect(badge).toHaveClass("border")
     expect(badge).toHaveClass("rounded-md")
     expect(badge).toHaveClass("text-foreground/80")
-    expect(badge.firstElementChild).toHaveClass("text-sky-700/80")
+    expect(badge.firstElementChild).toHaveClass("text-muted-foreground/70")
     expect(container.querySelector(".lucide-file-text")).not.toBeNull()
   })
 

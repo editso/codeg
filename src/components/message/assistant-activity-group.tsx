@@ -109,6 +109,104 @@ const ACTIVITY_ESTIMATED_ROW_HEIGHT = 32
 const ACTIVITY_BUFFER_SIZE = 720
 const ACTIVITY_FOLLOW_THRESHOLD_PX = 28
 const ACTIVITY_SCROLL_REPIN_FRAMES = 2
+const DISCLOSURE_SCROLL_LOCK_MS = 260
+
+type ScrollPosition = {
+  scroller: HTMLElement
+  top: number
+}
+
+function disclosureScrollers(
+  anchor: HTMLElement | null,
+  transcriptScroller: HTMLElement | null
+): HTMLElement[] {
+  const scrollers: HTMLElement[] = []
+  const add = (candidate: HTMLElement | null) => {
+    if (candidate && !scrollers.includes(candidate)) scrollers.push(candidate)
+  }
+
+  // The activity list can scroll independently from the transcript. Preserve
+  // both, from the innermost list outward, so a collapsed detail never turns
+  // the reader's current position into a new scroll target.
+  let current = anchor?.parentElement ?? null
+  while (current) {
+    if (current.dataset.codegScrollbar === "true") add(current)
+    if (current === transcriptScroller) break
+    current = current.parentElement
+  }
+  add(transcriptScroller)
+
+  return scrollers
+}
+
+/**
+ * A disclosure changes content height, which normally makes a tail-following
+ * chat scroller or a shrinking inner list reinterpret the reader's position.
+ * Snapshot at the click itself (rather than at first expansion), then retain
+ * that exact offset for the short drawer animation.
+ */
+function usePreserveDisclosureScrollPosition(anchorRef: {
+  current: HTMLElement | null
+}) {
+  const { scrollRef, stopScroll } = useStickToBottomContext()
+  const frameRef = useRef<number | null>(null)
+  const cancelRef = useRef<(() => void) | null>(null)
+
+  const preserveDisclosureScrollPosition = useCallback(() => {
+    cancelRef.current?.()
+    stopScroll()
+
+    const positions: ScrollPosition[] = disclosureScrollers(
+      anchorRef.current,
+      scrollRef.current
+    ).map((scroller) => ({ scroller, top: scroller.scrollTop }))
+    if (positions.length === 0) return
+
+    const stop = () => {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      for (const { scroller } of positions) {
+        scroller.removeEventListener("wheel", stop)
+        scroller.removeEventListener("pointerdown", stop)
+        scroller.removeEventListener("touchstart", stop)
+      }
+      window.removeEventListener("keydown", stop)
+      cancelRef.current = null
+    }
+
+    const until = performance.now() + DISCLOSURE_SCROLL_LOCK_MS
+    const restore = () => {
+      for (const { scroller, top } of positions) {
+        if (Math.abs(scroller.scrollTop - top) > 0.5) scroller.scrollTop = top
+      }
+      if (performance.now() < until) {
+        frameRef.current = requestAnimationFrame(restore)
+      } else {
+        stop()
+      }
+    }
+
+    for (const { scroller } of positions) {
+      scroller.addEventListener("wheel", stop, { passive: true })
+      scroller.addEventListener("pointerdown", stop, { passive: true })
+      scroller.addEventListener("touchstart", stop, { passive: true })
+    }
+    window.addEventListener("keydown", stop)
+    cancelRef.current = stop
+    frameRef.current = requestAnimationFrame(restore)
+  }, [anchorRef, scrollRef, stopScroll])
+
+  useEffect(
+    () => () => {
+      cancelRef.current?.()
+    },
+    []
+  )
+
+  return preserveDisclosureScrollPosition
+}
 
 function isStreaming(item: AssistantActivityItem): boolean {
   if (item.type === "message") return false
@@ -363,7 +461,9 @@ function ActivityDetailRow({
   const active = isStreaming(item)
   const failed = hasError(item)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const { stopScroll } = useStickToBottomContext()
+  const rowRef = useRef<HTMLDivElement>(null)
+  const preserveDisclosureScrollPosition =
+    usePreserveDisclosureScrollPosition(rowRef)
   const {
     subject,
     context,
@@ -380,17 +480,14 @@ function ActivityDetailRow({
 
   const handleDetailsOpenChange = useCallback(
     (nextOpen: boolean) => {
-      // A manual disclosure is reader navigation, not new assistant output.
-      // Stop the transcript's stick-to-bottom ResizeObserver before the body
-      // changes size so the clicked row stays at its current screen position.
-      stopScroll()
+      preserveDisclosureScrollPosition()
       setDetailsOpen(nextOpen)
     },
-    [stopScroll]
+    [preserveDisclosureScrollPosition]
   )
 
   return (
-    <div>
+    <div ref={rowRef}>
       <Collapsible
         open={detailsOpen}
         onOpenChange={handleDetailsOpenChange}
@@ -610,7 +707,9 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
 }: AssistantActivityGroupProps) {
   const t = useTranslations("Folder.chat.contentParts.toolGroup")
   const statusT = useTranslations("Folder.chat.tool.status")
-  const { stopScroll } = useStickToBottomContext()
+  const groupRef = useRef<HTMLDivElement>(null)
+  const preserveDisclosureScrollPosition =
+    usePreserveDisclosureScrollPosition(groupRef)
   // The parent assistant turn is the stable lifecycle boundary. Individual
   // tool-call states can briefly settle while another part is still streaming;
   // deriving disclosure state from the last item makes the whole group flap.
@@ -621,13 +720,11 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      // Expanding/collapsing this activity run is an explicit reader action;
-      // it must not be treated as an incoming message that pins the transcript.
-      stopScroll()
+      preserveDisclosureScrollPosition()
       userSetOpenRef.current = true
       setOpen(nextOpen)
     },
-    [stopScroll]
+    [preserveDisclosureScrollPosition]
   )
 
   // Live activity stays visible while it progresses, then returns to a compact
@@ -691,7 +788,10 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
           "before:absolute before:bottom-1 before:left-[31px] before:top-[34px] before:w-px before:-translate-x-1/2 before:bg-border/35 before:content-[''] after:absolute after:left-[13px] after:top-[22px] after:h-3 after:w-[18px] after:rounded-bl-md after:border-b after:border-l after:border-border/35 after:content-['']"
       )}
     >
-      <div className="relative z-10 flex max-w-full items-center gap-2 py-1">
+      <div
+        ref={groupRef}
+        className="relative z-10 flex max-w-full items-center gap-2 py-1"
+      >
         <CollapsibleTrigger className="-ms-1.5 inline-flex min-h-6 shrink-0 items-center gap-2 rounded-md px-1.5 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
           <span className={cn("text-[13px] font-medium", toneClass)}>
             {statusLabel}
