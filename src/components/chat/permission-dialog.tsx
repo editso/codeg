@@ -98,11 +98,11 @@ export function PermissionDialog({
   const hasStructured = hasOtherStructured || hasContentText
 
   return (
-    <div className="mx-4 mb-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
+    <div className="mb-2 w-full rounded-lg border border-border/70 bg-card/95 p-2.5 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <div className="flex items-center gap-1.5 text-sm font-medium">
-            <ShieldAlert className="h-4 w-4 shrink-0 text-amber-500" />
+          <div className="flex items-center gap-1.5 text-xs font-medium">
+            <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
             {/* Prefer the human-readable description (claude-agent-acp ≥0.63
                 `_meta.claudeCode.title`) over the raw title (the shell
                 command, which the command block below already shows). */}
@@ -110,32 +110,36 @@ export function PermissionDialog({
               {parsed.description ?? parsed.title}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
+          <p className="text-[11px] text-muted-foreground">{t("subtitle")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* Only one card shows at a time, so without this the remaining
               approvals look like the agent has stopped responding. */}
           {queued > 0 ? (
-            <Badge variant="secondary" className="text-[10px] tabular-nums">
+            <Badge variant="secondary" className="text-[9px] tabular-nums">
               {t("queuedCount", { count: queued })}
             </Badge>
           ) : null}
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-[9px]">
             {formatKindLabel(parsed.normalizedKind, t("kindFallbackTool"))}
           </Badge>
         </div>
       </div>
 
-      <div className="mt-3 max-h-[min(36vh,18rem)] space-y-2 overflow-y-auto pr-1">
+      <div className="permission-dialog-details mt-2 max-h-[min(22vh,10rem)] space-y-1.5 overflow-y-auto">
         {parsed.command && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Terminal className="h-3.5 w-3.5" />
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Terminal className="h-3 w-3" />
               <span>{t("command")}</span>
             </div>
-            <CodeBlock code={parsed.command} language="bash" />
+            <CodeBlock
+              code={parsed.command}
+              language="bash"
+              className="[&_code]:text-xs [&_pre]:p-2 [&_pre]:text-xs"
+            />
             {parsed.cwd && (
-              <div className="break-all text-xs text-muted-foreground">
+              <div className="break-all text-[11px] text-muted-foreground">
                 {t("cwd", { cwd: parsed.cwd })}
               </div>
             )}
@@ -147,20 +151,23 @@ export function PermissionDialog({
         )}
 
         {hasPlan && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <ListTodo className="h-3.5 w-3.5" />
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <ListTodo className="h-3 w-3" />
               <span>{t("plan")}</span>
             </div>
             {parsed.planExplanation && (
-              <p className="text-xs text-foreground/90">
+              <p className="text-[11px] text-foreground/90">
                 {parsed.planExplanation}
               </p>
             )}
             {parsed.planEntries.length > 0 && (
-              <div className="space-y-1 rounded-md bg-muted/40 p-2">
+              <div className="space-y-0.5 rounded-md bg-muted/40 p-1.5">
                 {parsed.planEntries.map((entry, index) => (
-                  <div key={`${entry.text}-${index}`} className="text-xs">
+                  <div
+                    key={`${entry.text}-${index}`}
+                    className="text-[11px]"
+                  >
                     <span className="text-foreground/90">{entry.text}</span>
                     {entry.status && (
                       <span className="ml-2 text-muted-foreground">
@@ -175,31 +182,31 @@ export function PermissionDialog({
         )}
 
         {hasPlanMarkdown && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <FileText className="h-3.5 w-3.5" />
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <FileText className="h-3 w-3" />
               <span>{t("plan")}</span>
             </div>
-            <div className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
+            <div className="text-xs prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
               <MessageResponse>{parsed.planMarkdown!}</MessageResponse>
             </div>
           </div>
         )}
 
         {hasAllowedPrompts && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Terminal className="h-3.5 w-3.5" />
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Terminal className="h-3 w-3" />
               <span>{t("allowedActions")}</span>
             </div>
-            <div className="space-y-1 rounded-md bg-muted/40 p-2">
+            <div className="space-y-0.5 rounded-md bg-muted/40 p-1.5">
               {parsed.allowedPrompts.map((item, index) => (
                 <div
                   key={`${item.prompt}-${index}`}
-                  className="flex items-center gap-2 text-xs"
+                  className="flex items-center gap-1.5 text-[11px]"
                 >
                   {item.tool && (
-                    <Badge variant="outline" className="shrink-0 text-[10px]">
+                    <Badge variant="outline" className="shrink-0 text-[9px]">
                       {item.tool}
                     </Badge>
                   )}
@@ -211,34 +218,34 @@ export function PermissionDialog({
         )}
 
         {parsed.modeTarget && (
-          <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-xs">
+          <div className="rounded-md border border-border/60 bg-muted/20 p-1.5 text-[11px]">
             <div className="flex items-center gap-1 text-muted-foreground">
-              <Compass className="h-3.5 w-3.5" />
+              <Compass className="h-3 w-3" />
               <span>{t("targetMode", { mode: parsed.modeTarget })}</span>
             </div>
           </div>
         )}
 
         {hasWeb && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
             {parsed.url && (
-              <div className="flex items-center gap-2 text-xs">
-                <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <Globe className="h-3 w-3 shrink-0 text-muted-foreground" />
                 <span className="break-all font-mono text-foreground/90">
                   {parsed.url}
                 </span>
               </div>
             )}
             {parsed.query && (
-              <div className="flex items-center gap-2 text-xs">
-                <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
                 <span className="break-all text-foreground/90">
                   {parsed.query}
                 </span>
               </div>
             )}
             {parsed.prompt && (
-              <div className="mt-1 text-xs text-muted-foreground">
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
                 <MessageResponse>{parsed.prompt}</MessageResponse>
               </div>
             )}
@@ -253,12 +260,12 @@ export function PermissionDialog({
             directly above the options it describes, and a pathological list
             scrolls with the rest instead of pushing the buttons off screen. */}
         {hasOptionChanges && (
-          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <KeyRound className="h-3.5 w-3.5" />
+          <div className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <KeyRound className="h-3 w-3" />
               <span>{t("optionGrants")}</span>
             </div>
-            <div className="space-y-2 rounded-md bg-muted/40 p-2">
+            <div className="space-y-1 rounded-md bg-muted/40 p-1.5">
               {permission.options.map((opt) => {
                 const changes = optionChanges[opt.option_id] ?? []
                 if (changes.length === 0) return null
@@ -266,13 +273,13 @@ export function PermissionDialog({
                   <div key={opt.option_id} className="space-y-1">
                     {/* Names the button, since only some options carry a list
                         (claude tags the always-allow one alone). */}
-                    <div className="text-xs font-medium text-foreground/90">
+                    <div className="text-[11px] font-medium text-foreground/90">
                       {opt.name}
                     </div>
                     {changes.map((change, index) => (
                       <div
                         key={index}
-                        className="flex items-start gap-2 text-xs"
+                        className="flex items-start gap-1.5 text-[11px]"
                       >
                         {/* Duration first, so it reads as a scannable column —
                             only codex states it in its own sentences, and
@@ -282,7 +289,7 @@ export function PermissionDialog({
                         {change.scope && (
                           <Badge
                             variant="outline"
-                            className="shrink-0 text-[10px]"
+                            className="shrink-0 text-[9px]"
                           >
                             {t(CHANGE_SCOPE_LABEL_KEYS[change.scope])}
                           </Badge>
@@ -300,26 +307,27 @@ export function PermissionDialog({
         )}
 
         {!hasOtherStructured && parsed.contentText && (
-          <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-foreground/90">
+          <div className="rounded-md border border-border/60 bg-muted/20 p-1.5 text-[11px] text-foreground/90">
             <MessageResponse>{parsed.contentText}</MessageResponse>
           </div>
         )}
 
         {!hasStructured && (
-          <pre className="rounded-md border border-border/60 bg-muted/20 p-2 text-xs whitespace-pre-wrap break-all text-foreground/90">
+          <pre className="rounded-md border border-border/60 bg-muted/20 p-1.5 text-[11px] whitespace-pre-wrap break-all text-foreground/90">
             {parsed.jsonPreview}
           </pre>
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-1.5">
         {permission.options.map((opt) => {
           const isReject = opt.kind.startsWith("reject")
           return (
             <Button
               key={opt.option_id}
               variant={isReject ? "outline" : "default"}
-              className="h-auto min-h-9 whitespace-normal break-words text-left"
+              size="xs"
+              className="h-6 min-h-6 rounded-lg px-2 text-[11px] leading-tight whitespace-normal break-words text-left"
               onClick={() => onRespond(permission.request_id, opt.option_id)}
             >
               {opt.name}

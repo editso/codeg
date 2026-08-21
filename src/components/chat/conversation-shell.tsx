@@ -165,18 +165,20 @@ export function ConversationShell({
       {topBanner}
       <div className="flex-1 min-h-0">{children}</div>
 
-      <PermissionDialog
-        permission={pendingPermission}
-        onRespond={onRespondPermission}
-      />
-
       <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />
 
-      {/* Composer dock. The ask-question card sits in normal flow just above the
-          feedback list and input — like the permission/question dialogs — so it
-          shrinks the message list instead of covering it, while staying aligned
-          to the input width. */}
+      {/* Composer dock. Blocking cards live in normal flow immediately above the
+          input, so they shrink the message list instead of covering it and stay
+          aligned to the composer's width. */}
       <div>
+        {pendingPermission && (
+          <div className="mx-auto w-full max-w-3xl px-4">
+            <PermissionDialog
+              permission={pendingPermission}
+              onRespond={onRespondPermission}
+            />
+          </div>
+        )}
         {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
           <div className="mx-auto w-full max-w-3xl px-4">
             <AskQuestionCard

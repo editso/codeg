@@ -1119,7 +1119,7 @@
 }
 
 /* 用户消息气泡（MessageContent 上的 ws-msg-secondary，配对元素自带的
-   group-[.is-user]:bg-secondary）：开图转半透明中性染色（全族统一 --muted，不磨砂，不再 secondary
+   group-[.is-user]:bg-secondary/25）：开图转半透明中性染色（全族统一 --muted，不磨砂，不再 secondary
    色）+ inset 1px ring 描边（纯色 var(--border)，替代磨砂提供分离）。以 .is-user 祖先限定——助手
    消息（.is-assistant）本无气泡底色，须保持画布透出，不受影响。关图零回归。 */
 [data-workspace-bg="on"] .is-user .ws-msg-secondary {
@@ -1353,6 +1353,40 @@
 }
 
 .codeg-scrollbar-hover::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+/* The permission card's details are deliberately short and sit directly above
+   the composer. Do not reserve a permanent native-scrollbar lane there: it
+   makes the card look off-centre and competes with the approval controls.
+   The scrollbar appears only while that scrollable detail region is hovered;
+   mouse wheel, touchpad, touch, and keyboard scrolling continue to work while
+   it is hidden. */
+.permission-dialog-details {
+  scrollbar-width: none;
+}
+
+.permission-dialog-details::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.permission-dialog-details:hover {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+.permission-dialog-details:hover::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.permission-dialog-details:hover::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+}
+
+.permission-dialog-details:hover::-webkit-scrollbar-track {
   background-color: transparent;
 }
 
