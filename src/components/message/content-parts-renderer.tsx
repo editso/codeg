@@ -87,6 +87,8 @@ import {
   type AssistantActivityItem,
 } from "./assistant-activity-group"
 import { describeToolActivity } from "./tool-activity-presentation"
+import { shouldUseLargeToolOutputViewer } from "./large-tool-output"
+import { LargeToolOutputViewer } from "./large-tool-output-viewer"
 import type { BundledLanguage } from "shiki"
 import {
   FileTextIcon,
@@ -3210,8 +3212,13 @@ function activityPreviewSource(value: unknown): string | null {
 function formatActivityPreviewText(value: unknown): string | null {
   const source = activityPreviewSource(value)
   if (!source?.trim()) return null
-  const parsed = tryParseJson(source)
-  return parsed ? JSON.stringify(parsed, null, 2) : source.trim()
+  const text = source.trim()
+  // Formatting a huge JSON result synchronously defeats virtual rendering
+  // before the viewer has even mounted. Monaco can still highlight the raw JSON
+  // with its large-file safeguards, so leave the source intact here.
+  if (shouldUseLargeToolOutputViewer(text)) return text
+  const parsed = tryParseJson(text)
+  return parsed ? JSON.stringify(parsed, null, 2) : text
 }
 
 const ActivityPreviewCode = memo(function ActivityPreviewCode({
@@ -3228,6 +3235,10 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
   const copy = useCallback(() => {
     void copyTextToClipboard(text)
   }, [text])
+  const useLargeOutputViewer = useMemo(
+    () => shouldUseLargeToolOutputViewer(text),
+    [text]
+  )
 
   return (
     <div className="group/activity-code relative min-w-0 max-w-full">
@@ -3244,17 +3255,25 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
           className
         )}
       >
-        <CodeBlockContent
-          code={text}
-          data-codeg-scrollbar="true"
-          language={language}
-          className="codeg-scrollbar-hover max-h-[min(18rem,34vh)]"
-          preClassName="p-3 text-[13px] leading-5"
-        />
+        {useLargeOutputViewer ? (
+          <LargeToolOutputViewer
+            ariaLabel={label ?? "Tool output"}
+            code={text}
+            language={language}
+          />
+        ) : (
+          <CodeBlockContent
+            code={text}
+            data-codeg-scrollbar="true"
+            language={language}
+            className="codeg-scrollbar-hover max-h-[min(18rem,34vh)]"
+            preClassName="p-3 text-[13px] leading-5"
+          />
+        )}
       </CodeBlockContainer>
       <button
         aria-label="Copy activity detail"
-        className="absolute end-1.5 top-1.5 inline-grid size-6 place-items-center rounded-sm text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/activity-code:opacity-100"
+        className="absolute end-1.5 top-1.5 z-10 inline-grid size-6 place-items-center rounded-sm text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/activity-code:opacity-100"
         onClick={copy}
         title="Copy"
         type="button"
@@ -3282,7 +3301,13 @@ function activityToolOutput(
 
 function codeLanguageForOutput(text: string): BundledLanguage {
   const trimmed = text.trim()
-  if (tryParseJson(trimmed)) return "json"
+  if (
+    shouldUseLargeToolOutputViewer(trimmed)
+      ? trimmed.startsWith("{") || trimmed.startsWith("[")
+      : tryParseJson(trimmed)
+  ) {
+    return "json"
+  }
   if (
     trimmed.startsWith("diff --git") ||
     trimmed.startsWith("*** Begin Patch")
