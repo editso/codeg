@@ -3336,7 +3336,7 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
   if (!presentation.command && !input && !output) return null
 
   return (
-    <div className="grid max-w-[48rem] gap-2 py-0.5">
+    <div className="grid w-full max-w-none gap-2 py-0.5">
       {presentation.paths[0] ? (
         <div className="flex min-w-0 items-center gap-2 rounded-lg bg-secondary px-3 py-2 text-[11px] ring-1 ring-border/10">
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -3390,7 +3390,7 @@ const ActivityToolResultPreview = memo(function ActivityToolResultPreview({
   if (!text) return null
 
   return (
-    <div className="max-w-[48rem] py-0.5">
+    <div className="w-full max-w-none py-0.5">
       <ActivityPreviewCode
         language={codeLanguageForOutput(text)}
         text={text}
@@ -3517,7 +3517,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     }
     if (item.type === "plan") {
       return (
-        <div className="max-w-[48rem] py-0.5">
+        <div className="w-full max-w-none py-0.5">
           <PlanEntriesList
             entries={Array.isArray(item.part.entries) ? item.part.entries : []}
             isStreaming={item.part.isStreaming}
