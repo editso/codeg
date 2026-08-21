@@ -3232,15 +3232,15 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
   return (
     <div className="group/activity-code relative min-w-0 max-w-full">
       {label ? (
-        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium tracking-[0.02em] text-muted-foreground/70">
-          <span className="h-px w-2.5 bg-border/70" />
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium tracking-[0.02em] text-muted-foreground/60">
+          <span className="h-px w-2.5 bg-border/55" />
           {label}
         </div>
       ) : null}
       <CodeBlockContainer
         language={language}
         className={cn(
-          "m-0 max-w-full rounded-md border-border/40 bg-muted/25 text-foreground/85 dark:bg-muted/40",
+          "m-0 max-w-full rounded-lg border-0 bg-secondary text-foreground/70 ring-1 ring-border/10 dark:bg-background/65 dark:text-muted-foreground",
           className
         )}
       >
@@ -3249,7 +3249,7 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
           data-codeg-scrollbar="true"
           language={language}
           className="codeg-scrollbar-hover max-h-[min(18rem,34vh)]"
-          preClassName="p-2.5 text-[12px] leading-5"
+          preClassName="p-3 text-[13px] leading-5"
         />
       </CodeBlockContainer>
       <button
@@ -3338,16 +3338,16 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
   return (
     <div className="grid max-w-[48rem] gap-2 py-0.5">
       {presentation.paths[0] ? (
-        <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted/20 px-2.5 py-1.5 text-[11px]">
+        <div className="flex min-w-0 items-center gap-2 rounded-lg bg-secondary px-3 py-2 text-[11px] ring-1 ring-border/10">
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <FilePathLink
             filePath={presentation.paths[0]}
-            className="min-w-0 truncate font-mono text-foreground/85 hover:text-foreground"
+            className="min-w-0 truncate font-mono text-foreground/70 hover:text-foreground"
           >
             {presentation.paths[0]}
           </FilePathLink>
           {presentation.paths.length > 1 ? (
-            <span className="shrink-0 text-muted-foreground/65">
+            <span className="shrink-0 text-muted-foreground/60">
               +{presentation.paths.length - 1}
             </span>
           ) : null}

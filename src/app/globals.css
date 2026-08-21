@@ -1136,22 +1136,9 @@
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
-/* 用户消息气泡（MessageContent 上的 ws-msg-secondary，配对元素自带的
-   group-[.is-user]:bg-secondary/25）：开图转半透明中性染色（全族统一 --muted，不磨砂，不再 secondary
-   色）+ inset 1px ring 描边（纯色 var(--border)，替代磨砂提供分离）。以 .is-user 祖先限定——助手
-   消息（.is-assistant）本无气泡底色，须保持画布透出，不受影响。关图零回归。 */
-[data-workspace-bg="on"] .is-user .ws-msg-secondary {
-  background-color: color-mix(
-    in oklch,
-    var(--muted) calc(var(--ws-msg-alpha) * 100%),
-    transparent
-  );
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-
 /* 折叠态内容底部渐隐（会话用户消息、提交 tab 的提交信息…）：遮罩内容本身而非叠加层，跟
-   .qa-rail-viewport / .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区
-   背景图后的半透明 ws-msg-secondary。不属于下面的 ws- 门控家族，始终生效。 */
+   .qa-rail-viewport / .browser-tab-label 同技术，天然适配用户消息的纯色 secondary 表面。
+   不属于下面的 ws- 门控家族，始终生效。 */
 .collapsed-content-fade {
   -webkit-mask-image: linear-gradient(
     to bottom,

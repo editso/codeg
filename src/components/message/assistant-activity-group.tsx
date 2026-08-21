@@ -376,7 +376,7 @@ function ActivityDetailRow({
   const iconClass = failed
     ? "text-destructive/85"
     : active
-      ? "text-foreground/80"
+      ? "text-foreground/70"
       : "text-muted-foreground/75"
 
   const revealExpandedDetail = useCallback(() => {
@@ -478,7 +478,12 @@ function ActivityDetailRow({
           {subject ? (
             <span
               className={cn(
-                "min-w-0 truncate text-foreground/85",
+                "min-w-0 truncate",
+                failed
+                  ? "text-destructive/85"
+                  : active
+                    ? "text-foreground/70"
+                    : "text-muted-foreground/85",
                 monospace && "font-mono text-[12px]"
               )}
             >
@@ -486,7 +491,7 @@ function ActivityDetailRow({
             </span>
           ) : null}
           {context ? (
-            <span className="hidden max-w-40 shrink truncate text-[11px] text-muted-foreground/55 sm:inline">
+            <span className="hidden max-w-40 shrink truncate text-[11px] text-muted-foreground/60 sm:inline">
               {context}
             </span>
           ) : null}
