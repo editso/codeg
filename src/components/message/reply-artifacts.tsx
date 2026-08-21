@@ -128,25 +128,25 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
   const totalDeletions = changedFiles.reduce((sum, f) => sum + f.deletions, 0)
 
   return (
-    <div className="mt-2 space-y-2">
+    <div className="mt-3 max-w-2xl space-y-1.5 text-card-foreground">
       {addedFiles.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-border bg-card/40 text-card-foreground">
+        <div className="overflow-hidden rounded-md border border-border/55 bg-muted/[0.18]">
           <button
             type="button"
             aria-expanded={newFilesOpen}
             onClick={() => setNewFilesOpen((prev) => !prev)}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="flex min-h-8 w-full items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <FilePlus className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="text-xs font-medium text-foreground">
+            <FilePlus className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-[11px] font-medium tracking-[0.01em] text-foreground">
               {t("newFilesTitle")}
             </span>
-            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="rounded-sm bg-background/75 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
               {t("fileCount", { count: addedFiles.length })}
             </span>
             <ChevronRight
               className={cn(
-                "ms-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                "ms-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
                 newFilesOpen && "rotate-90"
               )}
             />
@@ -154,8 +154,8 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
 
           {newFilesOpen && (
             <TooltipProvider delayDuration={300}>
-              <div className="@container max-h-80 overflow-y-auto border-t border-border p-2">
-                <div className="grid gap-2 @md:grid-cols-2">
+              <div className="@container max-h-60 overflow-y-auto border-t border-border/45 p-1">
+                <div className="grid gap-1 @md:grid-cols-2">
                   {addedFiles.map((file) => {
                     const displayPath = toFolderRelativePath(
                       file.path,
@@ -173,7 +173,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                     return (
                       <div
                         key={file.id}
-                        className="flex items-stretch overflow-hidden rounded-md border border-green-600/30 bg-green-500/5 transition-colors hover:border-green-600/50 hover:bg-green-500/10 dark:border-green-400/30 dark:hover:border-green-400/50"
+                        className="group/file flex min-w-0 items-stretch overflow-hidden rounded-[0.3125rem] bg-emerald-500/[0.035] transition-colors hover:bg-emerald-500/[0.09] dark:bg-emerald-400/[0.07] dark:hover:bg-emerald-400/[0.12]"
                       >
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -184,15 +184,15 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               aria-label={t("openFile", {
                                 filePath: displayPath,
                               })}
-                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                             >
-                              <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-xs font-medium text-foreground">
+                              <FileIcon className="h-3.5 w-3.5 shrink-0 text-emerald-700/75 dark:text-emerald-300/80" />
+                              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                                <span className="truncate font-mono text-[11px] font-medium leading-4 text-foreground">
                                   {name}
                                 </span>
                                 {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
+                                  <span className="hidden min-w-0 flex-1 truncate font-mono text-[10px] leading-4 text-muted-foreground/85 @lg:inline">
                                     {dir}
                                   </span>
                                 )}
@@ -200,7 +200,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               {file.additions > 0 && (
                                 <CommitFileAdditions
                                   count={file.additions}
-                                  className="shrink-0 font-mono text-[10px]"
+                                  className="shrink-0 font-mono text-[10px] leading-4"
                                 />
                               )}
                             </button>
@@ -217,9 +217,9 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                                 type="button"
                                 onClick={() => revealInFolder(file)}
                                 aria-label={t("revealInFolder")}
-                                className="flex w-9 shrink-0 items-center justify-center border-l border-green-600/30 text-muted-foreground transition-colors hover:bg-green-500/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:border-green-400/30"
+                                className="flex w-7 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-emerald-500/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/file:opacity-100 group-focus-within/file:opacity-100"
                               >
-                                <ExternalLink className="h-3.5 w-3.5" />
+                                <ExternalLink className="h-3 w-3" />
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="top">
@@ -238,23 +238,23 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
       )}
 
       {changedFiles.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-border bg-card/40 text-card-foreground">
+        <div className="overflow-hidden rounded-md border border-border/55 bg-muted/[0.18]">
           <button
             type="button"
             aria-expanded={changedOpen}
             onClick={() => setChangedOpen((prev) => !prev)}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="flex min-h-8 w-full items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <FileDiff className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="text-xs font-medium text-foreground">
+            <FileDiff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="text-[11px] font-medium tracking-[0.01em] text-foreground">
               {t("title")}
             </span>
-            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="rounded-sm bg-background/75 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
               {t("fileCount", { count: changedFiles.length })}
             </span>
             {/* Always render BOTH counts (incl. zeros) so a one-sided reply
                 still shows its +N and -N. */}
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px]">
+            <span className="ml-0.5 inline-flex shrink-0 items-center gap-1.5 font-mono text-[10px] leading-none tabular-nums">
               <span className="text-green-600 dark:text-green-400">
                 +{totalAdditions}
               </span>
@@ -264,7 +264,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
             </span>
             <ChevronRight
               className={cn(
-                "ms-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                "ms-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
                 changedOpen && "rotate-90"
               )}
             />
@@ -272,8 +272,8 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
 
           {changedOpen && (
             <TooltipProvider delayDuration={300}>
-              <div className="@container max-h-80 overflow-y-auto border-t border-border p-2">
-                <div className="grid gap-2 @md:grid-cols-2">
+              <div className="@container max-h-60 overflow-y-auto border-t border-border/45 p-1">
+                <div className="grid gap-1 @md:grid-cols-2">
                   {changedFiles.map((file) => {
                     const displayPath = toFolderRelativePath(
                       file.path,
@@ -297,20 +297,20 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                         <div
                           key={file.id}
                           title={displayPath}
-                          className="flex items-center gap-2 overflow-hidden rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"
+                          className="flex min-w-0 items-center gap-1.5 overflow-hidden rounded-[0.3125rem] bg-destructive/[0.055] px-2 py-1.5"
                         >
-                          <FileIcon className="h-4 w-4 shrink-0 text-destructive" />
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="truncate text-xs font-medium text-destructive">
+                          <FileIcon className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                          <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                            <span className="truncate font-mono text-[11px] font-medium leading-4 text-destructive">
                               {name}
                             </span>
                             {dir && (
-                              <span className="truncate text-[10px] text-muted-foreground">
+                              <span className="hidden min-w-0 flex-1 truncate font-mono text-[10px] leading-4 text-muted-foreground/85 @lg:inline">
                                 {dir}
                               </span>
                             )}
                           </span>
-                          <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                          <span className="inline-flex shrink-0 items-center rounded-sm bg-destructive/10 px-1 py-0.5 font-mono text-[10px] leading-none text-destructive">
                             {t("remove")}
                           </span>
                         </div>
@@ -320,7 +320,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                     return (
                       <div
                         key={file.id}
-                        className="flex items-stretch overflow-hidden rounded-md border border-border bg-muted/20 transition-colors hover:bg-accent/40"
+                        className="group/file flex min-w-0 items-stretch overflow-hidden rounded-[0.3125rem] bg-background/70 transition-colors hover:bg-accent/45 dark:bg-background/30"
                       >
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -331,20 +331,20 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               aria-label={t("openFile", {
                                 filePath: displayPath,
                               })}
-                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                             >
-                              <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-xs font-medium text-foreground">
+                              <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                                <span className="truncate font-mono text-[11px] font-medium leading-4 text-foreground">
                                   {name}
                                 </span>
                                 {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
+                                  <span className="hidden min-w-0 flex-1 truncate font-mono text-[10px] leading-4 text-muted-foreground/85 @lg:inline">
                                     {dir}
                                   </span>
                                 )}
                               </span>
-                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px]">
+                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] leading-4 tabular-nums">
                                 <CommitFileAdditions
                                   count={file.additions}
                                   className="text-[10px]"
@@ -367,9 +367,9 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                               type="button"
                               onClick={() => viewDiff(file)}
                               aria-label={tCommon("viewDiff")}
-                              className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              className="flex w-7 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/file:opacity-100 group-focus-within/file:opacity-100"
                             >
-                              <FileDiff className="h-3.5 w-3.5" />
+                              <FileDiff className="h-3 w-3" />
                             </button>
                           </TooltipTrigger>
                           <TooltipContent side="top">
@@ -384,9 +384,9 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                                 type="button"
                                 onClick={() => revealInFolder(file)}
                                 aria-label={t("revealInFolder")}
-                                className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                                className="flex w-7 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/file:opacity-100 group-focus-within/file:opacity-100"
                               >
-                                <ExternalLink className="h-3.5 w-3.5" />
+                                <ExternalLink className="h-3 w-3" />
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="top">
