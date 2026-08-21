@@ -10,7 +10,7 @@
  * data it actually has.
  */
 
-import { Children, useState, type ReactNode } from "react"
+import { Children, useRef, useState, type ReactNode } from "react"
 import { ChevronRightIcon } from "lucide-react"
 
 import { Shimmer } from "@/components/ai-elements/shimmer"
@@ -61,6 +61,7 @@ export function AgentCapsule({
   const hasBody = Children.toArray(children).length > 0
 
   const [bodyOpen, setBodyOpen] = useState(defaultOpen ?? isError)
+  const userSetBodyOpenRef = useRef(false)
 
   // Respond to prop transitions with the canonical React tracked-previous-state
   // pattern (render-phase setState) — see
@@ -70,18 +71,32 @@ export function AgentCapsule({
   //   - non-error → error: auto-OPEN so a failure that arrives mid-stream is
   //     visible without a click (the initial `isError` seed only covers calls
   //     that mount already-failed).
-  //   - running → completed (non-error): auto-COLLAPSE once (only matters if the
-  //     user manually expanded during streaming).
+  //   - running → completed (non-error): auto-COLLAPSE only when the user did
+  //     not choose a disclosure state during this run.
   const [prevIsRunning, setPrevIsRunning] = useState(isRunning)
   const [prevIsError, setPrevIsError] = useState(isError)
   if (prevIsRunning !== isRunning || prevIsError !== isError) {
     setPrevIsRunning(isRunning)
     setPrevIsError(isError)
+    if (!prevIsRunning && isRunning) {
+      // A subsequent run gets a fresh automatic disclosure lifecycle.
+      userSetBodyOpenRef.current = false
+    }
     if (!prevIsError && isError) {
       setBodyOpen(true)
-    } else if (prevIsRunning && !isRunning && !isError) {
+    } else if (
+      prevIsRunning &&
+      !isRunning &&
+      !isError &&
+      !userSetBodyOpenRef.current
+    ) {
       setBodyOpen(false)
     }
+  }
+
+  const handleBodyOpenChange = (nextOpen: boolean) => {
+    userSetBodyOpenRef.current = true
+    setBodyOpen(nextOpen)
   }
 
   const pillClass = cn(
@@ -134,7 +149,11 @@ export function AgentCapsule({
   }
 
   return (
-    <Collapsible open={bodyOpen} onOpenChange={setBodyOpen} className="w-full">
+    <Collapsible
+      open={bodyOpen}
+      onOpenChange={handleBodyOpenChange}
+      className="w-full"
+    >
       {/* Pill trigger — matches ToolGroupPart structure with themed emphasis. */}
       <CollapsibleTrigger className={pillClass} aria-label={statusLabel}>
         {pillInner}

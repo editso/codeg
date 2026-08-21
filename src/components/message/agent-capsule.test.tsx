@@ -88,7 +88,7 @@ describe("AgentCapsule", () => {
     expect(screen.getByText("ERR BODY")).toBeInTheDocument()
   })
 
-  it("auto-collapses once when running transitions to completed", () => {
+  it("preserves a user-expanded body when running transitions to completed", () => {
     const { rerender } = render(
       <AgentCapsule title="Working" isRunning isError={false}>
         <div>LIVE BODY</div>
@@ -98,12 +98,12 @@ describe("AgentCapsule", () => {
     fireEvent.click(screen.getByRole("button"))
     expect(screen.getByText("LIVE BODY")).toBeInTheDocument()
 
-    // Completion (running → not running, non-error) collapses it once.
+    // Completion must not override the user's explicit disclosure choice.
     rerender(
       <AgentCapsule title="Working" isRunning={false} isError={false}>
         <div>LIVE BODY</div>
       </AgentCapsule>
     )
-    expect(screen.queryByText("LIVE BODY")).not.toBeInTheDocument()
+    expect(screen.getByText("LIVE BODY")).toBeInTheDocument()
   })
 })

@@ -675,6 +675,12 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   const active = streaming ?? items.some(isStreaming)
   const [open, setOpen] = useState(() => active)
   const previousActiveRef = useRef(active)
+  const userSetOpenRef = useRef(false)
+
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    userSetOpenRef.current = true
+    setOpen(nextOpen)
+  }, [])
 
   // Live activity stays visible while it progresses, then returns to a compact
   // historical summary after the terminal stream update. A failed tool is a
@@ -685,8 +691,10 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
     previousActiveRef.current = active
 
     if (!wasActive && active) {
+      // A subsequent run gets a fresh automatic disclosure lifecycle.
+      userSetOpenRef.current = false
       setOpen(true)
-    } else if (wasActive && !active) {
+    } else if (wasActive && !active && !userSetOpenRef.current) {
       setOpen(false)
     }
   }, [active])
@@ -728,7 +736,7 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   return (
     <Collapsible
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={handleOpenChange}
       className={cn(
         "group/activity relative mr-auto w-full max-w-full py-1 text-sm text-muted-foreground",
         open &&
