@@ -195,7 +195,7 @@ export function ConversationConfigPopover({
   isPrompting = false,
 }: ConversationConfigPopoverProps) {
   const t = useTranslations("Folder.chat.messageInput")
-  const { reapplyConfig } = useAcpActions()
+  const { reapplyConfig, restart } = useAcpActions()
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<Panel>("overview")
   const [configView, setConfigView] = useState<ConversationConfigView | null>(
@@ -282,7 +282,9 @@ export function ConversationConfigPopover({
     [agentType, providers]
   )
   const config =
-    conversationId == null ? (draftConfig ?? null) : (configView?.config ?? null)
+    conversationId == null
+      ? (draftConfig ?? null)
+      : (configView?.config ?? null)
   const catalog =
     conversationId == null ? draftCatalog : (configView?.mcp_catalog ?? null)
   const selectedRefKeys = useMemo(
@@ -356,10 +358,14 @@ export function ConversationConfigPopover({
         setConfigView(nextView)
         if (restartConnectionKey != null) {
           // Provider credentials and model defaults are process-start inputs.
-          // The session is idle here (the trigger is frozen while prompting),
-          // so safely resume the same conversation immediately. Its fresh ACP
-          // selector events become the input's new model/thinking defaults.
-          const reconnected = await reapplyConfig(restartConnectionKey)
+          // The session is idle here (the trigger is frozen while prompting).
+          // A browser can be attached as a viewer of a process owned by another
+          // client; reapplyConfig intentionally refuses to stop that process,
+          // leaving the stored override visibly selected but not active. This
+          // is an explicit provider-switch action, so restart is the correct
+          // ownership-aware path: it replaces a viewer's old process, then
+          // reconnects this conversation with the persisted override.
+          const reconnected = await restart(restartConnectionKey)
           if (!reconnected) {
             throw new Error(
               "The provider was saved, but the current conversation could not be refreshed."
@@ -382,6 +388,7 @@ export function ConversationConfigPopover({
       isPrompting,
       onDraftConfigChange,
       reapplyConfig,
+      restart,
     ]
   )
 
