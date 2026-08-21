@@ -8,7 +8,6 @@ import {
   knownSessionFailureActions,
   lastUserPromptText,
   mergeSessionFailures,
-  mostRecentRecoveredWarning,
   resolvedSessionFailures,
   settleSessionFailures,
   upsertSessionFailure,
@@ -201,20 +200,14 @@ describe("dismissSessionFailures", () => {
   it("marks dismissal distinctly so it never renders as recovery", () => {
     const table = dismissSessionFailures([record("w", 1)], ["w"])
     expect(table[0].dismissed).toBe(true)
-    // Resolved, but NOT a recovery — closing a strip must leave nothing behind.
     expect(resolvedSessionFailures(table)).toHaveLength(1)
-    expect(mostRecentRecoveredWarning(table)).toBeNull()
   })
 
-  it("silences an ALREADY-RESOLVED record — that is the recovered line's exit", () => {
-    // Regression: gating on `!resolved` made the recovered strip's close
-    // button and auto-expiry silent no-ops, so it hung under the composer
-    // forever (field report 2026-08-17).
+  it("records dismissal for an already-resolved watermark", () => {
     const table = [record("a", 1, { resolved: true })]
     const next = dismissSessionFailures(table, ["a"])
     expect(next).not.toBe(table)
     expect(next[0]).toMatchObject({ resolved: true, dismissed: true })
-    expect(mostRecentRecoveredWarning(next)).toBeNull()
   })
 
   it("is a reference-preserving no-op for unknown / already-dismissed ids", () => {
@@ -236,31 +229,6 @@ describe("dismissSessionFailures", () => {
     ])
     expect(hydrated).toBe(dismissed)
     expect(activeSessionFailures(hydrated)).toHaveLength(0)
-  })
-})
-
-describe("mostRecentRecoveredWarning", () => {
-  it("picks the latest self-settled warning, ignoring errors and dismissals", () => {
-    const table = [
-      record("w1", 1, { resolved: true }),
-      record("w2", 1, { resolved: true }),
-      record("e1", 1, { severity: "error", resolved: true }),
-      record("w3", 1),
-    ]
-    expect(mostRecentRecoveredWarning(table)?.id).toBe("w2")
-    // Closing the line on screen falls back to the older genuine recovery,
-    // never to the record just silenced.
-    const afterDismiss = dismissSessionFailures(table, ["w2"])
-    expect(mostRecentRecoveredWarning(afterDismiss)?.id).toBe("w1")
-    // …and with that one silenced too, nothing is left to announce.
-    expect(
-      mostRecentRecoveredWarning(dismissSessionFailures(afterDismiss, ["w1"]))
-    ).toBeNull()
-  })
-
-  it("returns null when there is nothing recovered", () => {
-    expect(mostRecentRecoveredWarning([])).toBeNull()
-    expect(mostRecentRecoveredWarning([record("w", 1)])).toBeNull()
   })
 })
 

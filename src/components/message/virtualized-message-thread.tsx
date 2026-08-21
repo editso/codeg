@@ -241,9 +241,6 @@ function VirtualizedMessageThreadImpl<T>({
     if (!el) return
     el.tabIndex = 0
     el.dataset.codegScrollbar = "true"
-    const clearPointerFocus = () => {
-      el.removeAttribute("data-focus-origin")
-    }
     const onPointerDown = (e: PointerEvent) => {
       // Ignore right-click and macOS ctrl-click (both open the context menu).
       if (e.button !== 0 || e.ctrlKey) return
@@ -258,7 +255,6 @@ function VirtualizedMessageThreadImpl<T>({
         )
       )
         return
-      el.setAttribute("data-focus-origin", "pointer")
       el.focus({ preventScroll: true })
     }
 
@@ -312,22 +308,12 @@ function VirtualizedMessageThreadImpl<T>({
     }
 
     el.addEventListener("pointerdown", onPointerDown)
-    el.addEventListener("blur", clearPointerFocus)
-    // Once the user drives the viewport with the keyboard (Arrow/Page/Home/End
-    // to scroll), drop the pointer-origin marker so the focus ring reappears —
-    // keeping the keyboard focus indicator visible per WCAG 2.4.7. The ring is
-    // only suppressed for the mouse click that focused the viewport, not for
-    // subsequent keyboard use.
-    el.addEventListener("keydown", clearPointerFocus)
     el.addEventListener("pointermove", onPointerMove)
     el.addEventListener("pointerleave", onPointerLeave)
     return () => {
       el.removeEventListener("pointerdown", onPointerDown)
-      el.removeEventListener("blur", clearPointerFocus)
-      el.removeEventListener("keydown", clearPointerFocus)
       el.removeEventListener("pointermove", onPointerMove)
       el.removeEventListener("pointerleave", onPointerLeave)
-      clearPointerFocus()
       clearActiveScrollbar()
       delete el.dataset.codegScrollbar
     }
@@ -356,7 +342,7 @@ function VirtualizedMessageThreadImpl<T>({
     <MessageScrollProvider value={scrollContextValue}>
       <MessageThreadContent
         className={cn("mx-0 max-w-none p-0", contentClassName)}
-        scrollClassName="codeg-scrollbar-hover overscroll-contain [overflow-anchor:none] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[focus-origin=pointer]:focus-visible:ring-0"
+        scrollClassName="codeg-scrollbar-hover overscroll-contain [overflow-anchor:none] outline-none"
         {...contentProps}
       >
         {items.length === 0 && !tailContent ? (

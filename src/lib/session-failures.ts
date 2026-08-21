@@ -149,16 +149,13 @@ export function settleSessionFailures(
  * stands for every active warning behind it — closing a bar labelled "+2 more"
  * has to close all three, not peel them off one click at a time.
  *
- * Dismissal is marked distinctly from recovery: `dismissed` records are
- * excluded from the "recovered" line (see [`mostRecentRecoveredWarning`]),
- * because a silenced incident is not a fixed one. The entry stays as its id's
- * revision watermark, so this silences only what was actually on screen — a
- * failure that is still real re-arms via a higher revision on the same id.
+ * Dismissal gets its own marker so a stale snapshot at the same revision
+ * cannot immediately re-open a strip the user has silenced. The entry stays
+ * as its id's revision watermark, so a failure that is still real re-arms via
+ * a higher revision on the same id.
  *
- * Applies to ALREADY-RESOLVED records too, not just active ones: the muted
- * "recovered" line is by definition resolved, and closing (or auto-expiring)
- * it still has to mark it `dismissed` so it stops rendering. Gating this on
- * `!resolved` made both of that strip's exits silent no-ops.
+ * Applies to already-resolved records too, preserving the local dismissal
+ * watermark even if a caller settles a record before handling a queued close.
  *
  * Returns the same array reference when nothing needed dismissing.
  */
@@ -223,23 +220,7 @@ export function activeSessionFailureView(
   }
 }
 
-/**
- * The record behind the muted "recovered" line: the most recent warning that
- * settled ON ITS OWN. User-dismissed records are excluded — closing a strip
- * has to REMOVE it, not swap it for a line claiming the incident recovered
- * (which would also be false whenever the connection is still down).
- */
-export function mostRecentRecoveredWarning(
-  failures: SessionFailureRecord[]
-): SessionFailureRecord | null {
-  for (let i = failures.length - 1; i >= 0; i--) {
-    const f = failures[i]
-    if (f.resolved && !f.dismissed && f.severity === "warning") return f
-  }
-  return null
-}
-
-/** Resolved records, for the banner's collapsed "recovered" rows. */
+/** Resolved records retained as revision watermarks. */
 export function resolvedSessionFailures(
   failures: SessionFailureRecord[]
 ): SessionFailureRecord[] {

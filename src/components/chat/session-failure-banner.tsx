@@ -17,31 +17,25 @@
  *   single-slot `turn_retrying` channel here — one strip per record stacked a
  *   fresh row for every reconnect of a long turn (issue #496).
  *
- * - Of the RESOLVED records only the most recent recovered WARNING renders,
- *   as one muted "recovered" line — evidence of what happened mid-turn
- *   without stacking transcript history. It is a TRANSIENT
- *   confirmation: it self-dismisses after `RECOVERED_VISIBLE_MS`, because
- *   records are retained forever as revision watermarks and nothing else
- *   would ever take it down. Resolved records still live in the reducer table
- *   as watermarks; resolved errors (settled by the user acting) render
- *   nothing.
+ * - RESOLVED records render nothing. They remain in the reducer table only as
+ *   revision watermarks, so a recovered reconnect disappears immediately
+ *   instead of leaving a redundant "Recovered · Reconnecting…" status row
+ *   under the conversation.
  *
- * EVERY strip carries a close button, recovered line included. Retry actions
- * stay off warnings (re-prompting mid-recovery would enqueue a second turn),
- * but dismissing is always the user's to do — and unlike the settle passes it
- * is available to viewers, since it only touches their own client's
- * projection.
+ * Every ACTIVE strip carries a close button. Retry actions stay off warnings
+ * (re-prompting mid-recovery would enqueue a second turn), but dismissing is
+ * always the user's to do — and unlike the settle passes it is available to
+ * viewers, since it only touches their own client's projection.
  *
  * Adapter-authored `title`/`details` are shown verbatim (already user-facing
  * prose); a blank title falls back to the localized category label.
  */
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
   Ban,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Gauge,
@@ -60,12 +54,8 @@ import type { SessionFailureRecord } from "@/lib/types"
 import {
   activeSessionFailureView,
   knownSessionFailureActions,
-  mostRecentRecoveredWarning,
   type SessionFailureAction,
 } from "@/lib/session-failures"
-
-/** How long the muted "recovered" confirmation stays before self-dismissing. */
-const RECOVERED_VISIBLE_MS = 10_000
 
 const CATEGORY_ICONS: Record<string, typeof AlertCircle> = {
   connection: WifiOff,
@@ -126,9 +116,8 @@ interface Props {
 export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
   const { errors, warning, hiddenWarnings, warningIds } =
     activeSessionFailureView(failures)
-  const recovered = mostRecentRecoveredWarning(failures)
   const hasActive = errors.length > 0 || warning !== null
-  if (!hasActive && !recovered) return null
+  if (!hasActive) return null
   return (
     <>
       {errors.map((failure) => (
@@ -150,13 +139,6 @@ export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
           onDismiss={onDismiss}
         />
       )}
-      {!hasActive && recovered && (
-        <RecoveredStrip
-          key={`${recovered.id}@${recovered.revision}`}
-          failure={recovered}
-          onDismiss={onDismiss}
-        />
-      )}
     </>
   )
 }
@@ -166,8 +148,7 @@ export function hasVisibleSessionFailure(failures: SessionFailureRecord[]) {
   const { errors, warning } = activeSessionFailureView(failures)
   return (
     errors.length > 0 ||
-    warning !== null ||
-    mostRecentRecoveredWarning(failures) !== null
+    warning !== null
   )
 }
 
@@ -268,52 +249,6 @@ function ActiveFailureStrip({
           {details}
         </p>
       )}
-    </div>
-  )
-}
-
-function RecoveredStrip({
-  failure,
-  onDismiss,
-}: {
-  failure: SessionFailureRecord
-  onDismiss?: Props["onDismiss"]
-}) {
-  const t = useTranslations("Folder.chat.sessionFailure")
-  const title =
-    failure.title.trim() ||
-    t(CATEGORY_LABEL_KEYS[knownCategory(failure.category)])
-  // Self-expire. Records are retained forever as revision watermarks, so
-  // nothing else would ever take this line down — it used to sit under the
-  // composer for the rest of the session announcing a hiccup that was over
-  // (field report 2026-08-17). Auto-dismiss WRITES to the store rather than
-  // just hiding locally, so remounting the panel cannot resurrect it.
-  const id = failure.id
-  const dismiss = onDismiss
-  useEffect(() => {
-    if (!dismiss) return
-    const timer = setTimeout(() => dismiss([id]), RECOVERED_VISIBLE_MS)
-    return () => clearTimeout(timer)
-  }, [dismiss, id])
-  return (
-    <div className="px-1 py-1.5 text-[11px] text-muted-foreground">
-      <div className="flex items-center gap-2">
-        <CheckCircle2 aria-hidden="true" className="h-3 w-3 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">
-          {t("recovered")} · {title}
-        </span>
-        {dismiss && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-5 w-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
-            onClick={() => dismiss([id])}
-            aria-label={t("dismiss")}
-          >
-            <X aria-hidden="true" className="h-3 w-3" />
-          </Button>
-        )}
-      </div>
     </div>
   )
 }
