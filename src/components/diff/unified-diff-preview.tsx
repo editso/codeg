@@ -598,15 +598,45 @@ function DiffFileSection({
       className={cn(
         "flex flex-col",
         // Self-capped by default: the section owns a scroll box so a huge file
-        // can't stretch its host. `unbounded` hands both back to the host (it
-        // supplies its own cap + reveal), which keeps the two from nesting.
+        // can't stretch its host. Embedded previews have one shared outer
+        // viewport instead, so file sections stay part of the same content
+        // flow rather than becoming a stack of scrollable cards.
         unbounded ? "min-h-0" : "max-h-[420px]",
         embedded
-          ? "bg-transparent"
+          ? "bg-transparent py-3 first:pt-0 last:pb-0"
           : "rounded-lg border border-border bg-background"
       )}
     >
-      {!embedded && (
+      {embedded ? (
+        <header className="flex shrink-0 items-center gap-2 border-b border-border/50 px-1 py-1.5 text-[11px]">
+          {clickableFilePath ? (
+            <FilePathLink
+              filePath={file.path}
+              className="min-w-0 flex-1 truncate font-mono font-medium text-foreground/80 hover:text-foreground"
+              title={file.path}
+            >
+              {toDisplayPath(file.path, folderPath)}
+            </FilePathLink>
+          ) : (
+            <span
+              className="min-w-0 flex-1 truncate font-mono font-medium text-foreground/80"
+              title={file.path}
+            >
+              {toDisplayPath(file.path, folderPath)}
+            </span>
+          )}
+          {!newFile && (
+            <span className="ml-auto inline-flex shrink-0 items-center gap-2 font-mono">
+              <span className="text-green-700 dark:text-green-400">
+                +{file.additions}
+              </span>
+              <span className="text-red-700 dark:text-red-400">
+                -{file.deletions}
+              </span>
+            </span>
+          )}
+        </header>
+      ) : (
         <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-[11px]">
           <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {newFile ? "WRITE" : t(modeKey(file.mode))}
@@ -677,6 +707,7 @@ export function UnifiedDiffPreview({
   clickableFilePath = false,
   embedded = false,
   unbounded = false,
+  fill = false,
 }: {
   diffText: string
   /** @deprecated No longer used — kept for API compat */
@@ -685,10 +716,9 @@ export function UnifiedDiffPreview({
   /** When true, file-name header is clickable and opens the workspace open-file dialog. */
   clickableFilePath?: boolean
   /**
-   * When true, render each file's diff WITHOUT its own bordered card + header
-   * chrome — just the line grid. For hosts that already frame the diff and
-   * label the file (e.g. the reply-artifacts accordion), this avoids a
-   * double border and a redundant path/mode header.
+   * When true, render each file as part of one plain detail flow: no rounded
+   * card or mode badge, only a lightweight file line directly above its diff.
+   * This avoids double framing while keeping multi-file previews identifiable.
    */
   embedded?: boolean
   /**
@@ -698,6 +728,11 @@ export function UnifiedDiffPreview({
    * scroll inside another one.
    */
   unbounded?: boolean
+  /**
+   * Fill a host-controlled viewport rather than applying the compact preview
+   * height used in message and dialog surfaces.
+   */
+  fill?: boolean
 }) {
   const t = useTranslations("Folder.diffPreview")
   const { activeFolder: folder } = useActiveFolder()
@@ -734,10 +769,18 @@ export function UnifiedDiffPreview({
   // Unbounded: the host sizes and scrolls the preview, so the outer viewport
   // is a plain box (each file still scrolls horizontally on its own).
   const Frame = unbounded ? UnboundedFrame : ScrollAreaFrame
+  // A plain embedded preview is one continuous detail flow. Its outer viewport
+  // owns vertical scrolling; individual files retain horizontal scrolling only.
+  const fileContentUnbounded = unbounded || embedded
 
   return (
-    <Frame className={className}>
-      <div className={embedded ? "space-y-2" : "space-y-3"}>
+    <Frame
+      className={cn(
+        embedded && !unbounded && !fill && "max-h-[min(28rem,55vh)]",
+        className
+      )}
+    >
+      <div className={embedded ? "divide-y divide-border/50" : "space-y-3"}>
         {files.map((file) => (
           <DiffFileSection
             key={file.key}
@@ -745,7 +788,7 @@ export function UnifiedDiffPreview({
             embedded={embedded}
             clickableFilePath={clickableFilePath}
             folderPath={folder?.path ?? null}
-            unbounded={unbounded}
+            unbounded={fileContentUnbounded}
           />
         ))}
       </div>

@@ -1426,6 +1426,18 @@
   --os-size: 8px;
 }
 
+/* OverlayScrollbars instances can nest in a transcript (for example, a
+   file-level diff viewport inside the full diff viewport). The component
+   coordinator marks only the deepest scrollable layer as active, so an outer
+   track never appears beside the scrollbar the reader is actually using. */
+.os-scrollbar.os-theme-codeg[data-codeg-overlay-scrollbar="true"]:not(
+    [data-codeg-scrollbar-active="true"]
+  ) {
+  pointer-events: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
 /* Streamdown code blocks: dark mode via shiki dual-theme CSS variables */
 .dark [data-streamdown="code-block-body"] {
   background-color: var(--shiki-dark-bg, var(--sdm-bg, transparent)) !important;

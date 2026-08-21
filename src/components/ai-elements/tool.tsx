@@ -365,6 +365,9 @@ export const ToolOutput = ({
     output,
     normalizedErrorText
   )
+  const outputLanguage =
+    typeof output === "string" ? detectOutputLanguage(output) : null
+  const isDiffOutput = outputLanguage === "diff"
 
   let Output = <div>{output as ReactNode}</div>
 
@@ -374,7 +377,7 @@ export const ToolOutput = ({
     // for scalars and oversized payloads).
     Output = <JsonTreeView value={output} />
   } else if (typeof output === "string") {
-    const lang = detectOutputLanguage(output)
+    const lang = outputLanguage ?? "log"
     const jsonValue = lang === "json" ? parseJsonForTree(output) : undefined
     const shouldRenderMd =
       renderAsMarkdown ?? (lang === "log" && looksLikeMarkdown(output))
@@ -387,7 +390,9 @@ export const ToolOutput = ({
         </div>
       )
     } else if (lang === "diff") {
-      Output = <UnifiedDiffPreview diffText={output} clickableFilePath />
+      Output = (
+        <UnifiedDiffPreview diffText={output} clickableFilePath embedded />
+      )
     } else {
       Output = <CodeBlock code={output} language={lang} />
     }
@@ -400,10 +405,12 @@ export const ToolOutput = ({
       </h4>
       <div
         className={cn(
-          "overflow-x-auto rounded-md text-xs [&_table]:w-full",
+          "text-xs [&_table]:w-full",
           errorText
-            ? "bg-destructive/10 text-destructive"
-            : "bg-muted/50 text-foreground"
+            ? "overflow-x-auto rounded-md bg-destructive/10 text-destructive"
+            : isDiffOutput
+              ? "overflow-hidden text-foreground"
+              : "overflow-x-auto rounded-md bg-muted/50 text-foreground"
         )}
       >
         {typeof errorText === "string" && renderErrorText(errorText)}

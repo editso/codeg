@@ -1950,6 +1950,8 @@ export function FileWorkspacePanel() {
           <UnifiedDiffPreview
             diffText={activeFileTab.content}
             className="h-full p-3"
+            embedded
+            fill
           />
         )}
       </div>

@@ -1,11 +1,33 @@
 "use client"
 
-import { useMemo } from "react"
+import { useCallback, useMemo, useRef } from "react"
 import {
   OverlayScrollbarsComponent,
   type OverlayScrollbarsComponentRef,
 } from "overlayscrollbars-react"
 import type { OverlayScrollbarsComponentProps } from "overlayscrollbars-react"
+import type { OverlayScrollbars } from "overlayscrollbars"
+
+const overlayScrollbarElements = new WeakMap<HTMLElement, HTMLElement[]>()
+let activeOverlayScrollbarHost: HTMLElement | null = null
+
+function setActiveOverlayScrollbarHost(host: HTMLElement | null) {
+  if (activeOverlayScrollbarHost === host) return
+
+  const previous = activeOverlayScrollbarHost
+  if (previous) {
+    for (const scrollbar of overlayScrollbarElements.get(previous) ?? []) {
+      delete scrollbar.dataset.codegScrollbarActive
+    }
+  }
+
+  activeOverlayScrollbarHost = host
+  if (host) {
+    for (const scrollbar of overlayScrollbarElements.get(host) ?? []) {
+      scrollbar.dataset.codegScrollbarActive = "true"
+    }
+  }
+}
 
 type ScrollAreaProps = {
   children: React.ReactNode
@@ -41,6 +63,92 @@ export function ScrollArea({
   onViewportRef,
   ref,
 }: ScrollAreaProps) {
+  const overlayHoverCleanupRef = useRef<(() => void) | null>(null)
+
+  const syncOverlayScrollbarState = useCallback(
+    (instance: OverlayScrollbars) => {
+      const { host } = instance.elements()
+      const { x, y } = instance.state().hasOverflow
+      host.dataset.codegOverlayScrollbarScrollable = String(x || y)
+
+      if (!x && !y && activeOverlayScrollbarHost === host) {
+        setActiveOverlayScrollbarHost(null)
+      }
+    },
+    []
+  )
+
+  const bindOverlayScrollbarHover = useCallback(
+    (instance: OverlayScrollbars) => {
+      overlayHoverCleanupRef.current?.()
+
+      const { host, viewport, scrollbarHorizontal, scrollbarVertical } =
+        instance.elements()
+      const scrollbars = [
+        scrollbarHorizontal.scrollbar,
+        scrollbarVertical.scrollbar,
+      ]
+
+      overlayScrollbarElements.set(host, scrollbars)
+      host.dataset.codegOverlayScrollbar = "true"
+      // The transcript's native-scrollbar coordinator uses this marker to
+      // recognize an OverlayScrollbars viewport as the deepest hovered region.
+      // That stops an ancestor native scrollbar from appearing alongside it.
+      viewport.dataset.codegScrollbar = "true"
+      for (const scrollbar of scrollbars) {
+        scrollbar.dataset.codegOverlayScrollbar = "true"
+      }
+      syncOverlayScrollbarState(instance)
+
+      const resolveScrollableHost = (target: EventTarget | null) => {
+        const targetElement = target instanceof Element ? target : null
+        let candidate = targetElement?.closest<HTMLElement>(
+          "[data-codeg-overlay-scrollbar]"
+        )
+
+        while (candidate) {
+          if (candidate.dataset.codegOverlayScrollbarScrollable === "true") {
+            return candidate
+          }
+          candidate = candidate.parentElement?.closest<HTMLElement>(
+            "[data-codeg-overlay-scrollbar]"
+          )
+        }
+
+        return null
+      }
+
+      const activateForTarget = (target: EventTarget | null) => {
+        setActiveOverlayScrollbarHost(resolveScrollableHost(target))
+      }
+      const onPointerMove = (event: PointerEvent) => {
+        activateForTarget(event.target)
+      }
+      const onPointerLeave = (event: PointerEvent) => {
+        activateForTarget(event.relatedTarget)
+      }
+
+      host.addEventListener("pointermove", onPointerMove)
+      host.addEventListener("pointerleave", onPointerLeave)
+      overlayHoverCleanupRef.current = () => {
+        host.removeEventListener("pointermove", onPointerMove)
+        host.removeEventListener("pointerleave", onPointerLeave)
+        if (activeOverlayScrollbarHost === host) {
+          setActiveOverlayScrollbarHost(null)
+        }
+        overlayScrollbarElements.delete(host)
+        delete host.dataset.codegOverlayScrollbar
+        delete host.dataset.codegOverlayScrollbarScrollable
+        delete viewport.dataset.codegScrollbar
+        for (const scrollbar of scrollbars) {
+          delete scrollbar.dataset.codegOverlayScrollbar
+          delete scrollbar.dataset.codegScrollbarActive
+        }
+      }
+    },
+    [syncOverlayScrollbarState]
+  )
+
   const options = useMemo<OverlayScrollbarsComponentProps["options"]>(
     () => ({
       ...BASE_OPTIONS,
@@ -52,15 +160,23 @@ export function ScrollArea({
   const events = useMemo<OverlayScrollbarsComponentProps["events"]>(
     () => ({
       ...(onScroll ? { scroll: (_instance, event) => onScroll(event) } : {}),
-      ...(onViewportRef
-        ? {
-            initialized: (instance) =>
-              onViewportRef(instance.elements().viewport),
-            destroyed: () => onViewportRef(null),
-          }
-        : {}),
+      initialized: (instance) => {
+        bindOverlayScrollbarHover(instance)
+        onViewportRef?.(instance.elements().viewport)
+      },
+      updated: (instance) => syncOverlayScrollbarState(instance),
+      destroyed: () => {
+        overlayHoverCleanupRef.current?.()
+        overlayHoverCleanupRef.current = null
+        onViewportRef?.(null)
+      },
     }),
-    [onScroll, onViewportRef]
+    [
+      bindOverlayScrollbarHover,
+      onScroll,
+      onViewportRef,
+      syncOverlayScrollbarState,
+    ]
   )
 
   return (

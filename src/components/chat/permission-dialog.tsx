@@ -147,7 +147,7 @@ export function PermissionDialog({
         )}
 
         {hasFileChanges && parsed.diffPreview && (
-          <UnifiedDiffPreview diffText={parsed.diffPreview} />
+          <UnifiedDiffPreview diffText={parsed.diffPreview} embedded />
         )}
 
         {hasPlan && (
@@ -164,10 +164,7 @@ export function PermissionDialog({
             {parsed.planEntries.length > 0 && (
               <div className="space-y-0.5 rounded-md bg-muted/40 p-1.5">
                 {parsed.planEntries.map((entry, index) => (
-                  <div
-                    key={`${entry.text}-${index}`}
-                    className="text-[11px]"
-                  >
+                  <div key={`${entry.text}-${index}`} className="text-[11px]">
                     <span className="text-foreground/90">{entry.text}</span>
                     {entry.status && (
                       <span className="ml-2 text-muted-foreground">

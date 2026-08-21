@@ -1353,7 +1353,7 @@ function EditToolInput({ input }: { input: Record<string, unknown> }) {
   }, [oldString, newString, filePath, startLine])
 
   return diffCode ? (
-    <UnifiedDiffPreview diffText={diffCode} clickableFilePath />
+    <UnifiedDiffPreview diffText={diffCode} clickableFilePath embedded />
   ) : null
 }
 
@@ -1384,7 +1384,7 @@ function EditChangesToolInput({ changes }: { changes: EditChangePreview[] }) {
   }, [changes])
 
   return diffCode ? (
-    <UnifiedDiffPreview diffText={diffCode} clickableFilePath />
+    <UnifiedDiffPreview diffText={diffCode} clickableFilePath embedded />
   ) : null
 }
 
@@ -1784,7 +1784,7 @@ function CodexScriptToolInput({ card }: { card: CodexScriptCard }) {
 }
 
 function ApplyPatchToolInput({ input }: { input: string }) {
-  return <UnifiedDiffPreview diffText={input} clickableFilePath />
+  return <UnifiedDiffPreview diffText={input} clickableFilePath embedded />
 }
 
 // ── Generic structured input (fallback) ──────────────────────────────
@@ -1971,7 +1971,7 @@ function StructuredToolInput({
       return (
         <>
           {truncationBanner}
-          <UnifiedDiffPreview diffText={output} clickableFilePath />
+          <UnifiedDiffPreview diffText={output} clickableFilePath embedded />
         </>
       )
     }
@@ -3336,7 +3336,9 @@ const ActivityStructuredEditInput = memo(function ActivityStructuredEditInput({
   )
 
   if (patchInput) {
-    return <UnifiedDiffPreview diffText={patchInput} clickableFilePath />
+    return (
+      <UnifiedDiffPreview diffText={patchInput} clickableFilePath embedded />
+    )
   }
   if (!parsed) return null
   if (changes.length > 0) {
@@ -3464,6 +3466,18 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
       const structuredEditInput =
         Boolean(rawInput) &&
         (presentation.kind === "edit" || hasActivityEditPayload(rawInput))
+      const structuredDiffAvailable = (() => {
+        if (!structuredEditInput) return false
+        const parsed = aliasToolInputKeys(tryParseJson(rawInput))
+        if (extractApplyPatchTextFromUnknownInput(rawInput, parsed)) {
+          return true
+        }
+        return Boolean(
+          parsed &&
+          (extractEditChangesPayload(parsed).length > 0 ||
+            isCanonicalEditPayload(parsed))
+        )
+      })()
       const input = script
         ? { text: script.source, language: "javascript" as const }
         : presentation.command
@@ -3479,6 +3493,7 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
         presentation,
         rawInput,
         structuredEditInput,
+        structuredDiffAvailable,
         input,
         output: output
           ? { text: output, language: codeLanguageForOutput(output) }
@@ -3491,7 +3506,14 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
   })()
 
   if (!detail) return null
-  const { presentation, rawInput, structuredEditInput, input, output } = detail
+  const {
+    presentation,
+    rawInput,
+    structuredEditInput,
+    structuredDiffAvailable,
+    input,
+    output,
+  } = detail
   if (!presentation.command && !structuredEditInput && !input && !output) {
     return null
   }
@@ -3510,17 +3532,17 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
 
   return (
     <div className="grid w-full max-w-none gap-2 py-0.5">
-      {presentation.paths[0] ? (
-        <div className="flex min-w-0 items-center gap-2 rounded-lg bg-secondary px-3 py-2 text-[11px] ring-1 ring-border/10">
-          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      {presentation.paths[0] && !structuredDiffAvailable ? (
+        <div className="flex min-w-0 items-center gap-1.5 px-1 py-0.5 text-[11px] text-muted-foreground">
+          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
           <FilePathLink
             filePath={presentation.paths[0]}
-            className="min-w-0 truncate font-mono text-foreground/70 hover:text-foreground"
+            className="min-w-0 truncate font-mono text-muted-foreground hover:text-foreground"
           >
             {presentation.paths[0]}
           </FilePathLink>
           {presentation.paths.length > 1 ? (
-            <span className="shrink-0 text-muted-foreground/60">
+            <span className="shrink-0 text-muted-foreground/65">
               +{presentation.paths.length - 1}
             </span>
           ) : null}
