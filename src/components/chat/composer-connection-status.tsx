@@ -90,15 +90,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
  * conversation via `tabId` (the connection `contextKey`) so tiled/multi-open
  * composers each reflect their own connection. The inline signal is just a
  * colour-coded heart (no agent icon or model label) with the detail on hover;
- * clicking it opens a popover with the full connection state and a Reconnect
- * button that stays available in EVERY state — including `disconnected`, where
- * the store holds no entry at all and the params come from what `connect()` last
- * recorded for this key (see `AcpActionsValue.reconnect`).
+ * clicking it opens a popover with the full connection state, plus Reconnect
+ * and Restart actions. Reconnect stays available in EVERY state — including
+ * `disconnected`, where the store holds no entry at all and the params come
+ * from what `connect()` last recorded for this key.
  */
 export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   const t = useTranslations("Folder.statusBar.connection")
   const store = useConnectionStore()
-  const { reconnect, reapplyConfig, getReconnectInfo } = useAcpActions()
+  const { reconnect, restart, getReconnectInfo } = useAcpActions()
   const [open, setOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<
     "reconnect" | "restart" | null
@@ -148,14 +148,21 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   // A reconnect on a busy OWNER kills the agent CLI mid-turn; a viewer's only
   // detaches and re-attaches, leaving the owner's agent alone — so only the
   // former is worth warning about.
-  const destructive =
+  const reconnectDestructive =
     !conn?.isViewer &&
     isConnectionBusy({
       status: conn?.status ?? null,
       backgroundOutstanding: conn?.backgroundOutstanding ?? 0,
     })
+  // Restart always replaces the agent process, including when this browser is
+  // a viewer attached after a page refresh, so it must be gated for every
+  // connection owner shape while work is in flight.
+  const restartDestructive = isConnectionBusy({
+    status: conn?.status ?? null,
+    backgroundOutstanding: conn?.backgroundOutstanding ?? 0,
+  })
   const canReconnect = reconnectInfo !== null
-  const canRestart = conn != null && !conn.isViewer && !conn.isDelegationChild
+  const canRestart = conn != null && !conn.isDelegationChild
 
   const handleReconnect = useCallback(() => {
     if (!tabId) return
@@ -169,15 +176,15 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   }, [reconnect, tabId])
 
   const handleRestart = useCallback(() => {
-    if (!tabId || !canRestart || destructive) return
+    if (!tabId || !canRestart || restartDestructive) return
     setPendingAction("restart")
-    void reapplyConfig(tabId)
+    void restart(tabId)
       .catch(() => {
-        // The connection status and the conversation-level stale banner expose
-        // the failure state without duplicating an alert from this compact menu.
+        // The connection status surfaces failures in the same compact place as
+        // reconnect, without adding a second alert to the conversation.
       })
       .finally(() => setPendingAction(null))
-  }, [canRestart, destructive, reapplyConfig, tabId])
+  }, [canRestart, restart, restartDestructive, tabId])
 
   // The trigger keeps the native `title` (hover tooltip) it had as a plain span,
   // so the detail is still one hover away now that a click opens the popover.
@@ -235,7 +242,7 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
           </p>
         ) : null}
 
-        {canReconnect && destructive ? (
+        {canReconnect && reconnectDestructive ? (
           <p className="text-[11px] leading-snug text-amber-600 dark:text-amber-500">
             {t("reconnectInterrupts")}
           </p>
@@ -255,21 +262,19 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
           {pendingAction === "reconnect" ? t("reconnecting") : t("reconnect")}
         </Button>
 
-        {canRestart ? (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            className="w-full"
-            disabled={destructive || pendingAction !== null}
-            onClick={handleRestart}
-          >
-            <RotateCcw
-              className={cn(pendingAction === "restart" && "animate-spin")}
-            />
-            {pendingAction === "restart" ? t("restarting") : t("restart")}
-          </Button>
-        ) : null}
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="w-full"
+          disabled={!canRestart || restartDestructive || pendingAction !== null}
+          onClick={handleRestart}
+        >
+          <RotateCcw
+            className={cn(pendingAction === "restart" && "animate-spin")}
+          />
+          {pendingAction === "restart" ? t("restarting") : t("restart")}
+        </Button>
 
         {!canReconnect ? (
           <p className="text-[11px] leading-snug text-muted-foreground">

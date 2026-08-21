@@ -2643,6 +2643,13 @@ export interface AcpActionsValue {
    */
   reapplyConfig(contextKey: string): Promise<boolean>
   /**
+   * Explicitly restart a session from the connection-status popover. Unlike
+   * `reapplyConfig`, a viewer may request this: the backend connection is
+   * stopped first, then the current client creates a fresh process for the
+   * same session. Delegation children remain broker-owned and cannot restart.
+   */
+  restart(contextKey: string): Promise<boolean>
+  /**
    * User-driven reconnect for the composer's connection-status popover, usable
    * in ANY state — unlike `reapplyConfig`, which only restarts a live owner.
    *
@@ -5617,6 +5624,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [connect, disconnect, resolveReconnectRequest, waitForConnectSettled]
   )
 
+  const restart = useCallback(
+    async (contextKey: string): Promise<boolean> => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn || conn.isDelegationChild) return false
+
+      if (!conn.isViewer) return reapplyConfig(contextKey)
+
+      // A browser reload re-attaches this tab as a viewer of the process the
+      // previous page started. A restart is explicit user intent, so terminate
+      // that shared process before the normal viewer teardown + reconnect.
+      // `reconnect` alone only re-attaches to the same process.
+      try {
+        await acpDisconnect(conn.connectionId)
+      } catch (error) {
+        if (!isConnectionGoneError(error)) {
+          console.warn("[Acp] viewer-requested restart failed:", error)
+          return false
+        }
+      }
+
+      return reconnect(contextKey)
+    },
+    [reapplyConfig, reconnect]
+  )
+
   const dismissConfigStale = useCallback(
     (contextKey: string) => {
       dispatch({ type: "DISMISS_CONFIG_STALE", contextKey })
@@ -6005,6 +6037,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachDelegationChild,
       detachDelegationChild,
       reapplyConfig,
+      restart,
       reconnect,
       getReconnectInfo,
       dismissConfigStale,
@@ -6031,6 +6064,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachDelegationChild,
       detachDelegationChild,
       reapplyConfig,
+      restart,
       reconnect,
       getReconnectInfo,
       dismissConfigStale,
