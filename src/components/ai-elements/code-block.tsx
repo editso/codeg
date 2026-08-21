@@ -384,11 +384,15 @@ export const CodeBlockContent = ({
   code,
   language,
   showLineNumbers = false,
+  className,
+  preClassName,
+  ...props
 }: {
   code: string
   language: BundledLanguage
   showLineNumbers?: boolean
-}) => {
+  preClassName?: string
+} & Omit<HTMLAttributes<HTMLDivElement>, "children">) => {
   // Memoized raw tokens for immediate display
   const rawTokens = useMemo(() => createRawTokens(code), [code])
 
@@ -427,8 +431,12 @@ export const CodeBlockContent = ({
       : syncTokenized
 
   return (
-    <div className="relative overflow-auto">
-      <CodeBlockBody showLineNumbers={showLineNumbers} tokenized={tokenized} />
+    <div className={cn("relative overflow-auto", className)} {...props}>
+      <CodeBlockBody
+        className={preClassName}
+        showLineNumbers={showLineNumbers}
+        tokenized={tokenized}
+      />
     </div>
   )
 }

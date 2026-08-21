@@ -35,7 +35,11 @@ import {
   ToolOutput,
 } from "@/components/ai-elements/tool"
 import { Terminal } from "@/components/ai-elements/terminal"
-import { CodeBlock } from "@/components/ai-elements/code-block"
+import {
+  CodeBlock,
+  CodeBlockContainer,
+  CodeBlockContent,
+} from "@/components/ai-elements/code-block"
 import { JsonTreeView } from "@/components/ai-elements/json-tree"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { generateUnifiedDiff } from "@/lib/unified-diff-generator"
@@ -82,6 +86,8 @@ import {
   AssistantActivityGroup,
   type AssistantActivityItem,
 } from "./assistant-activity-group"
+import { describeToolActivity } from "./tool-activity-presentation"
+import type { BundledLanguage } from "shiki"
 import {
   FileTextIcon,
   FilePenLineIcon,
@@ -3210,9 +3216,13 @@ function formatActivityPreviewText(value: unknown): string | null {
 
 const ActivityPreviewCode = memo(function ActivityPreviewCode({
   text,
+  label,
+  language,
   className,
 }: {
   text: string
+  label?: string
+  language: BundledLanguage
   className?: string
 }) {
   const copy = useCallback(() => {
@@ -3221,15 +3231,27 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
 
   return (
     <div className="group/activity-code relative min-w-0 max-w-full">
-      <pre
-        data-codeg-scrollbar="true"
+      {label ? (
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium tracking-[0.02em] text-muted-foreground/70">
+          <span className="h-px w-2.5 bg-border/70" />
+          {label}
+        </div>
+      ) : null}
+      <CodeBlockContainer
+        language={language}
         className={cn(
-          "codeg-scrollbar-hover m-0 max-h-[min(18rem,34vh)] max-w-full overflow-auto rounded-md border border-border/30 bg-muted/30 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/85",
+          "m-0 max-w-full rounded-md border-border/40 bg-muted/25 text-foreground/85 dark:bg-muted/40",
           className
         )}
       >
-        <code className="whitespace-pre-wrap break-words">{text}</code>
-      </pre>
+        <CodeBlockContent
+          code={text}
+          data-codeg-scrollbar="true"
+          language={language}
+          className="codeg-scrollbar-hover max-h-[min(18rem,34vh)]"
+          preClassName="p-2.5 text-[12px] leading-5"
+        />
+      </CodeBlockContainer>
       <button
         aria-label="Copy activity detail"
         className="absolute end-1.5 top-1.5 inline-grid size-6 place-items-center rounded-sm text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/activity-code:opacity-100"
@@ -3258,53 +3280,99 @@ function activityToolOutput(
   ).trim()
 }
 
+function codeLanguageForOutput(text: string): BundledLanguage {
+  const trimmed = text.trim()
+  if (tryParseJson(trimmed)) return "json"
+  if (
+    trimmed.startsWith("diff --git") ||
+    trimmed.startsWith("*** Begin Patch")
+  ) {
+    return "diff"
+  }
+  return "log"
+}
+
 const ActivityToolPreview = memo(function ActivityToolPreview({
   part,
 }: {
   part?: Extract<AdaptedContentPart, { type: "tool-call" }>
 }) {
+  const t = useTranslations("Folder.chat.contentParts")
+  const toolT = useTranslations("Folder.chat.tool")
   if (!part) return null
 
-  let command = false
-  let commandText: string | null = null
-  let input: string | null = null
-  let output: string | null = null
+  const detail = (() => {
+    try {
+      const presentation = describeToolActivity(part)
+      const script =
+        presentation.kind === "script" ? parseCodexScriptCard(part.input) : null
+      const isCommandSurface =
+        presentation.kind === "command" || presentation.kind === "session"
+      const rawInput = activityPreviewSource(part.input)
+      const input = script
+        ? { text: script.source, language: "javascript" as const }
+        : presentation.command
+          ? null
+          : (() => {
+              const text = formatActivityPreviewText(rawInput)
+              return text ? { text, language: "json" as const } : null
+            })()
+      const output = activityToolOutput(part, isCommandSurface)
+      return {
+        presentation,
+        input,
+        output: output
+          ? { text: output, language: codeLanguageForOutput(output) }
+          : null,
+      }
+    } catch {
+      // A malformed historical tool payload must not take down the whole thread.
+      return null
+    }
+  })()
 
-  try {
-    const toolName =
-      typeof part.toolName === "string" && part.toolName.trim()
-        ? part.toolName
-        : "tool"
-    const normalizedToolName = normalizeToolName(toolName)
-    command =
-      normalizedToolName === "bash" ||
-      normalizedToolName === "exec_command" ||
-      isShellSessionToolName(normalizedToolName)
-    const rawInput = activityPreviewSource(part.input)
-    commandText = command
-      ? (extractDisplayCommandFromToolInput(rawInput) ?? null)
-      : null
-    input = commandText ? null : formatActivityPreviewText(rawInput)
-    output = activityToolOutput(part, command)
-  } catch {
-    // A malformed historical tool payload must not take down the whole thread.
-    return null
-  }
-
-  if (!commandText && !input && !output) return null
+  if (!detail) return null
+  const { presentation, input, output } = detail
+  if (!presentation.command && !input && !output) return null
 
   return (
-    <div className="grid max-w-[48rem] gap-1.5 py-0.5">
-      {commandText ? <ActivityPreviewCode text={`$ ${commandText}`} /> : null}
-      {input ? <ActivityPreviewCode text={input} /> : null}
+    <div className="grid max-w-[48rem] gap-2 py-0.5">
+      {presentation.paths[0] ? (
+        <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted/20 px-2.5 py-1.5 text-[11px]">
+          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <FilePathLink
+            filePath={presentation.paths[0]}
+            className="min-w-0 truncate font-mono text-foreground/85 hover:text-foreground"
+          >
+            {presentation.paths[0]}
+          </FilePathLink>
+          {presentation.paths.length > 1 ? (
+            <span className="shrink-0 text-muted-foreground/65">
+              +{presentation.paths.length - 1}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {presentation.command ? (
+        <ActivityPreviewCode
+          label={t("field.command")}
+          language="bash"
+          text={`$ ${presentation.command}`}
+        />
+      ) : null}
+      {input ? (
+        <ActivityPreviewCode
+          label={toolT("parameters")}
+          language={input.language}
+          text={input.text}
+        />
+      ) : null}
       {output ? (
         <ActivityPreviewCode
-          text={output}
-          className={
-            part.errorText
-              ? "border-destructive/30 text-destructive"
-              : undefined
-          }
+          label={part.errorText ? toolT("error") : t("result")}
+          language={output.language}
+          text={output.text}
+          className={part.errorText ? "border-destructive/30" : undefined}
         />
       ) : null}
     </div>
@@ -3324,10 +3392,9 @@ const ActivityToolResultPreview = memo(function ActivityToolResultPreview({
   return (
     <div className="max-w-[48rem] py-0.5">
       <ActivityPreviewCode
+        language={codeLanguageForOutput(text)}
         text={text}
-        className={
-          part.errorText ? "border-destructive/30 text-destructive" : undefined
-        }
+        className={part.errorText ? "border-destructive/30" : undefined}
       />
     </div>
   )

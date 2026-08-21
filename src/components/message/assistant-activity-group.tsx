@@ -12,9 +12,14 @@ import {
 import { Virtualizer } from "virtua"
 import {
   ChevronRightIcon,
+  CodeIcon,
+  FilePenLineIcon,
+  FilePlusIcon,
   FileTextIcon,
+  GlobeIcon,
   ListTodoIcon,
   LoaderCircleIcon,
+  SearchIcon,
   TerminalIcon,
   TimerIcon,
   TriangleAlertIcon,
@@ -24,7 +29,6 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
-import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { cn } from "@/lib/utils"
 import {
   Collapsible,
@@ -33,6 +37,10 @@ import {
 } from "@/components/ui/instant-collapsible"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { MessageResponse } from "@/components/ai-elements/message"
+import {
+  describeToolActivity,
+  type ToolActivityKind,
+} from "./tool-activity-presentation"
 
 /**
  * The operational parts of one assistant reply. Each keeps its existing card
@@ -100,21 +108,6 @@ const ACTIVITY_ESTIMATED_ROW_HEIGHT = 32
 const ACTIVITY_BUFFER_SIZE = 720
 const ACTIVITY_FOLLOW_THRESHOLD_PX = 28
 const ACTIVITY_SCROLL_REPIN_FRAMES = 2
-
-const FILE_TOOL_NAMES = new Set([
-  "read",
-  "write",
-  "edit",
-  "apply_patch",
-  "notebookedit",
-])
-
-const COMMAND_TOOL_NAMES = new Set([
-  "bash",
-  "exec_command",
-  "write_stdin",
-  "wait",
-])
 
 function isStreaming(item: AssistantActivityItem): boolean {
   if (item.type === "message") return false
@@ -216,75 +209,84 @@ function detailPresentation(
   item: Exclude<
     AssistantActivityItem,
     { type: "reasoning" } | { type: "message" } | { type: "context-compaction" }
-  >,
-  resultLabel: string,
-  todoLabel: (count: number) => string,
-  taskLabel: (count: number) => string
-): { label: string; icon: LucideIcon; duration: string | null } {
+  >
+): {
+  subject: string | null
+  context: string | null
+  icon: LucideIcon
+  duration: string | null
+  monospace: boolean
+} {
   if (item.type === "tool-call") {
-    const toolName = normalizeToolName(
-      typeof item.part.toolName === "string" ? item.part.toolName : "tool"
-    )
-    if (FILE_TOOL_NAMES.has(toolName)) {
-      return {
-        label: "File",
-        icon: FileTextIcon,
-        duration: extractWallTime(item.part.output ?? item.part.errorText),
-      }
-    }
-    if (COMMAND_TOOL_NAMES.has(toolName)) {
-      return {
-        label: "Command",
-        icon: TerminalIcon,
-        duration: extractWallTime(item.part.output ?? item.part.errorText),
-      }
-    }
-    if (toolName === "todowrite") {
-      return {
-        label: todoLabel(1),
-        icon: ListTodoIcon,
-        duration: extractWallTime(item.part.output ?? item.part.errorText),
-      }
+    const presentation = describeToolActivity(item.part)
+    const iconByKind: Record<ToolActivityKind, LucideIcon> = {
+      command: TerminalIcon,
+      script: CodeIcon,
+      session: TimerIcon,
+      read: FileTextIcon,
+      edit: FilePenLineIcon,
+      write: FilePlusIcon,
+      search: SearchIcon,
+      web: GlobeIcon,
+      todo: ListTodoIcon,
+      task: UsersIcon,
+      tool: WrenchIcon,
     }
     return {
-      label: "Tool",
-      icon: WrenchIcon,
+      subject: presentation.subject,
+      context: presentation.context,
+      icon: iconByKind[presentation.kind],
       duration: extractWallTime(item.part.output ?? item.part.errorText),
+      monospace: presentation.monospace,
     }
   }
 
   if (item.type === "tool-result") {
     return {
-      label: resultLabel,
+      subject: null,
+      context: null,
       icon: WrenchIcon,
       duration: extractWallTime(item.part.output ?? item.part.errorText),
+      monospace: false,
     }
   }
 
   if (item.type === "plan") {
     return {
-      label: todoLabel(Math.max(1, item.part.entries.length)),
+      subject: null,
+      context: null,
       icon: ListTodoIcon,
       duration: null,
+      monospace: false,
     }
   }
 
   if (item.type === "goal-run") {
-    return { label: taskLabel(1), icon: ListTodoIcon, duration: null }
+    return {
+      subject: null,
+      context: null,
+      icon: ListTodoIcon,
+      duration: null,
+      monospace: false,
+    }
   }
 
   if (item.type === "delegation-status-group") {
     return {
-      label: taskLabel(Math.max(1, item.part.polls.length)),
+      subject: null,
+      context: null,
       icon: UsersIcon,
       duration: null,
+      monospace: false,
     }
   }
 
   return {
-    label: taskLabel(Math.max(1, item.part.polls.length)),
+    subject: null,
+    context: null,
     icon: TimerIcon,
     duration: null,
+    monospace: false,
   }
 }
 
@@ -357,7 +359,6 @@ function ActivityDetailRow({
   renderItem: (item: AssistantActivityItem) => ReactNode
 }) {
   const t = useTranslations("Folder.chat.contentParts")
-  const groupT = useTranslations("Folder.chat.contentParts.toolGroup")
   const active = isStreaming(item)
   const failed = hasError(item)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -365,15 +366,12 @@ function ActivityDetailRow({
   const detailRef = useRef<HTMLDivElement>(null)
   const revealFrameRef = useRef<number | null>(null)
   const {
-    label,
+    subject,
+    context,
     icon: Icon,
     duration,
-  } = detailPresentation(
-    item,
-    t("result"),
-    (count) => groupT("todo", { count }),
-    (count) => groupT("task", { count })
-  )
+    monospace,
+  } = detailPresentation(item)
 
   const iconClass = failed
     ? "text-destructive/85"
@@ -456,8 +454,9 @@ function ActivityDetailRow({
         className="group/activity-row relative z-10 min-w-0"
       >
         <CollapsibleTrigger
+          aria-label={subject ?? context ?? t("result")}
           className={cn(
-            "inline-flex min-h-6 max-w-full items-center gap-2 rounded-md px-1.5 py-0.5 text-left text-[13px] leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            "inline-flex min-h-7 max-w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] leading-5 outline-none transition-colors hover:bg-muted/45 focus-visible:ring-2 focus-visible:ring-ring/50",
             failed ? "text-destructive" : "text-muted-foreground"
           )}
         >
@@ -476,11 +475,23 @@ function ActivityDetailRow({
               <Icon aria-hidden="true" className={cn("size-3.5", iconClass)} />
             )}
           </span>
-          <span className="min-w-0 truncate text-muted-foreground/85">
-            {label}
-          </span>
+          {subject ? (
+            <span
+              className={cn(
+                "min-w-0 truncate text-foreground/85",
+                monospace && "font-mono text-[12px]"
+              )}
+            >
+              {subject}
+            </span>
+          ) : null}
+          {context ? (
+            <span className="hidden max-w-40 shrink truncate text-[11px] text-muted-foreground/55 sm:inline">
+              {context}
+            </span>
+          ) : null}
           {duration ? (
-            <span className="shrink-0 text-[12px] text-muted-foreground/60">
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60 tabular-nums">
               {duration}
             </span>
           ) : null}
@@ -620,7 +631,7 @@ function ActivityItemList({
       ref={scrollerRef}
       onScroll={handleScroll}
       data-codeg-scrollbar="true"
-      className="codeg-scrollbar-hover relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto pe-1 text-muted-foreground [overflow-anchor:none]"
+      className="codeg-scrollbar-hover @container/tool-activity relative mt-1 max-h-[min(34rem,55vh)] overflow-y-auto pe-1 text-muted-foreground [overflow-anchor:none]"
     >
       {virtualized ? (
         <Virtualizer
