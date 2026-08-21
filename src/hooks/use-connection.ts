@@ -16,6 +16,7 @@ import type {
   AvailableCommandInfo,
   ConfigStaleKind,
   ConnectionStatus,
+  DraftConversationConfig,
   PendingPlanApprovalState,
   PendingQuestionState,
   PromptCapabilitiesInfo,
@@ -98,7 +99,8 @@ export interface UseConnectionReturn {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
+    conversationId?: number,
+    draftConfig?: DraftConversationConfig
   ) => Promise<void>
   disconnect: () => Promise<void>
   /** Restart the session (disconnect + resume same sessionId) so it picks up
@@ -116,7 +118,11 @@ export interface UseConnectionReturn {
     }
   ) => Promise<void>
   setMode: (modeId: string) => Promise<void>
-  setConfigOption: (configId: string, valueId: string) => Promise<void>
+  setConfigOption: (
+    configId: string,
+    valueId: string,
+    saveAsAgentDefault?: boolean
+  ) => Promise<boolean>
   cancel: () => Promise<void>
   respondPermission: (requestId: string, optionId: string) => Promise<void>
   answerQuestion: (questionId: string, answer: QuestionAnswer) => Promise<void>
@@ -245,14 +251,16 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      draftConfig?: DraftConversationConfig
     ) =>
       actions.connect(
         contextKey,
         agentType,
         workingDir,
         sessionId,
-        conversationId
+        conversationId,
+        draftConfig
       ),
     [actions, contextKey]
   )
@@ -282,8 +290,13 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   )
 
   const setConfigOption = useCallback(
-    (configId: string, valueId: string) =>
-      actions.setConfigOption(contextKey, configId, valueId),
+    (configId: string, valueId: string, saveAsAgentDefault?: boolean) =>
+      actions.setConfigOption(
+        contextKey,
+        configId,
+        valueId,
+        saveAsAgentDefault
+      ),
     [actions, contextKey]
   )
 

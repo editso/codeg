@@ -29,6 +29,10 @@ import type {
   ConversationSummary,
   ConversationDetail,
   ConversationTurnsPage,
+  ConversationConfigUpdate,
+  ConversationConfigView,
+  ConversationMcpCatalog,
+  DraftConversationConfig,
   DbConversationDetail,
   FolderInfo,
   AgentStats,
@@ -188,7 +192,9 @@ export async function acpConnect(
   workingDir?: string,
   sessionId?: string,
   preferredModeId?: string | null,
-  preferredConfigValues?: Record<string, string> | null
+  preferredConfigValues?: Record<string, string> | null,
+  conversationId?: number | null,
+  draftConfig?: DraftConversationConfig | null
 ): Promise<string> {
   return getTransport().call("acp_connect", {
     agentType,
@@ -196,6 +202,8 @@ export async function acpConnect(
     sessionId: sessionId ?? null,
     preferredModeId: preferredModeId ?? null,
     preferredConfigValues: preferredConfigValues ?? null,
+    conversationId: conversationId ?? null,
+    draftConfig: draftConfig ?? null,
   })
 }
 
@@ -282,7 +290,7 @@ export async function acpSetConfigOption(
   connectionId: string,
   configId: string,
   valueId: string
-): Promise<void> {
+): Promise<boolean> {
   return getTransport().call("acp_set_config_option", {
     connectionId,
     configId,
@@ -1835,6 +1843,42 @@ export async function saveOpenedTabs(
     items,
     expectedVersion,
     origin,
+  })
+}
+
+export async function getConversationConfig(
+  conversationId: number
+): Promise<ConversationConfigView> {
+  return getTransport().call("get_conversation_config", { conversationId })
+}
+
+export async function getDraftConversationMcpCatalog(
+  agentType: AgentType
+): Promise<ConversationMcpCatalog> {
+  return getTransport().call("get_draft_conversation_mcp_catalog", {
+    agentType,
+  })
+}
+
+export async function updateConversationConfig(
+  conversationId: number,
+  update: ConversationConfigUpdate
+): Promise<ConversationConfigView> {
+  return getTransport().call("update_conversation_config", {
+    conversationId,
+    update,
+  })
+}
+
+export async function updateConversationSessionConfigValue(
+  conversationId: number,
+  configId: string,
+  valueId: string
+): Promise<ConversationConfigView> {
+  return getTransport().call("update_conversation_session_config_value", {
+    conversationId,
+    configId,
+    valueId,
   })
 }
 

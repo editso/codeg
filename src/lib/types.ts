@@ -429,6 +429,61 @@ export type ConversationChange =
 
 export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
 
+/** Versioned notice that one conversation's launch overrides changed. The
+ *  composer refetches the complete configuration on receipt, so the event can
+ *  stay small while multiple browser clients converge on the same saved state. */
+export const CONVERSATION_CONFIG_CHANGED_EVENT = "conversation-config://changed"
+
+export interface ConversationConfigChanged {
+  conversation_id: number
+  version: number
+}
+
+export interface ConversationMcpRef {
+  id: string
+  fingerprint: string
+}
+
+export interface ConversationConfigInfo {
+  conversation_id: number
+  model_provider_id: number | null
+  additional_mcp_refs: ConversationMcpRef[]
+  session_config_values: Record<string, string>
+  version: number
+  updated_at: string
+}
+
+export interface ConversationConfigUpdate {
+  model_provider_id: number | null
+  additional_mcp_refs: ConversationMcpRef[]
+  session_config_values: Record<string, string>
+  expected_version: number
+}
+
+/** Provider/MCP choices for a new-conversation tab before it has a DB row. */
+export interface DraftConversationConfig {
+  model_provider_id: number | null
+  additional_mcp_refs: ConversationMcpRef[]
+}
+
+export interface ConversationMcpCandidate {
+  id: string
+  fingerprint: string
+  source_apps: string[]
+  native: boolean
+  appendable: boolean
+}
+
+export interface ConversationMcpCatalog {
+  candidates: ConversationMcpCandidate[]
+  supports_session_additions: boolean
+}
+
+export interface ConversationConfigView {
+  config: ConversationConfigInfo
+  mcp_catalog: ConversationMcpCatalog
+}
+
 /** Payload for the global `folder://changed` side-channel. A folder created or
  *  updated headlessly — e.g. the automation engine minting a per-run worktree —
  *  reaches every client's workspace list so a conversation produced inside it can

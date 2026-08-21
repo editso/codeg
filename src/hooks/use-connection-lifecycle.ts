@@ -6,10 +6,15 @@ import { toast } from "sonner"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useConnection, type UseConnectionReturn } from "@/hooks/use-connection"
-import { extractAppCommandError } from "@/lib/app-error"
+import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 import { isConnectionBusy } from "@/lib/connection-teardown"
+import { updateConversationSessionConfigValue } from "@/lib/api"
 import { TurnBusyError } from "@/lib/turn-busy"
-import { type AgentType, type PromptDraft } from "@/lib/types"
+import {
+  type AgentType,
+  type DraftConversationConfig,
+  type PromptDraft,
+} from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 
 interface UseConnectionLifecycleOptions {
@@ -24,6 +29,8 @@ interface UseConnectionLifecycleOptions {
    * (cross-client viewing) instead of always spawning a fresh agent.
    */
   conversationId?: number
+  /** Launch overrides selected while a new-conversation tab has no DB row. */
+  draftConfig?: DraftConversationConfig
   /**
    * Read at unmount-cleanup time: true when the component is unmounting
    * because the view is being REPARENTED (its tab moved between split groups /
@@ -115,6 +122,7 @@ export function useConnectionLifecycle({
   workingDir,
   sessionId,
   conversationId,
+  draftConfig,
   isTransientUnmount,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const t = useTranslations("Folder.chat.connectionLifecycle")
@@ -195,6 +203,10 @@ export function useConnectionLifecycle({
   useEffect(() => {
     conversationIdRef.current = conversationId
   }, [conversationId])
+  const draftConfigRef = useRef(draftConfig)
+  useEffect(() => {
+    draftConfigRef.current = draftConfig
+  }, [draftConfig])
   const modeIdRef = useRef<string | null>(modes?.current_mode_id ?? null)
   useEffect(() => {
     modeIdRef.current = modes?.current_mode_id ?? null
@@ -224,7 +236,8 @@ export function useConnectionLifecycle({
         agentType,
         workingDir,
         sessionIdRef.current,
-        conversationIdRef.current
+        conversationIdRef.current,
+        draftConfigRef.current
       )
       .then(() => {
         if (!cancelled) {
@@ -381,7 +394,13 @@ export function useConnectionLifecycle({
     touchActivity(contextKey)
     if (!status || status === "disconnected" || status === "error") {
       setLastAutoConnectError(null)
-      connConnect(agentType, workingDir, sessionId, conversationId).catch(
+      connConnect(
+        agentType,
+        workingDir,
+        sessionId,
+        conversationId,
+        draftConfig
+      ).catch(
         (e: unknown) => {
           if (!isExpectedConnectError(e)) {
             console.error("[ConnLifecycle] connect:", e)
@@ -395,6 +414,7 @@ export function useConnectionLifecycle({
     workingDir,
     sessionId,
     conversationId,
+    draftConfig,
     status,
     connConnect,
     contextKey,
@@ -473,12 +493,30 @@ export function useConnectionLifecycle({
 
   const handleSetConfigOption = useCallback(
     (configId: string, valueId: string) => {
-      touchActivity(contextKey)
-      connSetConfigOption(configId, valueId).catch((e: unknown) =>
-        console.error("[ConnLifecycle] setConfigOption:", e)
-      )
+      void (async () => {
+        touchActivity(contextKey)
+        // The agent validates the opaque selector value first. Only a value it
+        // accepted gets persisted, so a stale model/thinking id can never be
+        // stored as if it were active for this conversation.
+        const applied = await connSetConfigOption(
+          configId,
+          valueId,
+          conversationId == null
+        )
+        if (applied && conversationId != null) {
+          await updateConversationSessionConfigValue(
+            conversationId,
+            configId,
+            valueId
+          )
+        }
+      })().catch((error: unknown) => {
+        const message = toErrorMessage(error)
+        console.error("[ConnLifecycle] setConfigOption:", error)
+        toast.error(message)
+      })
     },
-    [connSetConfigOption, contextKey, touchActivity]
+    [connSetConfigOption, contextKey, conversationId, touchActivity]
   )
 
   const handleRespondPermission = useCallback(

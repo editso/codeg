@@ -53,6 +53,7 @@ import type {
   ConfigStaleKind,
   ConnectionStatus,
   ConversationConnectionInfo,
+  DraftConversationConfig,
   EventEnvelope,
   PlanEntryInfo,
   PermissionOptionInfo,
@@ -338,13 +339,29 @@ type ConnectRequest = {
   // (sessionId already distinguishes), but carried so a re-fired pending
   // request still runs discovery.
   conversationId?: number
+  /** Launch overrides for an unpersisted new-conversation tab. */
+  draftConfig?: DraftConversationConfig
+}
+
+function sameDraftConfig(
+  a: DraftConversationConfig | undefined,
+  b: DraftConversationConfig | undefined
+): boolean {
+  if (a == null || b == null) return a == null && b == null
+  if (a.model_provider_id !== b.model_provider_id) return false
+  if (a.additional_mcp_refs.length !== b.additional_mcp_refs.length) return false
+  return a.additional_mcp_refs.every((ref, index) => {
+    const other = b.additional_mcp_refs[index]
+    return ref.id === other?.id && ref.fingerprint === other.fingerprint
+  })
 }
 
 function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
   return (
     a.agentType === b.agentType &&
     (a.workingDir ?? null) === (b.workingDir ?? null) &&
-    (a.sessionId ?? null) === (b.sessionId ?? null)
+    (a.sessionId ?? null) === (b.sessionId ?? null) &&
+    sameDraftConfig(a.draftConfig, b.draftConfig)
   )
 }
 
@@ -2520,7 +2537,8 @@ export interface AcpActionsValue {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
+    conversationId?: number,
+    draftConfig?: DraftConversationConfig
   ): Promise<void>
   /**
    * Release the connection for `contextKey`. The LOCAL entry always goes away
@@ -2557,8 +2575,9 @@ export interface AcpActionsValue {
   setConfigOption(
     contextKey: string,
     configId: string,
-    valueId: string
-  ): Promise<void>
+    valueId: string,
+    saveAsAgentDefault?: boolean
+  ): Promise<boolean>
   cancel(contextKey: string): Promise<void>
   respondPermission(
     contextKey: string,
@@ -2641,7 +2660,10 @@ export interface AcpActionsValue {
    * it was a no-op (no connection, or a viewer / delegation child that doesn't
    * own the backend process) — callers gate their "applied" confirmation on it.
    */
-  reapplyConfig(contextKey: string): Promise<boolean>
+  reapplyConfig(
+    contextKey: string,
+    draftConfig?: DraftConversationConfig
+  ): Promise<boolean>
   /**
    * Explicitly restart a session from the connection-status popover. Unlike
    * `reapplyConfig`, a viewer may request this: the backend connection is
@@ -2938,7 +2960,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     ) => {
       const remembered = lastConnectParamsRef.current.get(contextKey)
       if (!remembered) return
-      lastConnectParamsRef.current.set(contextKey, { ...remembered, ...patch })
+      const nextRequest = { ...remembered, ...patch }
+      // Once the backend binds the newly-created DB row, persisted config is
+      // authoritative. Keeping the draft alongside conversationId would make
+      // the next reconnect send two mutually exclusive config sources.
+      if (patch.conversationId != null) delete nextRequest.draftConfig
+      lastConnectParamsRef.current.set(contextKey, nextRequest)
     },
     []
   )
@@ -3383,14 +3410,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
    * model whose reasoning it can't honour; grok does it for a model switch
    * mid-conversation.
    *
-   * The request/answer correlation is the backend's (`ConfigOptionRejected`) —
-   * `acpSetConfigOption` resolves as soon as the command is queued, and the
-   * resulting option list arrives as a broadcast indistinguishable from an
-   * unsolicited update. This side only renders the verdict.
+   * The request/answer correlation is the backend's (`ConfigOptionRejected`).
+   * The request caller now also receives the confirmed boolean outcome, while
+   * this side keeps rendering the broadcast verdict for every attached view.
    *
-   * Reporting only — the saved preference deliberately keeps the ATTEMPTED value.
-   * A rejection is often about this session rather than the pick itself (grok's
-   * mid-conversation switch succeeds in a fresh one).
+   * Reporting only — rejected values are not persisted as either an agent
+   * default or a conversation override.
    */
   const reportConfigOptionVerdict = useCallback(
     (
@@ -4863,13 +4888,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      draftConfig?: DraftConversationConfig
     ) => {
       const request: ConnectRequest = {
         agentType,
         workingDir,
         sessionId,
         conversationId,
+        draftConfig,
       }
       // Remember BEFORE the in-flight early return and before the preflight can
       // throw: a connect that never produced a store entry is precisely when
@@ -5172,7 +5199,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           workingDir,
           sessionId,
           savedPrefs.modeId,
-          savedPrefs.configValues
+          savedPrefs.configValues,
+          conversationId,
+          draftConfig
         )
 
         // If disconnect was requested while connect was in flight, tear down
@@ -5354,7 +5383,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   pendingRequest.agentType,
                   pendingRequest.workingDir,
                   pendingRequest.sessionId,
-                  pendingRequest.conversationId
+                  pendingRequest.conversationId,
+                  pendingRequest.draftConfig
                 )
                 .catch(() => {})
             })
@@ -5476,22 +5506,53 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   )
 
   const reapplyConfig = useCallback(
-    async (contextKey: string): Promise<boolean> => {
+    async (
+      contextKey: string,
+      nextDraftConfig?: DraftConversationConfig
+    ): Promise<boolean> => {
       const conn = storeRef.current.connections.get(contextKey)
       // Viewers / delegation children don't own the backend process — restarting
       // would kill another client's (or the broker's) agent. The banner hides
       // its restart button for them, but guard here too. Return false so the
       // caller doesn't show a false "applied" confirmation on this no-op.
-      if (!conn || conn.isViewer || conn.isDelegationChild) return false
+      if (conn?.isViewer || conn?.isDelegationChild) return false
+      const remembered = lastConnectParamsRef.current.get(contextKey)
+      if (!conn) {
+        if (nextDraftConfig == null) return false
+        // A folderless draft may expose the composer before its scratch cwd is
+        // ready, so no connect request exists yet. The parent already stored
+        // the draft config; its first lifecycle connect will receive it and no
+        // process needs restarting at this moment.
+        if (!remembered) return true
+        const tornDown = await disconnect(contextKey)
+        await connect(
+          contextKey,
+          remembered.agentType,
+          remembered.workingDir,
+          remembered.sessionId,
+          remembered.conversationId,
+          nextDraftConfig
+        )
+        return tornDown
+      }
       // Capture identity BEFORE teardown. `sessionId` is what makes the new
       // process resume this conversation (session/load) rather than start fresh.
       const { agentType, workingDir, sessionId } = conn
+      // The launch override is keyed by the database conversation id, which is
+      // retained in the last connect request rather than the live ACP state.
+      // Preserve it across a config reapply so a restarted process reads this
+      // conversation's Provider/MCP/selector configuration instead of falling
+      // back to the agent-wide defaults.
+      const conversationId = remembered?.conversationId
+      const draftConfig = nextDraftConfig ?? remembered?.draftConfig
       const tornDown = await disconnect(contextKey)
       await connect(
         contextKey,
         agentType,
         workingDir ?? undefined,
-        sessionId ?? undefined
+        sessionId ?? undefined,
+        conversationId,
+        draftConfig
       )
       // Reconnect regardless — the user is left with a working connection
       // either way — but an unconfirmed teardown means the old process may
@@ -5522,6 +5583,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         workingDir: conn?.workingDir ?? remembered?.workingDir ?? undefined,
         sessionId: conn?.sessionId ?? remembered?.sessionId ?? undefined,
         conversationId: remembered?.conversationId,
+        draftConfig: remembered?.draftConfig,
       }
     },
     []
@@ -5617,7 +5679,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         request.agentType,
         request.workingDir,
         request.sessionId,
-        request.conversationId
+        request.conversationId,
+        request.draftConfig
       )
       return true
     },
@@ -5744,20 +5807,33 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setConfigOption = useCallback(
-    async (contextKey: string, configId: string, valueId: string) => {
+    async (
+      contextKey: string,
+      configId: string,
+      valueId: string,
+      saveAsAgentDefault: boolean = true
+    ) => {
       const conn = storeRef.current.connections.get(contextKey)
-      if (!conn) return
+      if (!conn) return false
       dispatch({
         type: "CONFIG_OPTION_CHANGED",
         contextKey,
         configId,
         valueId,
       })
-      // Persist user selection to localStorage so the next `acp_connect`
-      // can ship it back to the backend as a preferred config value.
-      saveConfigPreference(conn.agentType, configId, valueId)
       lastActivityRef.current.set(contextKey, Date.now())
-      await acpSetConfigOption(conn.connectionId, configId, valueId)
+      const applied = await acpSetConfigOption(
+        conn.connectionId,
+        configId,
+        valueId
+      )
+      // A persisted conversation owns its selector values in the database.
+      // Only an unbound draft keeps the historical per-agent default, and only
+      // after the agent confirms that it actually adopted the value.
+      if (applied && saveAsAgentDefault) {
+        saveConfigPreference(conn.agentType, configId, valueId)
+      }
+      return applied
     },
     [dispatch]
   )
