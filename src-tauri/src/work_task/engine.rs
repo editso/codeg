@@ -1034,6 +1034,7 @@ impl TaskEngine {
                 self.emitter.clone(),
                 mode_id.clone(),
                 config_values.clone(),
+                Vec::new(),
             )
             .await
         {
@@ -1062,6 +1063,7 @@ impl TaskEngine {
                         self.emitter.clone(),
                         mode_id.clone(),
                         config_values.clone(),
+                        Vec::new(),
                     )
                     .await
                     .map_err(|e| e.to_string())?

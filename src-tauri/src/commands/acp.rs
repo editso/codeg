@@ -27,6 +27,7 @@ use crate::db::service::agent_setting_service;
 use crate::db::service::model_provider_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
+use crate::models::conversation_config::DraftConversationConfig;
 use crate::web::event_bridge::EventEmitter;
 
 const ACP_AGENTS_UPDATED_EVENT: &str = "app://acp-agents-updated";
@@ -2962,6 +2963,21 @@ fn load_codex_auth_json_raw() -> Option<String> {
 
 fn load_codex_config_toml_raw() -> Option<String> {
     fs::read_to_string(codex_config_toml_path()).ok()
+}
+
+/// Return the provider id Codex will resolve from its user-level config file.
+/// This is intentionally a diagnostic-only view: callers can compare it with
+/// a conversation binding without reading or logging the provider endpoint,
+/// credentials, or any other config fields.
+pub(crate) fn codex_configured_model_provider() -> Option<String> {
+    let raw = load_codex_config_toml_raw()?;
+    raw.parse::<toml::Value>()
+        .ok()?
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(str::to_string)
 }
 
 /// Read the compact codex model-catalog *source* sidecar (written next to the
@@ -8906,6 +8922,138 @@ pub(crate) async fn apply_model_provider_env(
     }
 }
 
+/// Apply an explicit conversation provider binding to one process launch.
+/// Unlike the global setting helper above, this is strict: an invalid binding
+/// must prevent the launch rather than allowing the agent to inherit global
+/// credentials. It changes only the in-memory runtime environment and never
+/// edits an agent's own configuration file.
+pub(crate) async fn apply_model_provider_override_env(
+    agent_type: AgentType,
+    provider_id: i32,
+    runtime_env: &mut BTreeMap<String, String>,
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<(), AcpError> {
+    let provider = model_provider_service::get_by_id(conn, provider_id)
+        .await
+        .map_err(|error| AcpError::protocol(error.to_string()))?
+        .ok_or_else(|| AcpError::protocol(format!("model provider {provider_id} was not found")))?;
+    let expected_agent_type = agent_type.as_wire();
+    if provider.agent_type != expected_agent_type.as_ref() {
+        return Err(AcpError::protocol(format!(
+            "model provider {provider_id} is for {}, not {expected_agent_type}",
+            provider.agent_type
+        )));
+    }
+
+    // Deliberately log only identifiers and presence flags. This lets an
+    // operator verify that a conversation-bound provider reached the launch
+    // path without exposing its endpoint, credentials, or model configuration.
+    tracing::info!(
+        agent_type = %agent_type,
+        provider_id,
+        provider_name = %provider.name,
+        has_api_url = !provider.api_url.trim().is_empty(),
+        has_api_key = !provider.api_key.trim().is_empty(),
+        has_model_config = provider
+            .model
+            .as_deref()
+            .is_some_and(|model| !model.trim().is_empty()),
+        "applying conversation model-provider override to ACP launch environment"
+    );
+
+    if agent_type == AgentType::Codex {
+        apply_codex_conversation_provider_override(&provider, provider_id, runtime_env)?;
+    }
+
+    let (url_key, key_key, _) = agent_env_keys(agent_type);
+    if provider.api_url.trim().is_empty() {
+        runtime_env.remove(url_key);
+    } else {
+        runtime_env.insert(url_key.to_string(), provider.api_url);
+    }
+    if provider.api_key.trim().is_empty() {
+        runtime_env.remove(key_key);
+    } else {
+        runtime_env.insert(key_key.to_string(), provider.api_key);
+    }
+    for (key, value) in parse_provider_model(agent_type, provider.model.as_deref()) {
+        match value {
+            Some(value) => {
+                runtime_env.insert(key, value);
+            }
+            None => {
+                runtime_env.remove(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `codex-acp` keeps the configured provider id separate from the generic
+/// `OPENAI_*` credential variables. In particular, a resumed session passes
+/// that id to Codex's `thread/resume`, so only changing the endpoint/key leaves
+/// it routed through the provider selected in the global config.toml.
+///
+/// The adapter's own `MODEL_PROVIDER` + `CODEX_CONFIG` inputs are process-local
+/// and survive its session-resume path. Create an id namespaced by the Codeg
+/// provider row, then inject its complete provider definition into the ACP
+/// session config. This never writes ~/.codex/config.toml and cannot affect a
+/// different conversation or any other Codex client.
+fn apply_codex_conversation_provider_override(
+    provider: &crate::db::entities::model_provider::Model,
+    provider_id: i32,
+    runtime_env: &mut BTreeMap<String, String>,
+) -> Result<(), AcpError> {
+    let api_url = provider.api_url.trim();
+    if api_url.is_empty() {
+        return Err(AcpError::protocol(format!(
+            "Codex conversation model provider {provider_id} requires a non-empty API URL"
+        )));
+    }
+
+    let mut config = match runtime_env.get("CODEX_CONFIG") {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .map_err(|error| AcpError::protocol(format!("invalid CODEX_CONFIG: {error}")))?,
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    let config_object = config
+        .as_object_mut()
+        .ok_or_else(|| AcpError::protocol("invalid CODEX_CONFIG: root must be an object"))?;
+    let provider_key = format!("codeg-conversation-{provider_id}");
+    config_object.insert(
+        "model_provider".to_string(),
+        serde_json::Value::String(provider_key.clone()),
+    );
+    let providers = config_object
+        .entry("model_providers".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            AcpError::protocol("invalid CODEX_CONFIG: model_providers must be an object")
+        })?;
+    providers.insert(
+        provider_key.clone(),
+        serde_json::json!({
+            "name": provider.name.clone(),
+            "base_url": api_url,
+            "env_key": "OPENAI_API_KEY",
+            "wire_api": "responses",
+            "requires_openai_auth": false,
+        }),
+    );
+    let config_json = serde_json::to_string(&config)
+        .map_err(|error| AcpError::protocol(format!("serialize CODEX_CONFIG: {error}")))?;
+
+    runtime_env.insert("MODEL_PROVIDER".to_string(), provider_key.clone());
+    runtime_env.insert("CODEX_CONFIG".to_string(), config_json);
+    tracing::info!(
+        provider_id,
+        codex_session_provider = %provider_key,
+        "injected process-local Codex provider definition for conversation"
+    );
+    Ok(())
+}
+
 /// Claude Code provider-model JSON keys → ANTHROPIC_*_MODEL env var names.
 const CLAUDE_MODEL_KEY_MAP: &[(&str, &str)] = &[
     ("main", "ANTHROPIC_MODEL"),
@@ -9418,6 +9566,103 @@ pub(crate) async fn build_session_runtime_env(
     Ok(runtime_env)
 }
 
+/// Resolve persisted or draft conversation launch overrides. A bound provider
+/// replaces the global provider only in this process environment; selected MCP
+/// entries are turned into ACP session additions and never copied into a native
+/// agent configuration file. A bound provider also suppresses broad per-agent
+/// selector preferences: an empty conversation selector map means "use this
+/// provider's own defaults", not "reapply the prior provider's model and
+/// thinking values".
+pub(crate) async fn build_session_runtime_env_for_conversation(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    session_id: Option<&str>,
+    data_dir: &Path,
+    conversation_id: Option<i32>,
+    draft_config: Option<&DraftConversationConfig>,
+) -> Result<
+    (
+        BTreeMap<String, String>,
+        Vec<sacp::schema::McpServer>,
+        BTreeMap<String, String>,
+        bool,
+    ),
+    AcpError,
+> {
+    let mut runtime_env = build_session_runtime_env(db, agent_type, session_id, data_dir).await?;
+    if conversation_id.is_some() && draft_config.is_some() {
+        return Err(AcpError::protocol(
+            "ACP connect cannot combine a persisted conversation config with draft overrides",
+        ));
+    }
+
+    let (model_provider_id, additional_mcp_refs, session_config_values, config_source) =
+        if let Some(conversation_id) = conversation_id {
+            let config =
+                crate::commands::conversations::get_conversation_config_for_agent_core(
+                    &db.conn,
+                    conversation_id,
+                    agent_type,
+                )
+                .await
+                .map_err(|error| AcpError::protocol(error.to_string()))?;
+            (
+                config.model_provider_id,
+                config.additional_mcp_refs,
+                config.session_config_values,
+                "persisted",
+            )
+        } else if let Some(config) = draft_config {
+            (
+                config.model_provider_id,
+                config.additional_mcp_refs.clone(),
+                BTreeMap::new(),
+                "draft",
+            )
+        } else {
+            return Ok((runtime_env, Vec::new(), BTreeMap::new(), false));
+        };
+
+    tracing::info!(
+        conversation_id = ?conversation_id,
+        agent_type = %agent_type,
+        config_source,
+        resumes_existing_session = session_id.is_some(),
+        provider_id = ?model_provider_id,
+        additional_mcp_refs = additional_mcp_refs.len(),
+        session_selector_values = session_config_values.len(),
+        "resolved conversation ACP launch configuration"
+    );
+
+    let suppress_global_selector_preferences = model_provider_id.is_some();
+    if let Some(provider_id) = model_provider_id {
+        apply_model_provider_override_env(agent_type, provider_id, &mut runtime_env, &db.conn)
+            .await?;
+    }
+
+    let entries = crate::commands::mcp::resolve_conversation_mcp_refs(
+        agent_type,
+        &additional_mcp_refs,
+    )
+    .map_err(|error| AcpError::protocol(error.to_string()))?;
+    let mut additional_mcp_servers = Vec::with_capacity(entries.len());
+    for (name, spec) in entries {
+        let server = crate::acp::connection::canonical_spec_to_mcp_server(&name, &spec)
+            .map_err(|error| {
+                AcpError::protocol(format!(
+                    "conversation MCP '{name}' cannot be mapped to the ACP schema: {error}"
+                ))
+            })?;
+        additional_mcp_servers.push(server);
+    }
+    Ok((
+        runtime_env,
+        additional_mcp_servers,
+        session_config_values,
+        suppress_global_selector_preferences,
+    ))
+}
+
 /// Per-launch env keys that vary by session/run but don't represent user
 /// config, so they're excluded from the config fingerprint. Without this, a
 /// session-id-derived value would flip the fingerprint the moment a real
@@ -9584,6 +9829,8 @@ pub async fn acp_connect(
     session_id: Option<String>,
     preferred_mode_id: Option<String>,
     preferred_config_values: Option<BTreeMap<String, String>>,
+    conversation_id: Option<i32>,
+    draft_config: Option<DraftConversationConfig>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
     app_handle: tauri::AppHandle,
@@ -9599,8 +9846,20 @@ pub async fn acp_connect(
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let runtime_env =
-        build_session_runtime_env(&db, agent_type, session_id.as_deref(), &app_data_dir).await?;
+    let (
+        runtime_env,
+        additional_mcp_servers,
+        session_config_values,
+        suppress_global_selector_preferences,
+    ) = build_session_runtime_env_for_conversation(
+        &db,
+        agent_type,
+        session_id.as_deref(),
+        &app_data_dir,
+        conversation_id,
+        draft_config.as_ref(),
+    )
+    .await?;
 
     // Guard: the session page must never trigger a download or install.
     // If the agent isn't ready, return SdkNotInstalled here so the frontend
@@ -9617,7 +9876,20 @@ pub async fn acp_connect(
             window.label().to_string(),
             emitter,
             preferred_mode_id,
-            preferred_config_values.unwrap_or_default(),
+            {
+                let mut preferred_config_values = if suppress_global_selector_preferences {
+                    BTreeMap::new()
+                } else {
+                    preferred_config_values.unwrap_or_default()
+                };
+                // A conversation's own selections (model, thinking, and future
+                // ACP selectors) are always more specific than agent globals.
+                // With a bound provider, an empty map deliberately leaves the
+                // provider's actual defaults untouched.
+                preferred_config_values.extend(session_config_values);
+                preferred_config_values
+            },
+            additional_mcp_servers,
         )
         .await
 }
@@ -9664,7 +9936,7 @@ pub async fn acp_set_config_option(
     config_id: String,
     value_id: String,
     manager: State<'_, ConnectionManager>,
-) -> Result<(), AcpError> {
+) -> Result<bool, AcpError> {
     manager
         .set_config_option(&connection_id, config_id, value_id)
         .await

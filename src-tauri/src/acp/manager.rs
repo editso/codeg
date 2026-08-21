@@ -9,6 +9,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ActiveValue::Set, DatabaseConnection, EntityTrait,
     TransactionTrait,
 };
+use sacp::schema::McpServer;
 
 use crate::acp::connection::{
     spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SteerOutcome,
@@ -422,6 +423,7 @@ impl ConnectionManager {
         emitter: EventEmitter,
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
+        additional_mcp_servers: Vec<McpServer>,
     ) -> Result<String, AcpError> {
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
@@ -492,6 +494,7 @@ impl ConnectionManager {
             self.connections.clone(),
             preferred_mode_id,
             preferred_config_values,
+            additional_mcp_servers,
             self.delegation_snapshot(),
             self.terminal_shell_config.clone(),
         )
@@ -1342,7 +1345,7 @@ impl ConnectionManager {
         conn_id: &str,
         config_id: String,
         value_id: String,
-    ) -> Result<(), AcpError> {
+    ) -> Result<bool, AcpError> {
         let cmd_tx = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -1350,13 +1353,16 @@ impl ConnectionManager {
                 .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
             conn.cmd_tx.clone()
         };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         cmd_tx
             .send(ConnectionCommand::SetConfigOption {
                 config_id,
                 value_id,
+                reply: Some(reply_tx),
             })
             .await
-            .map_err(|_| AcpError::ProcessExited)
+            .map_err(|_| AcpError::ProcessExited)?;
+        reply_rx.await.map_err(|_| AcpError::ProcessExited)?
     }
 
     /// Pause or clear the session's active goal via the connection loop
@@ -1994,6 +2000,7 @@ impl ConnectionManager {
                 EventEmitter::Noop,
                 None,
                 BTreeMap::new(),
+                Vec::new(),
             )
             .await?;
 
@@ -3157,6 +3164,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 emitter,
                 preferred_mode_id,
                 preferred_config_values,
+                Vec::new(),
             )
             .await
             .map_err(|e| SpawnerError::Spawn(e.to_string()))

@@ -301,6 +301,10 @@ pub enum ConnectionCommand {
     SetConfigOption {
         config_id: String,
         value_id: String,
+        /// Resolves only after the agent has answered the ACP request. `false`
+        /// means the agent answered successfully but retained or clamped a
+        /// different value, so callers must not persist the requested value.
+        reply: Option<tokio::sync::oneshot::Sender<Result<bool, AcpError>>>,
     },
     GoalControl {
         action: GoalControlAction,
@@ -884,6 +888,26 @@ async fn build_agent(
                 None
             };
             apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            if agent_type == AgentType::Codex {
+                let provider_env_keys: Vec<&str> = [
+                    "MODEL_PROVIDER",
+                    "CODEX_CONFIG",
+                    "OPENAI_BASE_URL",
+                    "OPENAI_API_KEY",
+                    "OPENAI_MODEL",
+                ]
+                .into_iter()
+                .filter(|key| merged_env.iter().any(|(name, _)| name.as_str() == *key))
+                .collect();
+                let configured_model_provider =
+                    crate::commands::acp::codex_configured_model_provider();
+                tracing::info!(
+                    ?configured_model_provider,
+                    model_provider_override = ?runtime_env.get("MODEL_PROVIDER"),
+                    provider_env_keys = ?provider_env_keys,
+                    "launching Codex ACP adapter with resolved provider inputs"
+                );
+            }
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -1251,6 +1275,7 @@ pub async fn spawn_agent_connection(
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
+    additional_mcp_servers: Vec<McpServer>,
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
@@ -1425,6 +1450,7 @@ pub async fn spawn_agent_connection(
             terminal_shell_config,
             preferred_mode_id,
             preferred_config_values,
+            additional_mcp_servers,
             delegation_injection,
             fs_policy,
             host_tools,
@@ -2814,10 +2840,9 @@ fn grok_live_usage_step(
 /// (`is_grok_incompatible_agent_switch`) is handled in-band: re-emit the
 /// authoritative options to revert the composer's optimistic pick and surface a
 /// friendly, recoverable `AcpEvent::Error` (localized by the frontend via
-/// `GROK_INCOMPATIBLE_AGENT_ERROR_CODE`), returning `Ok` so the caller does not
-/// also emit the raw JSON-RPC error. The saved model preference is left intact,
-/// so the suggested "start a new session" actually lands on the picked model
-/// (a fresh session applies the preference pre-turn, where the switch succeeds).
+/// `GROK_INCOMPATIBLE_AGENT_ERROR_CODE`). It returns `Ok(false)`, so callers
+/// retain the visible recovery message but do not persist the rejected choice
+/// on this conversation.
 async fn set_grok_config_option(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -2825,7 +2850,7 @@ async fn set_grok_config_option(
     emitter: &EventEmitter,
     config_id: String,
     value_id: String,
-) -> Result<(), sacp::Error> {
+) -> Result<bool, sacp::Error> {
     // Resolve the `set_model` args for whichever selector changed. A model pick
     // is the model itself (no effort override); an effort pick re-sends the
     // current model carrying the new `_meta.reasoningEffort`. Any other id is a
@@ -2836,10 +2861,10 @@ async fn set_grok_config_option(
         match current_grok_model_id(state).await {
             Some(model_id) => (model_id, Some(value_id.clone())),
             // No model known yet — nothing to carry the effort override on.
-            None => return Ok(()),
+            None => return Ok(false),
         }
     } else {
-        return Ok(());
+        return Ok(false);
     };
     match set_grok_model(cx, session_id, model_id, effort).await {
         Ok(()) => {
@@ -2866,11 +2891,11 @@ async fn set_grok_config_option(
                 }
                 emit_session_config_options_info(state, emitter, opts).await;
             }
-            Ok(())
+            Ok(true)
         }
         Err(e) if is_grok_incompatible_agent_switch(&e) => {
             emit_grok_incompatible_agent_switch(state, emitter).await;
-            Ok(())
+            Ok(false)
         }
         Err(e) => Err(e),
     }
@@ -3750,7 +3775,10 @@ fn resolve_mcp_command(command: &str) -> PathBuf {
     PathBuf::from(crate::process::normalized_program(command))
 }
 
-fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<McpServer, String> {
+pub(crate) fn canonical_spec_to_mcp_server(
+    name: &str,
+    spec: &serde_json::Value,
+) -> Result<McpServer, String> {
     let obj = spec
         .as_object()
         .ok_or_else(|| "spec must be a JSON object".to_string())?;
@@ -3853,6 +3881,7 @@ async fn run_connection(
     terminal_shell_config: TerminalShellRuntimeConfig,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
+    additional_mcp_servers: Vec<McpServer>,
     delegation_injection: Option<DelegationInjection>,
     fs_policy: FsAccessPolicy,
     host_tools: HostToolsPolicy,
@@ -4311,12 +4340,15 @@ async fn run_connection(
             // wire on every path. See `AcpAgentMeta::supports_mcp`.
             let agent_supports_mcp = registry::get_agent_meta(agent_type).supports_mcp;
 
-            // Load MCP servers configured for this agent and filter by the
-            // capabilities the agent just declared. Stdio is mandatory per
-            // ACP spec; HTTP/SSE are gated on `mcp_capabilities.{http,sse}`.
+            // Load agent-native MCP servers and append the strictly resolved
+            // conversation additions. Native entries retain their historic
+            // best-effort handling, while a conversation-selected remote MCP
+            // is rejected if this particular agent did not advertise its
+            // transport: silently dropping a persisted session setting would
+            // make a later launch run a different configuration.
             let mut mcp_servers: Vec<McpServer> = if agent_supports_mcp {
                 let mcp_caps = &init_resp.agent_capabilities.mcp_capabilities;
-                load_mcp_servers_for_agent(agent_type)
+                let mut servers: Vec<McpServer> = load_mcp_servers_for_agent(agent_type)
                     .into_iter()
                     .filter(|s| match s {
                         McpServer::Stdio(_) => true,
@@ -4344,8 +4376,39 @@ async fn run_connection(
                         }
                         _ => false,
                     })
-                    .collect()
+                    .collect();
+                for server in additional_mcp_servers {
+                    match &server {
+                        McpServer::Stdio(_) => {}
+                        McpServer::Http(_) if mcp_caps.http => {}
+                        McpServer::Sse(_) if mcp_caps.sse => {}
+                        McpServer::Http(server) => {
+                            return Err(sacp::util::internal_error(format!(
+                                "conversation MCP '{}' requires HTTP support, but {agent_type} does not advertise mcpCapabilities.http",
+                                server.name
+                            )));
+                        }
+                        McpServer::Sse(server) => {
+                            return Err(sacp::util::internal_error(format!(
+                                "conversation MCP '{}' requires SSE support, but {agent_type} does not advertise mcpCapabilities.sse",
+                                server.name
+                            )));
+                        }
+                        _ => {
+                            return Err(sacp::util::internal_error(
+                                "conversation MCP uses an unsupported ACP transport",
+                            ));
+                        }
+                    }
+                    servers.push(server);
+                }
+                servers
             } else {
+                if !additional_mcp_servers.is_empty() {
+                    return Err(sacp::util::internal_error(format!(
+                        "{agent_type} does not support conversation MCP additions"
+                    )));
+                }
                 tracing::info!(
                     "[ACP][{}] supports_mcp=false: skipping all MCP wire forwarding (user servers + codeg-mcp companion)",
                     agent_type
@@ -5655,7 +5718,7 @@ async fn set_session_config_option(
     agent_type: AgentType,
     config_id: String,
     value_id: String,
-) -> Result<(), sacp::Error> {
+) -> Result<bool, sacp::Error> {
     // The whole selector transport carries values as opaque strings; only here,
     // at the wire, does the option's advertised kind decide how to encode it.
     let is_boolean = state
@@ -5671,13 +5734,33 @@ async fn set_session_config_option(
     // Compare BEFORE emitting: the agent's answer is the only place a request and
     // its outcome are correlated. Once the option list is broadcast it is
     // indistinguishable from an unsolicited update.
-    if let Some(rejection) =
-        config_option_rejection(&map_session_config_options(&updated), &config_id, &value_id)
-    {
+    let mapped = map_session_config_options(&updated);
+    let applied = config_option_value_was_applied(&mapped, &config_id, &value_id);
+    if let Some(rejection) = config_option_rejection(&mapped, &config_id, &value_id) {
         emit_with_state(state, emitter, rejection).await;
     }
     emit_session_config_options_values(state, emitter, agent_type, updated).await;
-    Ok(())
+    Ok(applied)
+}
+
+/// Whether the response to an ACP `session/set_config_option` request retained
+/// the exact value the caller requested. An option absent from the response is
+/// treated as unknowable rather than rejected: older Codex adapters accept an
+/// unadvertised `mode` config id and deliberately omit it from the list.
+fn config_option_value_was_applied(
+    updated: &[SessionConfigOptionInfo],
+    config_id: &str,
+    requested: &str,
+) -> bool {
+    let Some(option) = updated.iter().find(|option| option.id == config_id) else {
+        return true;
+    };
+    match &option.kind {
+        SessionConfigKindInfo::Select(select) => select.current_value == requested,
+        SessionConfigKindInfo::Boolean(boolean) => {
+            boolean.current_value == (requested == "true")
+        }
+    }
 }
 
 /// Build a [`AcpEvent::ConfigOptionRejected`] when the agent's answer settled the
@@ -7869,6 +7952,7 @@ async fn run_conversation_loop<'a>(
                                 Some(ConnectionCommand::SetConfigOption {
                                     config_id,
                                     value_id,
+                                    reply,
                                 }) => {
                                     let set_result = if agent_type == AgentType::Grok {
                                         set_grok_config_option(
@@ -7882,20 +7966,31 @@ async fn run_conversation_loop<'a>(
                                         )
                                         .await
                                     };
-                                    if let Err(e) = set_result {
-                                        emit_with_state(
-                                            state,
-                                            emitter,
-                                            AcpEvent::Error {
-                                                message: format!("Failed to set config option: {e}"),
-                                                agent_type: agent_type.to_string(),
-                                                code: None,
-                                                details: None,
-                                                // Recoverable: just a failed config-option toggle.
-                                                terminal: false,
-                                            },
-                                        )
-                                        .await;
+                                    let reply_result = match set_result {
+                                        Ok(applied) => Ok(applied),
+                                        Err(error) => {
+                                            let message =
+                                                format!("Failed to set config option: {error}");
+                                            emit_with_state(
+                                                state,
+                                                emitter,
+                                                AcpEvent::Error {
+                                                    message: message.clone(),
+                                                    agent_type: agent_type.to_string(),
+                                                    code: None,
+                                                    details: None,
+                                                    // Recoverable: just a failed config-option toggle.
+                                                    terminal: false,
+                                                },
+                                            )
+                                            .await;
+                                            Err(AcpError::protocol(message))
+                                        }
+                                    };
+                                    if let Some(reply) = reply {
+                                        // Persisted selector changes wait for the agent's reply;
+                                        // dropping a caller does not undo the agent-side change.
+                                        let _ = reply.send(reply_result);
                                     }
                                 }
                                 Some(ConnectionCommand::GoalControl { action, reply }) => {
@@ -8147,6 +8242,7 @@ async fn run_conversation_loop<'a>(
             Some(ConnectionCommand::SetConfigOption {
                 config_id,
                 value_id,
+                reply,
             }) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
@@ -8158,21 +8254,29 @@ async fn run_conversation_loop<'a>(
                     )
                     .await
                 };
-                if let Err(e) = set_result {
-                    emit_with_state(
-                        state,
-                        emitter,
-                        AcpEvent::Error {
-                            message: format!("Failed to set config option: {e}"),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                            details: None,
-                            // Recoverable: idle SetConfigOption failure leaves
-                            // the connection alive.
-                            terminal: false,
-                        },
-                    )
-                    .await;
+                let reply_result = match set_result {
+                    Ok(applied) => Ok(applied),
+                    Err(error) => {
+                        let message = format!("Failed to set config option: {error}");
+                        emit_with_state(
+                            state,
+                            emitter,
+                            AcpEvent::Error {
+                                message: message.clone(),
+                                agent_type: agent_type.to_string(),
+                                code: None,
+                                details: None,
+                                // Recoverable: idle SetConfigOption failure leaves
+                                // the connection alive.
+                                terminal: false,
+                            },
+                        )
+                        .await;
+                        Err(AcpError::protocol(message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = reply.send(reply_result);
                 }
             }
             Some(ConnectionCommand::GoalControl { action, reply }) => {

@@ -16,6 +16,7 @@ use crate::app_state::AppState;
 use crate::commands::acp as acp_commands;
 use crate::commands::custom_agents as custom_agent_commands;
 use crate::models::agent::AgentType;
+use crate::models::conversation_config::DraftConversationConfig;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +73,10 @@ pub struct AcpConnectParams {
     pub preferred_mode_id: Option<String>,
     #[serde(default)]
     pub preferred_config_values: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub conversation_id: Option<i32>,
+    #[serde(default)]
+    pub draft_config: Option<DraftConversationConfig>,
 }
 
 pub async fn acp_connect(
@@ -81,11 +86,26 @@ pub async fn acp_connect(
     let db = &state.db;
     let manager = &state.connection_manager;
 
-    let runtime_env = acp_commands::build_session_runtime_env(
+    tracing::info!(
+        transport = "web",
+        agent_type = %params.agent_type,
+        conversation_id = ?params.conversation_id,
+        resumes_existing_session = params.session_id.is_some(),
+        "received ACP connect request"
+    );
+
+    let (
+        runtime_env,
+        additional_mcp_servers,
+        session_config_values,
+        suppress_global_selector_preferences,
+    ) = acp_commands::build_session_runtime_env_for_conversation(
         db,
         params.agent_type,
         params.session_id.as_deref(),
         &state.data_dir,
+        params.conversation_id,
+        params.draft_config.as_ref(),
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -107,10 +127,30 @@ pub async fn acp_connect(
             "web".to_string(),
             emitter,
             params.preferred_mode_id,
-            params.preferred_config_values.unwrap_or_default(),
+            {
+                let mut preferred_config_values = if suppress_global_selector_preferences {
+                    BTreeMap::new()
+                } else {
+                    params.preferred_config_values.unwrap_or_default()
+                };
+                // Conversation selectors take precedence. When Provider is
+                // explicitly bound, an empty map intentionally preserves that
+                // provider's default model/thinking values.
+                preferred_config_values.extend(session_config_values);
+                preferred_config_values
+            },
+            additional_mcp_servers,
         )
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+
+    tracing::info!(
+        transport = "web",
+        connection_id = %connection_id,
+        agent_type = %params.agent_type,
+        conversation_id = ?params.conversation_id,
+        "ACP connection launch completed"
+    );
 
     Ok(Json(connection_id))
 }
@@ -357,13 +397,13 @@ pub struct AcpSetConfigOptionParams {
 pub async fn acp_set_config_option(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpSetConfigOptionParams>,
-) -> Result<Json<()>, AppCommandError> {
+) -> Result<Json<bool>, AppCommandError> {
     let manager = &state.connection_manager;
-    manager
+    let applied = manager
         .set_config_option(&params.connection_id, params.config_id, params.value_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-    Ok(Json(()))
+    Ok(Json(applied))
 }
 
 #[derive(Deserialize)]

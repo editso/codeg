@@ -489,6 +489,7 @@ impl AutomationEngine {
                 self.emitter.clone(),
                 cfg.mode_id.clone(),
                 cfg.config_values.clone(),
+                Vec::new(),
             )
             .await
             .map_err(|e| e.to_string())?;
