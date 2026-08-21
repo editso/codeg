@@ -2,6 +2,7 @@ import type { KeyboardEventHandler, ReactNode } from "react"
 import type {
   AgentType,
   ConnectionStatus,
+  DraftConversationConfig,
   PendingPlanApprovalState,
   PendingQuestionState,
   PlanApprovalAnswer,
@@ -58,6 +59,9 @@ interface ConversationShellProps {
   onModeChange?: (modeId: string) => void
   onConfigOptionChange?: (configId: string, valueId: string) => void
   agentType?: AgentType | null
+  conversationId?: number | null
+  draftConversationConfig?: DraftConversationConfig | null
+  onDraftConversationConfigChange?: (config: DraftConversationConfig) => void
   availableCommands?: AvailableCommandInfo[] | null
   attachmentTabId?: string | null
   draftStorageKey?: string | null
@@ -131,6 +135,9 @@ export function ConversationShell({
   onModeChange,
   onConfigOptionChange,
   agentType,
+  conversationId,
+  draftConversationConfig,
+  onDraftConversationConfigChange,
   availableCommands,
   attachmentTabId,
   draftStorageKey,
@@ -228,6 +235,11 @@ export function ConversationShell({
               onModeChange={onModeChange}
               onConfigOptionChange={onConfigOptionChange}
               agentType={agentType}
+              conversationId={conversationId}
+              draftConversationConfig={draftConversationConfig}
+              onDraftConversationConfigChange={
+                onDraftConversationConfigChange
+              }
               availableCommands={availableCommands}
               attachmentTabId={attachmentTabId}
               draftStorageKey={draftStorageKey}

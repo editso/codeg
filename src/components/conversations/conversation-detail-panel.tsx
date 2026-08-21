@@ -84,7 +84,9 @@ import {
   createConversation,
   getFolderConversation,
   openSettingsWindow,
+  updateConversationConfig,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { isWindowedDetail } from "@/lib/turn-window"
 import {
   flushRetryDelayMs,
@@ -110,11 +112,13 @@ import {
 import {
   type AgentType,
   type ContentBlock,
+  type DraftConversationConfig,
   type EventEnvelope,
   type MessageTurn,
   type PlanApprovalAnswer,
   type PromptDraft,
   type QuestionAnswer,
+  type SessionConfigOptionInfo,
   type UserMessageBlock,
 } from "@/lib/types"
 import { useRouter } from "next/navigation"
@@ -134,6 +138,12 @@ import {
   clearMessageInputDraft,
   saveMessageInputDraft,
 } from "@/lib/message-input-draft"
+import {
+  clearDraftConversationConfig,
+  hasDraftConversationOverrides,
+  loadDraftConversationConfig,
+  saveDraftConversationConfig,
+} from "@/lib/conversation-config-draft"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -257,6 +267,44 @@ function buildOptimisticUserTurnFromDraft(
   }
 }
 
+/**
+ * ACP exposes model, thinking level, and any future session selectors through
+ * the same config-option surface. A new tab has no conversation id yet, so we
+ * capture the accepted values at first send and persist them as one config
+ * revision as soon as its row exists.
+ */
+function snapshotSessionConfigValues(
+  configOptions: SessionConfigOptionInfo[]
+): Record<string, string> {
+  return Object.fromEntries(
+    configOptions.map((option) => [
+      option.id,
+      String(option.kind.current_value),
+    ])
+  )
+}
+
+interface InitialConversationConfig {
+  draft: DraftConversationConfig
+  sessionConfigValues: Record<string, string>
+}
+
+async function persistInitialConversationConfig(
+  conversationId: number,
+  initialConfig: InitialConversationConfig
+): Promise<void> {
+  // A just-created conversation has no configuration row, so version 0 means
+  // "write the initial snapshot". Do not read-modify-write or overwrite a
+  // concurrent provider/MCP selection: the backend returns an explicit CAS
+  // conflict instead.
+  await updateConversationConfig(conversationId, {
+    model_provider_id: initialConfig.draft.model_provider_id,
+    additional_mcp_refs: initialConfig.draft.additional_mcp_refs,
+    session_config_values: initialConfig.sessionConfigValues,
+    expected_version: 0,
+  })
+}
+
 /** Build a user `MessageTurn` from a broadcast `user_message` (event or
  *  snapshot `pending_user_message`). Used by cross-client VIEWERS to render the
  *  sender's prompt. The turn `id` is the broadcast `message_id` so the runtime
@@ -310,9 +358,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // default action writes the first character or dispatches paste to the
       // rich composer, including its existing image-attachment paste handler.
       event.currentTarget
-        .querySelector<HTMLElement>(
-          '[role="textbox"][contenteditable="true"]'
-        )
+        .querySelector<HTMLElement>('[role="textbox"][contenteditable="true"]')
         ?.focus({ preventScroll: true })
     },
     [isActive]
@@ -381,6 +427,27 @@ const ConversationTabView = memo(function ConversationTabView({
   const dbConversationId = conversationId ?? createdConversationId
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
+  const [draftConversationConfig, setDraftConversationConfig] =
+    useState<DraftConversationConfig>(() =>
+      loadDraftConversationConfig(tabId, agentType)
+    )
+  const draftConversationConfigRef = useRef(draftConversationConfig)
+  const loadDraftConfigForAgent = useCallback(
+    (nextAgentType: AgentType) => {
+      const nextConfig = loadDraftConversationConfig(tabId, nextAgentType)
+      draftConversationConfigRef.current = nextConfig
+      setDraftConversationConfig(nextConfig)
+    },
+    [tabId]
+  )
+  const handleDraftConversationConfigChange = useCallback(
+    (nextConfig: DraftConversationConfig) => {
+      draftConversationConfigRef.current = nextConfig
+      setDraftConversationConfig(nextConfig)
+      saveDraftConversationConfig(tabId, selectedAgent, nextConfig)
+    },
+    [selectedAgent, tabId]
+  )
   // Seed from localStorage so the React state reflects the user's saved
   // mode for this agent immediately on mount. Without this seed, a reuse-
   // path connect (idle window after a refresh, before the agent is GC'd)
@@ -444,6 +511,14 @@ const ConversationTabView = memo(function ConversationTabView({
   const mountedRef = useRef(true)
   const selectedAgentRef = useRef(selectedAgent)
   const createConversationPendingRef = useRef(false)
+  // The first ACP connection starts while a draft is still unbound. Keep its
+  // Provider/MCP draft plus selector snapshot until the newly created row has
+  // accepted it; if that save fails, a retry must persist the same complete
+  // configuration before sending rather than silently falling through to
+  // agent-wide preferences.
+  const initialConversationConfigRef =
+    useRef<InitialConversationConfig | null>(null)
+  const initialSessionConfigPersistPendingRef = useRef(false)
   // Single-flight guard for the eager scratch-dir prepare (on chat-mode select).
   const prepareChatDirPendingRef = useRef(false)
   const sessionIdRef = useRef<string | null>(null)
@@ -468,6 +543,10 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     selectedAgentRef.current = selectedAgent
   }, [selectedAgent])
+
+  useEffect(() => {
+    draftConversationConfigRef.current = draftConversationConfig
+  }, [draftConversationConfig])
 
   // Eagerly create the chat-mode scratch dir the moment this becomes an unbound
   // chat draft, so the ACP connection can spawn at a real cwd BEFORE the first
@@ -520,10 +599,11 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     if (conversationId != null) return
     if (agentType === selectedAgentRef.current) return
+    loadDraftConfigForAgent(agentType)
     setDraftAgentType(agentType)
     setModeId(getSavedModeId(agentType))
     setAgentConnectError(null)
-  }, [agentType, conversationId])
+  }, [agentType, conversationId, loadDraftConfigForAgent])
 
   const {
     detail,
@@ -650,6 +730,8 @@ const ConversationTabView = memo(function ConversationTabView({
     // Drives cross-client viewer discovery: when another client is already
     // live on this conversation, attach to its connection instead of spawning.
     conversationId: dbConversationId ?? undefined,
+    draftConfig:
+      dbConversationId == null ? draftConversationConfig : undefined,
     // A cross-group move / unsplit reparents this view (React remounts it)
     // while the tab stays open — that unmount must not tear the connection
     // down. See `isReparentUnmount` for why "still open" alone is too broad.
@@ -1108,6 +1190,48 @@ const ConversationTabView = memo(function ConversationTabView({
 
       const persistedId = dbConvIdRef.current
       if (persistedId) {
+        const initialConversationConfig = initialConversationConfigRef.current
+        if (initialConversationConfig) {
+          if (initialSessionConfigPersistPendingRef.current) return
+          initialSessionConfigPersistPendingRef.current = true
+          void persistInitialConversationConfig(
+            persistedId,
+            initialConversationConfig
+          )
+            .then(() => {
+              // Clear only the snapshot this request committed. A config
+              // change made while it was in flight must remain pending and
+              // become a visible CAS conflict rather than being discarded.
+              if (
+                initialConversationConfigRef.current ===
+                initialConversationConfig
+              ) {
+                initialConversationConfigRef.current = null
+                clearDraftConversationConfig(tabId)
+              }
+              lifecycleSend(draft, selectedModeIdArg, {
+                folderId,
+                conversationId: persistedId,
+                clientMessageId: optimisticTurn.id,
+                onTurnInProgress,
+                onSendFailed,
+              })
+            })
+            .catch((error: unknown) => {
+              const message = toErrorMessage(error)
+              console.error(
+                "[ConversationTabView] persist initial session config:",
+                error
+              )
+              toast.error(message)
+              if (mountedRef.current) setAgentConnectError(message)
+              onSendFailed()
+            })
+            .finally(() => {
+              initialSessionConfigPersistPendingRef.current = false
+            })
+          return
+        }
         // Existing-tab path: row already exists, send immediately with the
         // conversation_id pinned so the backend reuses our row instead of
         // creating a duplicate.
@@ -1141,6 +1265,19 @@ const ConversationTabView = memo(function ConversationTabView({
       ).slice(0, 80)
       const chatSend = sendOwnTab?.isChat === true
       const chatExistingDir = sendOwnTab?.workingDir
+      const initialSessionConfigValues = snapshotSessionConfigValues(
+        connectionConfigOptions
+      )
+      const initialConversationConfig: InitialConversationConfig = {
+        draft: draftConversationConfigRef.current,
+        sessionConfigValues: initialSessionConfigValues,
+      }
+      if (
+        Object.keys(initialSessionConfigValues).length > 0 ||
+        hasDraftConversationOverrides(initialConversationConfig.draft)
+      ) {
+        initialConversationConfigRef.current = initialConversationConfig
+      }
 
       void (async () => {
         try {
@@ -1212,6 +1349,32 @@ const ConversationTabView = memo(function ConversationTabView({
               effectiveConversationId
             )
           }
+
+          // The live draft connection was initialized before this conversation
+          // had a database id. Persist its model, thinking level, and every
+          // other ACP config option before its first prompt can leave the
+          // client, so reopening the conversation cannot fall back to an
+          // agent-wide selector preference.
+          if (
+            initialConversationConfigRef.current === initialConversationConfig
+          ) {
+            initialSessionConfigPersistPendingRef.current = true
+            try {
+              await persistInitialConversationConfig(
+                newConversationId,
+                initialConversationConfig
+              )
+              if (
+                initialConversationConfigRef.current ===
+                initialConversationConfig
+              ) {
+                initialConversationConfigRef.current = null
+              }
+            } finally {
+              initialSessionConfigPersistPendingRef.current = false
+            }
+          }
+          clearDraftConversationConfig(tabId)
           clearMessageInputDraft(buildNewConversationDraftStorageKey(tabId))
           refreshConversations()
 
@@ -1247,7 +1410,9 @@ const ConversationTabView = memo(function ConversationTabView({
             )
           }
           if (mountedRef.current) {
-            setAgentConnectError(tWelcome("createConversationFailed"))
+            setAgentConnectError(
+              toErrorMessage(e) || tWelcome("createConversationFailed")
+            )
           }
         } finally {
           createConversationPendingRef.current = false
@@ -1262,6 +1427,7 @@ const ConversationTabView = memo(function ConversationTabView({
       mqGetQueueLength,
       bindConversationTab,
       canAutoConnect,
+      connectionConfigOptions,
       connectionReady,
       effectiveConversationId,
       folderId,
@@ -1398,6 +1564,7 @@ const ConversationTabView = memo(function ConversationTabView({
       if (nextAgentType === selectedAgentRef.current) return
       if (dbConvIdRef.current) return
 
+      loadDraftConfigForAgent(nextAgentType)
       setDraftAgentType(nextAgentType)
       setModeId(getSavedModeId(nextAgentType))
       setAgentConnectError(null)
@@ -1405,7 +1572,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // correction effect leaves this tab alone.
       confirmDraftAgent(tabId, nextAgentType)
     },
-    [confirmDraftAgent, tabId]
+    [confirmDraftAgent, loadDraftConfigForAgent, tabId]
   )
 
   // AgentSelector auto-fallback: the requested default agent was missing
@@ -1419,12 +1586,13 @@ const ConversationTabView = memo(function ConversationTabView({
       if (nextAgentType === selectedAgentRef.current) return
       if (dbConvIdRef.current) return
 
+      loadDraftConfigForAgent(nextAgentType)
       setDraftAgentType(nextAgentType)
       setModeId(getSavedModeId(nextAgentType))
       setAgentConnectError(null)
       setDraftAgentFromFallback(tabId, nextAgentType)
     },
-    [setDraftAgentFromFallback, tabId]
+    [loadDraftConfigForAgent, setDraftAgentFromFallback, tabId]
   )
 
   const handleModeChange = useCallback(
@@ -1900,6 +2068,15 @@ const ConversationTabView = memo(function ConversationTabView({
       onModeChange={handleModeChange}
       onConfigOptionChange={handleSetConfigOption}
       agentType={selectedAgent}
+      conversationId={dbConversationId}
+      draftConversationConfig={
+        dbConversationId == null ? draftConversationConfig : null
+      }
+      onDraftConversationConfigChange={
+        dbConversationId == null
+          ? handleDraftConversationConfigChange
+          : undefined
+      }
       availableCommands={connectionCommands}
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
@@ -2021,6 +2198,15 @@ const ConversationTabView = memo(function ConversationTabView({
                 onModeChange={handleModeChange}
                 onConfigOptionChange={handleSetConfigOption}
                 agentType={selectedAgent}
+                conversationId={dbConversationId}
+                draftConversationConfig={
+                  dbConversationId == null ? draftConversationConfig : null
+                }
+                onDraftConversationConfigChange={
+                  dbConversationId == null
+                    ? handleDraftConversationConfigChange
+                    : undefined
+                }
                 availableCommands={connectionCommands}
                 attachmentTabId={tabId}
                 draftStorageKey={draftStorageKey}

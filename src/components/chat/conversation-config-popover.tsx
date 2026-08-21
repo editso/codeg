@@ -1,15 +1,8 @@
 "use client"
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-} from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
-  BookOpenText,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -28,52 +21,47 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { listModelProviders, mcpScanLocal } from "@/lib/api"
+import { useAcpActions } from "@/contexts/acp-connections-context"
+import {
+  getDraftConversationMcpCatalog,
+  getConversationConfig,
+  listModelProviders,
+  updateConversationConfig,
+} from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
+import { subscribe } from "@/lib/platform"
 import { cn } from "@/lib/utils"
-import type {
-  AgentSkillItem,
-  AgentType,
-  LocalMcpServer,
-  McpAppType,
-  ModelProviderInfo,
+import {
+  CONVERSATION_CONFIG_CHANGED_EVENT,
+  type AgentType,
+  type ConversationConfigChanged,
+  type ConversationConfigView,
+  type ConversationMcpCatalog,
+  type ConversationMcpCandidate,
+  type ConversationMcpRef,
+  type DraftConversationConfig,
+  type ModelProviderInfo,
 } from "@/lib/types"
 
-type Panel = "overview" | "provider" | "mcp" | "skills"
-type ResourceMode = "global" | "custom"
+type Panel = "overview" | "provider" | "mcp"
 
 interface ConversationConfigPopoverProps {
+  conversationId: number | null | undefined
   agentType: AgentType | null | undefined
-  skills: AgentSkillItem[]
+  draftConfig?: DraftConversationConfig | null
+  onDraftConfigChange?: (config: DraftConversationConfig) => void
+  /** Input's ACP context key. Required to immediately restart the idle
+   *  session after a Provider switch and obtain that Provider's real selector
+   *  defaults. */
+  connectionKey?: string | null
+  /** Provider and MCP overrides apply only when a session starts. Lock this
+   *  surface while a turn is running so the saved launch config never implies
+   *  it changed the already-running agent process. */
+  isPrompting?: boolean
 }
 
-function ResourceListItem({
-  checked,
-  title,
-  description,
-  onCheckedChange,
-}: {
-  checked: boolean
-  title: string
-  description?: string | null
-  onCheckedChange: (checked: boolean) => void
-}) {
-  return (
-    <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/65">
-      <Checkbox
-        checked={checked}
-        onCheckedChange={(next) => onCheckedChange(next === true)}
-        className="mt-0.5"
-      />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs font-medium">{title}</span>
-        {description ? (
-          <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-            {description}
-          </span>
-        ) : null}
-      </span>
-    </label>
-  )
+function refKey(ref: ConversationMcpRef): string {
+  return `${ref.id}\u0000${ref.fingerprint}`
 }
 
 function OverviewRow({
@@ -93,7 +81,7 @@ function OverviewRow({
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      className="group flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
     >
       <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/75 text-muted-foreground transition-colors group-hover:bg-background group-hover:text-foreground">
         <Icon className="size-3.5" />
@@ -146,131 +134,306 @@ function DetailHeader({
   )
 }
 
+function McpListItem({
+  candidate,
+  checked,
+  disabled,
+  description,
+  onCheckedChange,
+}: {
+  candidate: ConversationMcpCandidate
+  checked: boolean
+  disabled: boolean
+  description: string
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <label
+      className={cn(
+        "flex items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+        disabled
+          ? "cursor-not-allowed opacity-65"
+          : "cursor-pointer hover:bg-muted/65"
+      )}
+    >
+      <Checkbox
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onCheckedChange(next === true)}
+        className="mt-0.5"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium">
+          {candidate.id}
+        </span>
+        <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </label>
+  )
+}
+
 /**
- * Visual prototype for the session-level configuration surface. Its choices
- * intentionally live only in component state for now: it reads the existing
- * Provider / MCP / Skill registries so the selection UI is realistic, but it
- * neither persists an override nor changes a live ACP connection.
+ * Session launch overrides. Persisted conversations save them in the database;
+ * a new-conversation tab keeps them in its draft until first send. The surface
+ * never edits an agent's native config: a provider becomes a one-launch
+ * environment override and MCP selections become ACP session additions.
  */
 export function ConversationConfigPopover({
+  conversationId,
   agentType,
-  skills,
+  draftConfig,
+  onDraftConfigChange,
+  connectionKey,
+  isPrompting = false,
 }: ConversationConfigPopoverProps) {
   const t = useTranslations("Folder.chat.messageInput")
+  const { reapplyConfig } = useAcpActions()
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<Panel>("overview")
+  const [configView, setConfigView] = useState<ConversationConfigView | null>(
+    null
+  )
+  const [draftCatalog, setDraftCatalog] =
+    useState<ConversationMcpCatalog | null>(null)
   const [providers, setProviders] = useState<ModelProviderInfo[]>([])
-  const [mcpServers, setMcpServers] = useState<LocalMcpServer[]>([])
-  const [resourcesLoading, setResourcesLoading] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // Every value below is intentionally ephemeral. The next implementation
-  // phase replaces these local values with the persisted conversation override.
-  const [providerId, setProviderId] = useState<number | null>(null)
-  const [mcpMode, setMcpMode] = useState<ResourceMode>("global")
-  const [mcpIds, setMcpIds] = useState<Set<string>>(() => new Set())
-  const [skillsMode, setSkillsMode] = useState<ResourceMode>("global")
-  const [skillRefs, setSkillRefs] = useState<Set<string>>(() => new Set())
+  const load = useCallback(async () => {
+    if (conversationId == null && agentType == null) return
+    setLoading(true)
+    setError(null)
+    try {
+      if (conversationId == null) {
+        const [nextDraftCatalog, nextProviders] = await Promise.all([
+          getDraftConversationMcpCatalog(agentType!),
+          listModelProviders(),
+        ])
+        setDraftCatalog(nextDraftCatalog)
+        setProviders(nextProviders)
+      } else {
+        const [nextConfigView, nextProviders] = await Promise.all([
+          getConversationConfig(conversationId),
+          listModelProviders(),
+        ])
+        setConfigView(nextConfigView)
+        setProviders(nextProviders)
+      }
+    } catch (loadError) {
+      setError(toErrorMessage(loadError))
+    } finally {
+      setLoading(false)
+    }
+  }, [agentType, conversationId])
 
   useEffect(() => {
     if (!open) return
-    let cancelled = false
-    setResourcesLoading(true)
-    void Promise.all([listModelProviders(), mcpScanLocal()])
-      .then(([nextProviders, nextMcpServers]) => {
-        if (cancelled) return
-        setProviders(nextProviders)
-        setMcpServers(nextMcpServers)
+    void load()
+  }, [conversationId, load, open])
+
+  useEffect(() => {
+    if (!open || conversationId == null) return
+    let active = true
+    let unsubscribe: (() => void) | undefined
+    void subscribe<ConversationConfigChanged>(
+      CONVERSATION_CONFIG_CHANGED_EVENT,
+      (changed) => {
+        if (
+          changed.conversation_id === conversationId &&
+          changed.version !== configView?.config.version
+        ) {
+          void load()
+        }
+      }
+    )
+      .then((nextUnsubscribe) => {
+        if (active) unsubscribe = nextUnsubscribe
+        else nextUnsubscribe()
       })
-      .catch(() => {
-        // This is a preview-only panel: a temporary resource read failure must
-        // not prevent the rest of the composer from being used.
-        if (cancelled) return
-        setProviders([])
-        setMcpServers([])
-      })
-      .finally(() => {
-        if (!cancelled) setResourcesLoading(false)
+      .catch((subscribeError) => {
+        if (active) setError(toErrorMessage(subscribeError))
       })
     return () => {
-      cancelled = true
+      active = false
+      unsubscribe?.()
     }
-  }, [open])
+  }, [configView?.config.version, conversationId, load, open])
+
+  // A turn may begin in another client while this panel is open. Close it
+  // immediately instead of leaving controls visible for a configuration that
+  // can only affect the next agent launch.
+  useEffect(() => {
+    if (!isPrompting || !open) return
+    setOpen(false)
+    setPanel("overview")
+  }, [isPrompting, open])
 
   const compatibleProviders = useMemo(
     () => providers.filter((provider) => provider.agent_type === agentType),
     [agentType, providers]
   )
-  const availableMcpServers = useMemo(() => {
-    if (!agentType || agentType === "pi" || agentType.startsWith("custom:")) {
-      return []
-    }
-    return mcpServers.filter((server) =>
-      server.apps.includes(agentType as McpAppType)
-    )
-  }, [agentType, mcpServers])
-
-  const overrideCount =
-    Number(providerId !== null) +
-    Number(mcpMode === "custom") +
-    Number(skillsMode === "custom")
-
-  const globalLabel = t("conversationConfigFollowGlobal")
-  const previewLabel =
-    overrideCount === 0
-      ? globalLabel
-      : t("conversationConfigSelectedCount", { count: overrideCount })
-
-  const resourceSummary = (mode: ResourceMode, count: number) =>
-    mode === "global"
-      ? globalLabel
-      : t("conversationConfigSelectedCount", { count })
-
-  const resetPreview = () => {
-    setProviderId(null)
-    setMcpMode("global")
-    setMcpIds(new Set())
-    setSkillsMode("global")
-    setSkillRefs(new Set())
-    setPanel("overview")
-  }
-
-  const updateResourceSelection = (
-    value: string,
-    checked: boolean,
-    setter: Dispatch<SetStateAction<Set<string>>>
-  ) => {
-    setter((current) => {
-      const next = new Set(current)
-      if (checked) next.add(value)
-      else next.delete(value)
-      return next
-    })
-  }
-
-  const renderFollowGlobal = (selected: boolean, onSelect: () => void) => (
-    <button
-      type="button"
-      aria-current={selected ? "true" : undefined}
-      onClick={onSelect}
-      className={cn(
-        "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        selected
-          ? "border-primary/30 bg-primary/7 text-foreground"
-          : "border-transparent bg-muted/50 hover:bg-muted"
-      )}
-    >
-      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/75 text-muted-foreground">
-        <Globe2 className="size-3.5" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs font-medium">{globalLabel}</span>
-        <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
-          {t("conversationConfigFollowGlobalDescription")}
-        </span>
-      </span>
-      {selected ? <Check className="size-3.5 shrink-0 text-primary" /> : null}
-    </button>
+  const config =
+    conversationId == null ? (draftConfig ?? null) : (configView?.config ?? null)
+  const catalog =
+    conversationId == null ? draftCatalog : (configView?.mcp_catalog ?? null)
+  const selectedRefKeys = useMemo(
+    () => new Set(config?.additional_mcp_refs.map(refKey) ?? []),
+    [config?.additional_mcp_refs]
   )
+  const provider = compatibleProviders.find(
+    (item) => item.id === config?.model_provider_id
+  )
+  const additionalMcpCount = config?.additional_mcp_refs.length ?? 0
+  const overrideCount =
+    Number(config?.model_provider_id != null) + additionalMcpCount
+
+  const save = useCallback(
+    async (
+      nextProviderId: number | null,
+      nextMcpRefs: ConversationMcpRef[]
+    ) => {
+      if (isPrompting || config == null) return
+      const providerChanged = nextProviderId !== config.model_provider_id
+      const requiresDraftRestart = conversationId == null
+      const restartConnectionKey =
+        providerChanged || requiresDraftRestart ? connectionKey : null
+      if (restartConnectionKey == null && requiresDraftRestart) {
+        setError(
+          "The conversation connection is unavailable, so the draft configuration cannot be applied."
+        )
+        return
+      }
+      setSaving(true)
+      setError(null)
+      try {
+        if (conversationId == null) {
+          if (onDraftConfigChange == null) {
+            throw new Error(
+              "The new conversation does not expose draft configuration storage."
+            )
+          }
+          const nextDraftConfig: DraftConversationConfig = {
+            model_provider_id: nextProviderId,
+            additional_mcp_refs: nextMcpRefs,
+          }
+          onDraftConfigChange(nextDraftConfig)
+          const reconnected = await reapplyConfig(
+            restartConnectionKey!,
+            nextDraftConfig
+          )
+          if (!reconnected) {
+            throw new Error(
+              "The draft configuration was saved, but the current session could not be refreshed."
+            )
+          }
+          setOpen(false)
+          setPanel("overview")
+          return
+        }
+        const persistedConfig = configView?.config
+        if (persistedConfig == null) return
+        const nextView = await updateConversationConfig(conversationId, {
+          model_provider_id: nextProviderId,
+          additional_mcp_refs: nextMcpRefs,
+          // A selector value belongs to the provider that exposed it. Changing
+          // providers must not carry an old model or thinking id into a new
+          // provider's capability list.
+          session_config_values:
+            nextProviderId === persistedConfig.model_provider_id
+              ? persistedConfig.session_config_values
+              : {},
+          expected_version: persistedConfig.version,
+        })
+        setConfigView(nextView)
+        if (restartConnectionKey != null) {
+          // Provider credentials and model defaults are process-start inputs.
+          // The session is idle here (the trigger is frozen while prompting),
+          // so safely resume the same conversation immediately. Its fresh ACP
+          // selector events become the input's new model/thinking defaults.
+          const reconnected = await reapplyConfig(restartConnectionKey)
+          if (!reconnected) {
+            throw new Error(
+              "The provider was saved, but the current conversation could not be refreshed."
+            )
+          }
+          setOpen(false)
+          setPanel("overview")
+        }
+      } catch (saveError) {
+        setError(toErrorMessage(saveError))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [
+      config,
+      configView?.config,
+      connectionKey,
+      conversationId,
+      isPrompting,
+      onDraftConfigChange,
+      reapplyConfig,
+    ]
+  )
+
+  const toggleMcp = useCallback(
+    (candidate: ConversationMcpCandidate, checked: boolean) => {
+      if (
+        isPrompting ||
+        config == null ||
+        candidate.native ||
+        !candidate.appendable
+      ) {
+        return
+      }
+      const key = refKey(candidate)
+      const nextRefs = checked
+        ? [
+            ...config.additional_mcp_refs,
+            { id: candidate.id, fingerprint: candidate.fingerprint },
+          ]
+        : config.additional_mcp_refs.filter((ref) => refKey(ref) !== key)
+      void save(config.model_provider_id, nextRefs)
+    },
+    [config, isPrompting, save]
+  )
+
+  const isLocked = isPrompting || saving
+
+  const renderFollowGlobal = () => {
+    const selected = config?.model_provider_id == null
+    return (
+      <button
+        type="button"
+        aria-current={selected ? "true" : undefined}
+        disabled={isLocked || config == null}
+        onClick={() => void save(null, config?.additional_mcp_refs ?? [])}
+        className={cn(
+          "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          selected
+            ? "border-primary/30 bg-primary/7 text-foreground"
+            : "border-transparent bg-muted/50 hover:bg-muted",
+          (isLocked || config == null) && "cursor-not-allowed opacity-60"
+        )}
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/75 text-muted-foreground">
+          <Globe2 className="size-3.5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-medium">
+            {t("conversationConfigFollowGlobal")}
+          </span>
+          <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+            {t("conversationConfigFollowGlobalDescription")}
+          </span>
+        </span>
+        {selected ? <Check className="size-3.5 shrink-0 text-primary" /> : null}
+      </button>
+    )
+  }
 
   const renderPanel = () => {
     if (panel === "provider") {
@@ -281,27 +444,32 @@ export function ConversationConfigPopover({
             onBack={() => setPanel("overview")}
           />
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
-            {renderFollowGlobal(providerId === null, () => setProviderId(null))}
+            {renderFollowGlobal()}
             <div className="px-2 pb-0.5 pt-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
               {t("conversationConfigCustom")}
             </div>
-            {resourcesLoading ? (
+            {loading ? (
               <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
                 <LoaderCircle className="size-3.5 animate-spin" />
                 {t("loadingSettings")}
               </div>
             ) : compatibleProviders.length > 0 ? (
-              compatibleProviders.map((provider) => {
-                const selected = provider.id === providerId
+              compatibleProviders.map((item) => {
+                const selected = item.id === config?.model_provider_id
                 return (
                   <button
-                    key={provider.id}
+                    key={item.id}
                     type="button"
                     aria-current={selected ? "true" : undefined}
-                    onClick={() => setProviderId(provider.id)}
+                    disabled={isLocked || config == null}
+                    onClick={() =>
+                      void save(item.id, config?.additional_mcp_refs ?? [])
+                    }
                     className={cn(
                       "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/65 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                      selected && "bg-muted"
+                      selected && "bg-muted",
+                      (isLocked || config == null) &&
+                        "cursor-not-allowed opacity-60"
                     )}
                   >
                     <span className="flex size-4 shrink-0 items-center justify-center pt-0.5">
@@ -311,10 +479,10 @@ export function ConversationConfigPopover({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-xs font-medium">
-                        {provider.name}
+                        {item.name}
                       </span>
                       <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                        {provider.model || provider.api_url}
+                        {item.model || item.api_url}
                       </span>
                     </span>
                   </button>
@@ -330,75 +498,56 @@ export function ConversationConfigPopover({
       )
     }
 
-    if (panel === "mcp" || panel === "skills") {
-      const isMcp = panel === "mcp"
-      const resourceMode = isMcp ? mcpMode : skillsMode
-      const selected = isMcp ? mcpIds : skillRefs
-      const rows = isMcp ? availableMcpServers : skills
-      const title = isMcp
-        ? t("conversationConfigMcpServers")
-        : t("conversationConfigAvailableSkills")
-      const noRowsLabel = isMcp
-        ? t("conversationConfigNoMcpServers")
-        : t("conversationConfigNoSkills")
-      const setMode = isMcp ? setMcpMode : setSkillsMode
-      const setSelection = isMcp ? setMcpIds : setSkillRefs
-
+    if (panel === "mcp") {
+      const candidates = catalog?.candidates ?? []
       return (
         <>
-          <DetailHeader title={title} onBack={() => setPanel("overview")} />
+          <DetailHeader
+            title={t("conversationConfigMcpServers")}
+            onBack={() => setPanel("overview")}
+          />
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
-            {renderFollowGlobal(resourceMode === "global", () =>
-              setMode("global")
-            )}
-            <div className="px-2 pb-0.5 pt-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-              {t("conversationConfigCustom")}
-            </div>
-            {resourcesLoading && isMcp ? (
+            {loading ? (
               <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
                 <LoaderCircle className="size-3.5 animate-spin" />
                 {t("loadingSettings")}
               </div>
-            ) : rows.length > 0 ? (
-              isMcp ? (
-                (rows as LocalMcpServer[]).map((server) => (
-                  <ResourceListItem
-                    key={server.id}
-                    checked={
-                      resourceMode === "custom" && selected.has(server.id)
+            ) : !catalog?.supports_session_additions ? (
+              <p className="px-2.5 py-3 text-xs leading-snug text-muted-foreground">
+                {t("conversationConfigMcpUnsupported")}
+              </p>
+            ) : candidates.length > 0 ? (
+              candidates.map((candidate) => {
+                const checked =
+                  candidate.native || selectedRefKeys.has(refKey(candidate))
+                const disabled =
+                  isLocked ||
+                  candidate.native ||
+                  !candidate.appendable ||
+                  config == null
+                const description = candidate.native
+                  ? t("conversationConfigMcpNative")
+                  : !candidate.appendable
+                    ? t("conversationConfigMcpNameConflict")
+                    : t("conversationConfigSources", {
+                        sources: candidate.source_apps.join(", "),
+                      })
+                return (
+                  <McpListItem
+                    key={refKey(candidate)}
+                    candidate={candidate}
+                    checked={checked}
+                    disabled={disabled}
+                    description={description}
+                    onCheckedChange={(checkedValue) =>
+                      toggleMcp(candidate, checkedValue)
                     }
-                    title={server.id}
-                    description={
-                      typeof server.spec.type === "string"
-                        ? server.spec.type
-                        : null
-                    }
-                    onCheckedChange={(checked) => {
-                      setMode("custom")
-                      updateResourceSelection(server.id, checked, setSelection)
-                    }}
                   />
-                ))
-              ) : (
-                (rows as AgentSkillItem[]).map((skill) => {
-                  const ref = `${skill.scope}:${skill.id}`
-                  return (
-                    <ResourceListItem
-                      key={ref}
-                      checked={resourceMode === "custom" && selected.has(ref)}
-                      title={skill.name}
-                      description={skill.description}
-                      onCheckedChange={(checked) => {
-                        setMode("custom")
-                        updateResourceSelection(ref, checked, setSelection)
-                      }}
-                    />
-                  )
-                })
-              )
+                )
+              })
             ) : (
               <p className="px-2.5 py-3 text-xs leading-snug text-muted-foreground">
-                {noRowsLabel}
+                {t("conversationConfigNoMcpServers")}
               </p>
             )}
           </div>
@@ -407,8 +556,9 @@ export function ConversationConfigPopover({
     }
 
     const providerLabel =
-      compatibleProviders.find((provider) => provider.id === providerId)
-        ?.name ?? globalLabel
+      config?.model_provider_id == null
+        ? t("conversationConfigFollowGlobal")
+        : (provider?.name ?? t("conversationConfigProviderUnavailable"))
 
     return (
       <>
@@ -428,8 +578,8 @@ export function ConversationConfigPopover({
             type="button"
             variant="ghost"
             size="icon-xs"
-            disabled={overrideCount === 0}
-            onClick={resetPreview}
+            disabled={isLocked || config == null || overrideCount === 0}
+            onClick={() => void save(null, [])}
             title={t("conversationConfigRestoreGlobal")}
             aria-label={t("conversationConfigRestoreGlobal")}
           >
@@ -437,31 +587,35 @@ export function ConversationConfigPopover({
           </Button>
         </div>
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
-          <OverviewRow
-            icon={Sparkles}
-            label={t("conversationConfigModelProvider")}
-            value={providerLabel}
-            overridden={providerId !== null}
-            onClick={() => setPanel("provider")}
-          />
-          <OverviewRow
-            icon={ServerCog}
-            label="MCP"
-            value={resourceSummary(mcpMode, mcpIds.size)}
-            overridden={mcpMode === "custom"}
-            onClick={() => setPanel("mcp")}
-          />
-          <OverviewRow
-            icon={BookOpenText}
-            label="Skills"
-            value={resourceSummary(skillsMode, skillRefs.size)}
-            overridden={skillsMode === "custom"}
-            onClick={() => setPanel("skills")}
-          />
-        </div>
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3.5 py-2 text-[11px] text-muted-foreground">
-          <span className="min-w-0 truncate">{previewLabel}</span>
-          <span className="shrink-0">{t("conversationConfigPreviewOnly")}</span>
+          {loading && config == null ? (
+            <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin" />
+              {t("loadingSettings")}
+            </div>
+          ) : (
+            <>
+              <OverviewRow
+                icon={Sparkles}
+                label={t("conversationConfigModelProvider")}
+                value={providerLabel}
+                overridden={config?.model_provider_id != null}
+                onClick={() => setPanel("provider")}
+              />
+              <OverviewRow
+                icon={ServerCog}
+                label="MCP"
+                value={
+                  additionalMcpCount > 0
+                    ? t("conversationConfigSelectedCount", {
+                        count: additionalMcpCount,
+                      })
+                    : t("conversationConfigNoMcpAdditions")
+                }
+                overridden={additionalMcpCount > 0}
+                onClick={() => setPanel("mcp")}
+              />
+            </>
+          )}
         </div>
       </>
     )
@@ -480,7 +634,11 @@ export function ConversationConfigPopover({
           type="button"
           variant="ghost"
           size="icon-xs"
-          className="relative shrink-0 text-muted-foreground"
+          disabled={isLocked}
+          className={cn(
+            "relative shrink-0 text-muted-foreground",
+            isLocked && "cursor-not-allowed opacity-45"
+          )}
           title={t("conversationSettings")}
           aria-label={t("conversationSettings")}
         >
@@ -496,6 +654,14 @@ export function ConversationConfigPopover({
         className="max-h-[min(31rem,calc(100dvh-1rem))] w-[min(25rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] gap-0 overflow-hidden p-0"
         aria-label={t("conversationSettings")}
       >
+        {error ? (
+          <p
+            role="alert"
+            className="mx-2 mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11px] leading-snug text-destructive"
+          >
+            {error}
+          </p>
+        ) : null}
         {renderPanel()}
       </PopoverContent>
     </Popover>

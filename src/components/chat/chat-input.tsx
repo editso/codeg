@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl"
 import type {
   AgentType,
   ConnectionStatus,
+  DraftConversationConfig,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -37,6 +38,9 @@ interface ChatInputProps {
   onModeChange?: (modeId: string) => void
   onConfigOptionChange?: (configId: string, valueId: string) => void
   agentType?: AgentType | null
+  conversationId?: number | null
+  draftConversationConfig?: DraftConversationConfig | null
+  onDraftConversationConfigChange?: (config: DraftConversationConfig) => void
   availableCommands?: AvailableCommandInfo[] | null
   attachmentTabId?: string | null
   draftStorageKey?: string | null
@@ -96,6 +100,9 @@ export const ChatInput = memo(function ChatInput({
   onModeChange,
   onConfigOptionChange,
   agentType,
+  conversationId,
+  draftConversationConfig,
+  onDraftConversationConfigChange,
   availableCommands,
   attachmentTabId,
   draftStorageKey,
@@ -191,6 +198,9 @@ export const ChatInput = memo(function ChatInput({
         onModeChange={onModeChange}
         onConfigOptionChange={onConfigOptionChange}
         agentType={agentType}
+        conversationId={conversationId}
+        draftConversationConfig={draftConversationConfig}
+        onDraftConversationConfigChange={onDraftConversationConfigChange}
         availableCommands={availableCommands}
         commandsLoading={commandsLoading}
         attachmentTabId={attachmentTabId}

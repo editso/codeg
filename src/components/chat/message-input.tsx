@@ -60,6 +60,7 @@ import type {
   AgentSkillItem,
   AgentType,
   AvailableCommandInfo,
+  DraftConversationConfig,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -170,6 +171,11 @@ interface MessageInputProps {
   onModeChange?: (modeId: string) => void
   onConfigOptionChange?: (configId: string, valueId: string) => void
   agentType?: AgentType | null
+  /** Persisted conversation id. Draft composers omit it and carry their
+   *  launch configuration through `draftConversationConfig` until first send. */
+  conversationId?: number | null
+  draftConversationConfig?: DraftConversationConfig | null
+  onDraftConversationConfigChange?: (config: DraftConversationConfig) => void
   availableCommands?: AvailableCommandInfo[] | null
   /**
    * The agent's command list is still on its way (the connection is being
@@ -309,6 +315,9 @@ export function MessageInput({
   onModeChange,
   onConfigOptionChange,
   agentType,
+  conversationId,
+  draftConversationConfig,
+  onDraftConversationConfigChange,
   availableCommands,
   commandsLoading = false,
   promptCapabilities,
@@ -336,14 +345,13 @@ export function MessageInput({
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
   const tAttach = useTranslations("Folder.chat.messageInput")
-  // The compact session-config panel reads the existing agent skill registry so
-  // it can preview a real selection. Codex is still the ONLY agent whose skill
-  // list feeds `$` autocomplete below; fetching the broader list changes no
-  // invocation behaviour for the other agents.
-  //
-  // Pass the working dir so the panel sees both global skills and folder-scoped
-  // project skills (e.g. `{folder}/.codex/skills`).
-  const availableSkills = useAgentSkills(agentType ?? null, defaultPath ?? null)
+  // Codex is the only agent whose on-disk skill registry feeds `$` completion.
+  // Conversation configuration has no Skills selector, so non-Codex composers
+  // must not start an unrelated filesystem scan just to render their chrome.
+  const availableSkills = useAgentSkills(
+    agentType === "codex" ? agentType : null,
+    agentType === "codex" ? (defaultPath ?? null) : null
+  )
   const skillPrefix = agentType === "codex" ? "$" : "/"
   const { shortcuts } = useShortcutSettings()
   const effectiveDraftStorageKey = draftStorageKey ?? null
@@ -1885,8 +1893,12 @@ export function MessageInput({
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pr-1">
                     <ConversationConfigPopover
+                      conversationId={conversationId}
                       agentType={agentType}
-                      skills={availableSkills}
+                      draftConfig={draftConversationConfig}
+                      onDraftConfigChange={onDraftConversationConfigChange}
+                      connectionKey={attachmentTabId}
+                      isPrompting={isPrompting}
                     />
                     <ComposerContextUsage tabId={attachmentTabId ?? null} />
                     <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
@@ -1896,8 +1908,12 @@ export function MessageInput({
               {!hasFolderBranchPicker && (
                 <div className="flex shrink-0 justify-end px-4 pt-2.5 -mb-1">
                   <ConversationConfigPopover
+                    conversationId={conversationId}
                     agentType={agentType}
-                    skills={availableSkills}
+                    draftConfig={draftConversationConfig}
+                    onDraftConfigChange={onDraftConversationConfigChange}
+                    connectionKey={attachmentTabId}
+                    isPrompting={isPrompting}
                   />
                 </div>
               )}
