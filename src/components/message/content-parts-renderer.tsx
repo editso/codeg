@@ -3020,12 +3020,84 @@ type PendingActivityPart = {
   items: AssistantActivityItem[]
 }
 
+function isStructuredActivityMarkdownLine(line: string): boolean {
+  const trimmed = line.trim()
+
+  return (
+    /^(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|`{3,}|~{3,}|[-*_]{3,}\s*$)/.test(
+      trimmed
+    ) || trimmed.includes("|")
+  )
+}
+
+/**
+ * Agents often batch several plain-language progress updates in one content
+ * block. Give each update an activity row so the timeline can show a distinct
+ * dot for it. Markdown stays intact: splitting a list, quote, table, or code
+ * fence would change its meaning and should remain one rendered response.
+ */
+function splitPlainActivityLines(text: string): string[] | null {
+  const normalized = text.trim().replace(/\r\n?/g, "\n")
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (
+    lines.length < 2 ||
+    lines.some((line) => isStructuredActivityMarkdownLine(line))
+  ) {
+    return null
+  }
+
+  return lines
+}
+
+function activityReasoningItemsFromPart(
+  part: Extract<AdaptedContentPart, { type: "reasoning" }>,
+  index: number
+): AssistantActivityItem[] {
+  const lines = splitPlainActivityLines(part.content)
+  if (!lines) {
+    return [{ id: `reasoning-${index}`, type: "reasoning", part }]
+  }
+
+  return lines.map((content, lineIndex) => ({
+    id: `reasoning-${index}-${lineIndex}`,
+    type: "reasoning" as const,
+    part: {
+      ...part,
+      content,
+      // Only the newest update is still being produced. Earlier rows are
+      // stable history and should render as settled timeline dots.
+      isStreaming: part.isStreaming && lineIndex === lines.length - 1,
+    },
+  }))
+}
+
+function activityMessageItemsFromText(
+  text: string,
+  index: number
+): AssistantActivityItem[] {
+  const normalized = text.trim().replace(/\r\n?/g, "\n")
+  const lines = splitPlainActivityLines(normalized)
+  if (!lines) {
+    return [{ id: `message-${index}`, type: "message", text: normalized }]
+  }
+
+  return lines.map((text, lineIndex) => ({
+    id: `message-${index}-${lineIndex}`,
+    type: "message" as const,
+    text,
+  }))
+}
+
 function activityItemsFromPart(
   part: AdaptedContentPart,
   index: number
 ): AssistantActivityItem[] | null {
   if (part.type === "reasoning") {
-    return [{ id: `reasoning-${index}`, type: "reasoning", part }]
+    return activityReasoningItemsFromPart(part, index)
   }
 
   if (part.type === "tool-group" && part.items.length > 0) {
@@ -3142,7 +3214,7 @@ function buildAssistantContentBlocks(
       if (text) {
         activityEntries.push({
           index,
-          items: [{ id: `message-${index}`, type: "message", text }],
+          items: activityMessageItemsFromText(text, index),
         })
       }
     }

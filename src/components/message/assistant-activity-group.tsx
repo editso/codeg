@@ -758,7 +758,10 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
         tools += Math.max(1, item.part.polls.length)
       } else if (item.type === "background-task-group") {
         tools += Math.max(1, item.part.polls.length)
-      } else if (item.type !== "context-compaction") {
+      } else if (
+        item.type !== "context-compaction" &&
+        item.type !== "message"
+      ) {
         tools += 1
       }
     }
@@ -799,7 +802,6 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
               duration={1.9}
               spread={6}
               shineColor="var(--foreground)"
-              bounce
               className="text-[13px] font-medium"
             >
               {statusLabel}
@@ -824,7 +826,6 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
               duration={1.9}
               spread={3}
               shineColor="var(--foreground)"
-              bounce
               className="min-w-0 truncate text-[13px] font-medium"
             >
               {summary}

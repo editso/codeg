@@ -685,10 +685,10 @@ const PendingTypingIndicator = memo(function PendingTypingIndicator() {
   return (
     <Message from="assistant">
       <MessageContent>
-        <div className="flex items-center gap-1.5 py-1">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_infinite]" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_0.2s_infinite]" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_0.4s_infinite]" />
+        <div className="codeg-typing-scan flex items-center gap-1.5 py-1">
+          <span aria-hidden="true" />
+          <span aria-hidden="true" />
+          <span aria-hidden="true" />
         </div>
       </MessageContent>
     </Message>
@@ -779,6 +779,15 @@ export function MessageListView({
   )
 
   const sessionSyncState = session?.syncState ?? "idle"
+  // A retry/failure tail is the active turn's progress indicator while it is
+  // visible. Rendering the typing dots above it at the same time describes one
+  // blocked response twice; once the incident settles, this returns false and
+  // the dots resume in their normal assistant position.
+  const hasConversationStatus = hasVisibleConversationStatus({
+    sessionFailures,
+    claudeApiRetry,
+    connectionError,
+  })
 
   // Per-instance turn adapter: caches per-turn `AdaptedMessage` so unchanged
   // historical turns survive every streaming-token re-render with stable refs.
@@ -921,7 +930,8 @@ export function MessageListView({
     const lastPhase = timelineTurns[timelineTurns.length - 1]?.phase ?? null
     if (
       lastPhase === "optimistic" &&
-      (connStatus === "prompting" || sessionSyncState === "awaiting_persist")
+      (connStatus === "prompting" || sessionSyncState === "awaiting_persist") &&
+      !hasConversationStatus
     ) {
       items.push({ key: "pending-typing", kind: "typing" })
     }
@@ -930,6 +940,7 @@ export function MessageListView({
   }, [
     adapterText,
     connStatus,
+    hasConversationStatus,
     sessionSyncState,
     timelineTurns,
     turnAdapter,
@@ -1017,9 +1028,10 @@ export function MessageListView({
       claudeApiRetry,
       connectionError,
     }
-    if (!hasVisibleConversationStatus(statusProps)) return null
+    if (!hasConversationStatus) return null
     return <ConversationStatusTail {...statusProps} />
   }, [
+    hasConversationStatus,
     sessionFailures,
     onSessionFailureAction,
     onSessionFailureDismiss,
