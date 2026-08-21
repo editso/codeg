@@ -622,7 +622,17 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   }
 
   return (
-    <div className={dimmed ? "opacity-70" : undefined}>
+    <div
+      className={
+        group.role === "assistant"
+          ? dimmed
+            ? "group/assistant-turn opacity-70"
+            : "group/assistant-turn"
+          : dimmed
+            ? "opacity-70"
+            : undefined
+      }
+    >
       <Message from={group.role}>
         {group.role === "user" && group.images.length > 0 ? (
           <UserImageAttachments images={group.images} className="self-end" />

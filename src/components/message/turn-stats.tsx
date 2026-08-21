@@ -132,7 +132,7 @@ export function TurnStats({
     return null
 
   return (
-    <div className="mt-2 -ms-[0.3125rem] flex items-center justify-start gap-1 text-xs text-muted-foreground">
+    <div className="mt-2 -ms-[0.3125rem] flex pointer-events-none items-center justify-start gap-1 text-xs text-muted-foreground opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/assistant-turn:pointer-events-auto group-hover/assistant-turn:opacity-100 group-focus-within/assistant-turn:pointer-events-auto group-focus-within/assistant-turn:opacity-100">
       <TooltipProvider delayDuration={150}>
         {hasCopy && (
           <Tooltip>
