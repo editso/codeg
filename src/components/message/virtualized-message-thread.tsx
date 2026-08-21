@@ -23,6 +23,7 @@ import {
  * never scroll cannot auto-trigger a cascade of page loads.
  */
 const LOAD_OLDER_THRESHOLD_PX = 240
+const MESSAGE_RAIL_CLASS = "mx-auto max-w-[920px] px-4"
 
 interface VirtualizedMessageThreadProps<T> {
   /** Data to virtualise — each entry becomes one virtual row. */
@@ -58,7 +59,7 @@ interface VirtualizedMessageThreadProps<T> {
   gap?: number
   /** Vertical padding before the first / after the last item. @default 16 */
   padding?: number
-  /** Extra className on every item's inner wrapper (the `max-w-3xl` div). */
+  /** Extra className on every item's inner wrapper in the message rail. */
   className?: string
   /** Extra className on the MessageThreadContent shell. */
   contentClassName?: string
@@ -358,7 +359,7 @@ function VirtualizedMessageThreadImpl<T>({
           >
             {hasOlder ? (
               <div key="load-older-row" style={styles.first}>
-                <div className={cn("mx-auto max-w-3xl px-4", className)}>
+                <div className={cn(MESSAGE_RAIL_CLASS, className)}>
                   <button
                     type="button"
                     onClick={isLoadingOlder ? undefined : onLoadOlder}
@@ -382,7 +383,7 @@ function VirtualizedMessageThreadImpl<T>({
                 key={getItemKey(item, index)}
                 style={itemStyle(index, items.length + (tailContent ? 1 : 0))}
               >
-                <div className={cn("mx-auto max-w-3xl px-4", className)}>
+                <div className={cn(MESSAGE_RAIL_CLASS, className)}>
                   {renderItem(item, index)}
                 </div>
               </div>
@@ -392,7 +393,7 @@ function VirtualizedMessageThreadImpl<T>({
                 key={tailKey}
                 style={itemStyle(items.length, items.length + 1)}
               >
-                <div className={cn("mx-auto max-w-3xl px-4", className)}>
+                <div className={cn(MESSAGE_RAIL_CLASS, className)}>
                   {tailContent}
                 </div>
               </div>
