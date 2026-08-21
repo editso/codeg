@@ -128,7 +128,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
   const totalDeletions = changedFiles.reduce((sum, f) => sum + f.deletions, 0)
 
   return (
-    <div className="mt-3 max-w-2xl space-y-1.5 text-card-foreground">
+    <div className="mt-3 w-full max-w-none space-y-1.5 text-card-foreground">
       {addedFiles.length > 0 && (
         <div className="overflow-hidden rounded-md border border-border/55 bg-muted/[0.18]">
           <button
