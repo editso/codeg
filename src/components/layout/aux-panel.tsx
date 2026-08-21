@@ -311,8 +311,8 @@ export function AuxPanel() {
           // TabsContent's aria-labelledby still resolves the panel's name from
           // the directly-referenced hidden trigger, so it stays labelled without
           // showing a pointless single-tab control.
-          <div className="flex h-10 shrink-0 items-center gap-2 bg-muted ws-transparent-bg ws-strip-line pl-3 pr-2">
-            {/* Off-image `bg-muted` matches the conversation/file strips +
+          <div className="flex h-10 shrink-0 items-center gap-2 bg-muted/35 ws-transparent-bg ws-strip-line pl-3 pr-2 dark:bg-muted">
+            {/* Off-image `bg-muted/35` matches the near-white conversation/file strips +
                 bottom StatusBar. With a workspace background image on, the
                 composition-family pair `ws-transparent-bg ws-strip-line` makes
                 this top strip go transparent (revealing the real background

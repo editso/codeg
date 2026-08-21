@@ -2597,7 +2597,7 @@ export function SidebarConversationList({
                 scrolled past, the in-list header is unmounted by virtua, so the
                 overlay is the keyboard/AT path to toggle/act on that folder.
                 `grip:false` — reordering is driven from the in-list header,
-                whose geometry the custom drag gesture relies on. `bg-sidebar`
+                whose geometry the custom drag gesture relies on. `bg-background`
                 lives inside themeWrap so it picks up the folder's themed
                 background and occludes the rows scrolling beneath it.
               */}
@@ -2612,7 +2612,7 @@ export function SidebarConversationList({
                 >
                   {themeWrap(
                     stickyFolderId,
-                    <div className="pointer-events-auto bg-sidebar">
+                    <div className="pointer-events-auto bg-background dark:bg-sidebar">
                       {folderHeaderElement(stickyFolderId, {
                         dragging: false,
                         grip: false,

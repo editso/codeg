@@ -384,7 +384,7 @@ export function Sidebar() {
 
     return (
       <TooltipProvider delayDuration={350}>
-        <aside className="relative flex h-full min-h-0 w-full border-r border-border/80 bg-muted text-foreground ws-transparent-bg ws-chrome-border select-none">
+        <aside className="relative flex h-full min-h-0 w-full border-r border-border/55 bg-background text-foreground ws-transparent-bg ws-chrome-border select-none dark:border-border/80 dark:bg-muted">
           {/* The fixed desktop toggle sits above the rail. Keep the first action
               one 40px row plus a 20px gap below it, matching the reference
               activity-rail rhythm. */}
@@ -465,7 +465,7 @@ export function Sidebar() {
   if (!isOpen) return null
 
   return (
-    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none">
+    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden bg-background text-sidebar-foreground ws-transparent-bg select-none dark:bg-sidebar">
       <div
         className={cn(
           "flex h-10 shrink-0 items-center gap-2 pr-2",

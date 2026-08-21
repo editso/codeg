@@ -2641,7 +2641,7 @@ export function ConversationDetailPanel() {
             title-bar row is gone entirely), and the TOP-edge strips add the
             corner reserves that row normally carries. */}
         {isSplit && (
-          <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+          <div className="flex h-10 shrink-0 items-stretch bg-muted/35 dark:bg-muted ws-transparent-bg">
             {touchesLeft && <SplitStripCornerReserve side="left" />}
             <TabBar groupId={groupId} />
             {touchesRight && <SplitStripCornerReserve side="right" />}

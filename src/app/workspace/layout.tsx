@@ -351,8 +351,9 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   this column owns the window's left edge) and a right reserve
                   (only when it's the window's right edge) for the fixed corner
                   overlays. The detail header + tiles render inside {children},
-                  directly below. `bg-muted` shades the strip like a browser tab
-                  bar (matching the bottom StatusBar) — the active tab
+                  directly below. A near-white `bg-muted/35` gives the strip a
+                  quiet editor-chrome layer without separating it harshly from
+                  the conversation canvas — the active tab
                   (bg-background) reads as a white tab seated on it, with
                   reverse bottom corners. With a workspace background image on,
                   the strip + every tab go transparent (reveal the image); a
@@ -365,7 +366,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   TOP-edge strips re-create the corner reserves themselves (see
                   SplitStripCornerReserve in conversation-detail-panel). */}
               {!isConvSplit && (
-                <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+                <div className="flex h-10 shrink-0 items-stretch bg-muted/35 dark:bg-muted ws-transparent-bg">
                   {!sidebarOpen && (
                     <div
                       data-tauri-drag-region
@@ -465,14 +466,14 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   the fixed corner overlay (only when the aux panel is collapsed,
                   so this column owns the window's right edge). Per-file actions
                   live in FileWorkspaceHeader below, above every
-                  FileWorkspacePanel render branch. `bg-muted` shades the strip
-                  like a browser tab bar (matches the conversation column and the
-                  bottom StatusBar). With a workspace background image on, the
+                  FileWorkspacePanel render branch. A near-white `bg-muted/35`
+                  keeps the strip aligned with the conversation canvas while the
+                  active tab remains readable. With a workspace background image on, the
                   strip + every tab go transparent (reveal the image) and a
                   hairline bottom border (ws-strip-line) sits under the reserves
                   and inactive tabs, arching over the active tab (the active
                   browser-tab-item's `::after`) — same as the conversation column. */}
-              <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+              <div className="flex h-10 shrink-0 items-stretch bg-muted/35 dark:bg-muted ws-transparent-bg">
                 {fileReservesLeft && (
                   <div
                     data-tauri-drag-region
@@ -1036,7 +1037,9 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
           withHandle
           disabled={!sidebarOpen}
           className={
-            sidebarOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
+            sidebarOpen
+              ? "before:bg-border/55 dark:before:bg-border"
+              : "pointer-events-none w-0 opacity-0 after:w-0"
           }
         />
 

@@ -1079,6 +1079,23 @@
   -webkit-backdrop-filter: blur(var(--ws-surface-blur));
   backdrop-filter: blur(var(--ws-surface-blur));
 }
+
+/* The light workbench is a single white canvas: the conversation area, sidebar
+   and its sticky headers should not read as unrelated grey slabs. Keep the
+   dark sidebar's deliberate elevation unchanged; only the light surface adopts
+   the canvas colour. The background-image variant mirrors the same source
+   colour before applying the existing translucency and blur treatment. */
+:root:not(.dark) .ws-surface-sidebar {
+  background-color: var(--background);
+}
+
+:root:not(.dark)[data-workspace-bg="on"] .ws-surface-sidebar {
+  background-color: color-mix(
+    in oklch,
+    var(--background) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+}
 /* Card 表面（面板级，磨砂，组合式）：无 base 规则，与元素上的 bg-card 配对——关图时保留
    bg-card 原样（含 hover:bg-* 等 layered 工具类，零回归），开图才转半透明磨砂。属 ws-surface-*
    面板级家族，跟随「面板不透明度」滑块（--ws-surface-alpha）。消息流内的卡片改用 ws-msg-card
