@@ -528,6 +528,29 @@ pub fn write_catalog_files(
     }))
 }
 
+/// Write a catalog for a process-scoped conversation override.
+///
+/// Unlike [`write_catalog_files`], this never writes the catalog/source files
+/// that back the user's global Codex configuration. A blank model config is
+/// intentionally expanded from the official snapshot only, which removes
+/// custom entries inherited from another provider. The caller may then set the
+/// session's root `model` explicitly so a stale global model cannot win.
+pub fn write_conversation_catalog_file(
+    raw_compact: Option<&str>,
+    path: &Path,
+    snapshot: &[Value],
+) -> Result<(), AppCommandError> {
+    let config = parse_model_config(raw_compact);
+    let catalog = serde_json::to_string_pretty(&expand_to_catalog(&config, snapshot))
+        .map_err(|e| {
+            AppCommandError::new(AppErrorCode::IoError, format!("serialize catalog: {e}"))
+        })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_err("create conversation catalog", e))?;
+    }
+    std::fs::write(path, catalog).map_err(|e| io_err("write conversation catalog", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9041,6 +9041,48 @@ fn apply_codex_conversation_provider_override(
             "requires_openai_auth": false,
         }),
     );
+
+    // The global Codex provider may have written a custom model catalog into
+    // ~/.codex/config.toml. CODEX_CONFIG is merged into the session's config
+    // at a higher precedence, so give this conversation its own catalog and
+    // never let a custom model from another provider leak into the picker.
+    // When the provider has no model config, resolve the default from the
+    // official catalog using the same ordering Codex uses for its native
+    // catalog; this is not a model invented by the provider binding.
+    let conversation_catalog_path = crate::paths::codeg_home_dir()
+        .join("cache")
+        .join("codex")
+        .join(format!("conversation-provider-{provider_id}.json"));
+    let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
+    let model_config =
+        crate::acp::codex_model_catalog::parse_model_config(provider.model.as_deref());
+    let effective_model = crate::acp::codex_model_catalog::default_slug(&model_config, &snapshot)
+        .ok_or_else(|| {
+            AcpError::protocol(format!(
+                "Codex conversation model provider {provider_id} has no selectable models"
+            ))
+        })?;
+    crate::acp::codex_model_catalog::write_conversation_catalog_file(
+        provider.model.as_deref(),
+        &conversation_catalog_path,
+        &snapshot,
+    )
+    .map_err(|error| AcpError::protocol(error.to_string()))?;
+    tracing::info!(
+        provider_id,
+        catalog_path = %conversation_catalog_path.display(),
+        custom_model_count = model_config.customs.len(),
+        effective_model = %effective_model,
+        "prepared conversation Codex model catalog"
+    );
+    config_object.insert(
+        "model_catalog_json".to_string(),
+        serde_json::Value::String(conversation_catalog_path.to_string_lossy().into_owned()),
+    );
+    config_object.insert(
+        "model".to_string(),
+        serde_json::Value::String(effective_model),
+    );
     let config_json = serde_json::to_string(&config)
         .map_err(|error| AcpError::protocol(format!("serialize CODEX_CONFIG: {error}")))?;
 
