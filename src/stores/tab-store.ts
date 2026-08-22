@@ -242,6 +242,14 @@ export interface TabStoreState {
     tabId: string,
     runtimeConversationId: number
   ) => void
+  /** Retarget every locally open view of a conversation after a server-side project bind. */
+  retargetConversationProject: (
+    summary: DbConversationSummary,
+    workingDir: string,
+    isChat: boolean
+  ) => void
+  /** Refresh the cwd of tabs rooted at a folder whose on-disk path changed. */
+  updateFolderWorkingDir: (folderId: number, workingDir: string) => void
   reorderTabs: (reorderedTabs: TabItem[]) => void
   consumeRemoteActivation: () => boolean
   onPreviewTabReplaced: (callback: (tabId: string) => void) => () => void
@@ -1855,6 +1863,70 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         tab.id === tabId ? { ...tab, runtimeConversationId } : tab
       ),
     })
+    recomputeTabs()
+  },
+
+  retargetConversationProject: (summary, workingDir, isChat) => {
+    const prev = get()
+    const matching = prev.rawTabs
+      .map((tab, index) => ({ tab, index }))
+      .filter(
+        ({ tab }) =>
+          tab.conversationId === summary.id &&
+          tab.agentType === summary.agent_type
+      )
+    if (matching.length === 0) return
+
+    // A remote snapshot and the conversation event can race while a local tab
+    // save is in flight. Keep the active view when possible and collapse any
+    // duplicate copy onto that stable tab id, preserving its split assignment
+    // and live runtime context while its cwd changes.
+    const primaryIndex =
+      matching.find(({ tab }) => tab.id === prev.activeTabId)?.index ??
+      matching[0].index
+    const primary = prev.rawTabs[primaryIndex]
+    if (
+      matching.length === 1 &&
+      primary.folderId === summary.folder_id &&
+      primary.workingDir === workingDir &&
+      primary.isChat === isChat
+    ) {
+      return
+    }
+    const next = prev.rawTabs.flatMap((tab, index) => {
+      if (
+        tab.conversationId !== summary.id ||
+        tab.agentType !== summary.agent_type
+      ) {
+        return [tab]
+      }
+      if (index !== primaryIndex) return []
+      return [
+        {
+          ...tab,
+          folderId: summary.folder_id,
+          workingDir,
+          isChat,
+        },
+      ]
+    })
+    const primaryId = prev.rawTabs[primaryIndex].id
+    const activeTabId = next.some((tab) => tab.id === prev.activeTabId)
+      ? prev.activeTabId
+      : primaryId
+    set({ rawTabs: next, activeTabId })
+    recomputeTabs()
+  },
+
+  updateFolderWorkingDir: (folderId, workingDir) => {
+    const prev = get().rawTabs
+    const next = prev.map((tab) =>
+      tab.folderId === folderId && tab.workingDir !== workingDir
+        ? { ...tab, workingDir }
+        : tab
+    )
+    if (next.every((tab, index) => tab === prev[index])) return
+    set({ rawTabs: next })
     recomputeTabs()
   },
 

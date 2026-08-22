@@ -1866,6 +1866,17 @@ export async function saveOpenedTabs(
   })
 }
 
+/** Bind one saved, idle conversation to an open workspace project. */
+export async function rebindConversationProject(
+  conversationId: number,
+  targetFolderId: number
+): Promise<DbConversationSummary> {
+  return getTransport().call("rebind_conversation_project", {
+    conversationId,
+    targetFolderId,
+  })
+}
+
 export async function getConversationConfig(
   conversationId: number
 ): Promise<ConversationConfigView> {
@@ -1946,6 +1957,14 @@ export async function updateFolderDefaultAgent(
     folderId,
     defaultAgentType,
   })
+}
+
+/** Repoint a top-level workspace project after it was moved or renamed on disk. */
+export async function updateProjectLocation(
+  folderId: number,
+  newPath: string
+): Promise<FolderDetail> {
+  return getTransport().call("update_project_location", { folderId, newPath })
 }
 
 export async function importLocalConversations(

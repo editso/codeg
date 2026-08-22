@@ -24,6 +24,7 @@ import {
   ExternalLink,
   FolderClosed,
   FolderGit2,
+  FolderInput,
   FolderOpen,
   FolderOpenDot,
   FolderRoot,
@@ -56,6 +57,7 @@ import {
   updateFolderColor,
   updateFolderAlias,
   updateFolderDefaultAgent,
+  updateProjectLocation,
   deleteConversation,
   listChildConversations,
 } from "@/lib/api"
@@ -119,6 +121,7 @@ import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-conn
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
+import { ProjectLocationDialog } from "./project-location-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
 import { RemoteWorkspaceManageDialog } from "@/components/layout/remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
@@ -153,6 +156,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { FolderAliasLabel } from "./folder-alias-label"
 import { toErrorMessage } from "@/lib/app-error"
@@ -201,6 +210,9 @@ const FolderHeader = memo(function FolderHeader({
   onChangeColor,
   onSetAlias,
   onSetDefaultAgent,
+  onRelocateProject,
+  relocationBlockedCount,
+  canRelocateProject,
   onOpenInSystemExplorer,
   onOpenInTerminal,
   isDragging,
@@ -245,6 +257,11 @@ const FolderHeader = memo(function FolderHeader({
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
   onSetAlias: (folderId: number, alias: string | null) => void
   onSetDefaultAgent: (folderId: number, agentType: AgentType | null) => void
+  onRelocateProject: (folderId: number) => void
+  /** Every running session under this project root, including worktrees. */
+  relocationBlockedCount: number
+  /** Only root workspace projects can be relocated as a unit. */
+  canRelocateProject: boolean
   onOpenInSystemExplorer: (folderId: number) => void
   onOpenInTerminal: (folderId: number) => void
   isDragging?: boolean
@@ -310,6 +327,12 @@ const FolderHeader = memo(function FolderHeader({
   // `revealItemInDir` only works inside Tauri; in web mode it is a no-op,
   // so disable the entry there to avoid silent failures.
   const isDesktopMode = isDesktop()
+  const projectLocationLockedReason =
+    relocationBlockedCount > 0
+      ? t("folderHeaderMenu.updateProjectLocationBusy", {
+          count: relocationBlockedCount,
+        })
+      : null
 
   // Alias dialog: controlled Dialog rendered as a sibling of the ContextMenu so
   // it survives the menu closing on select (mirrors the conversation card's
@@ -541,6 +564,29 @@ const FolderHeader = memo(function FolderHeader({
             <Download className="h-4 w-4" />
             {t("importLocalSessions")}
           </ContextMenuItem>
+          {canRelocateProject &&
+            (projectLocationLockedReason ? (
+              <TooltipProvider delayDuration={250}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="block cursor-not-allowed">
+                      <ContextMenuItem disabled>
+                        <FolderInput className="h-4 w-4" />
+                        {t("folderHeaderMenu.updateProjectLocation")}
+                      </ContextMenuItem>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-64 text-center">
+                    {projectLocationLockedReason}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              <ContextMenuItem onSelect={() => onRelocateProject(folderId)}>
+                <FolderInput className="h-4 w-4" />
+                {t("folderHeaderMenu.updateProjectLocation")}
+              </ContextMenuItem>
+            ))}
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <ExternalLink className="h-4 w-4" />
@@ -777,6 +823,7 @@ export function SidebarConversationList({
   const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
   const refreshing = loading
   const { activeFolder } = useActiveFolder()
+  const [relocateFolderId, setRelocateFolderId] = useState<number | null>(null)
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
@@ -796,6 +843,7 @@ export function SidebarConversationList({
         name: string
         alias: string | null
         path: string
+        parentId: number | null
         color: string
         defaultAgentType: AgentType | null
         gitBranch: string | null
@@ -806,12 +854,21 @@ export function SidebarConversationList({
         name: f.name,
         alias: f.alias,
         path: f.path,
+        parentId: f.parent_id,
         color: f.color,
         defaultAgentType: f.default_agent_type,
         gitBranch: f.git_branch,
       })
     return map
   }, [allFolders])
+
+  const relocateFolder = useMemo(
+    () =>
+      relocateFolderId == null
+        ? null
+        : (allFolders.find((folder) => folder.id === relocateFolderId) ?? null),
+    [allFolders, relocateFolderId]
+  )
 
   // `tabs` gets a fresh array reference on every `conversations` change (the tab
   // context re-derives titles/status), so these two derivations would otherwise
@@ -1196,6 +1253,23 @@ export function SidebarConversationList({
     }
     return map
   }, [conversations, displayChildToParent])
+
+  // Project relocation is stricter than the sidebar badge: it must account for
+  // every active conversation rooted at the project, regardless of whether
+  // worktrees are currently expanded or merged into their parent display row.
+  const projectRunningCounts = useMemo(() => {
+    const folderParents = new Map(
+      allFolders.map((folder) => [folder.id, folder.parent_id])
+    )
+    const map = new Map<number, number>()
+    for (const conversation of conversations) {
+      if (conversation.status !== "in_progress") continue
+      const projectId =
+        folderParents.get(conversation.folder_id) ?? conversation.folder_id
+      map.set(projectId, (map.get(projectId) ?? 0) + 1)
+    }
+    return map
+  }, [allFolders, conversations])
 
   // The reorderable, top-level folder sequence: worktree child folders are
   // excluded (they follow their parent, never reorder on their own), so this is
@@ -1750,6 +1824,22 @@ export function SidebarConversationList({
     [allFolders]
   )
 
+  const handleOpenProjectLocation = useCallback((folderId: number) => {
+    setRelocateFolderId(folderId)
+  }, [])
+
+  const handleUpdateProjectLocation = useCallback(
+    async (folderId: number, newPath: string) => {
+      try {
+        await updateProjectLocation(folderId, newPath)
+      } catch (error) {
+        toast.error(toErrorMessage(error))
+        throw error
+      }
+    },
+    []
+  )
+
   const handleRemoveFolderConfirm = useCallback(async () => {
     if (!removeConfirm) return
     const { folderId, folderName } = removeConfirm
@@ -2197,6 +2287,7 @@ export function SidebarConversationList({
       !isRootGroup && showWorktrees && containerRepoIds.has(folderId)
     const variant = isRootGroup ? "root" : isWorktree ? "worktree" : "repo"
     const depth = isRootGroup || isWorktree ? 1 : 0
+    const canRelocateProject = !isRootGroup && folderEntry?.parentId === null
     const runningCount = isContainer
       ? containerRunningCount(folderId)
       : (folderRunningCounts.get(folderId) ?? 0)
@@ -2229,6 +2320,11 @@ export function SidebarConversationList({
         onChangeColor={handleChangeFolderColor}
         onSetAlias={handleSetFolderAlias}
         onSetDefaultAgent={handleChangeFolderDefaultAgent}
+        onRelocateProject={handleOpenProjectLocation}
+        relocationBlockedCount={
+          canRelocateProject ? (projectRunningCounts.get(folderId) ?? 0) : 0
+        }
+        canRelocateProject={canRelocateProject}
         onOpenInSystemExplorer={handleOpenFolderInSystemExplorer}
         onOpenInTerminal={handleOpenFolderInTerminal}
         isDragging={opts.dragging}
@@ -2753,6 +2849,17 @@ export function SidebarConversationList({
 
       <CloneDialog open={cloneOpen} onOpenChange={setCloneOpen} />
       <WorkspaceFolderDialog open={browserOpen} onOpenChange={setBrowserOpen} />
+      <ProjectLocationDialog
+        folder={relocateFolder}
+        blockedCount={
+          relocateFolder == null
+            ? 0
+            : (projectRunningCounts.get(relocateFolder.id) ?? 0)
+        }
+        open={relocateFolder !== null}
+        onOpenChange={(open) => !open && setRelocateFolderId(null)}
+        onConfirm={handleUpdateProjectLocation}
+      />
       {/* Sibling of the context menu, never a child of it: the menu unmounts
           its content on close, which would take a nested dialog with it. Mounted
           only where its submenu exists, so web builds don't carry a dialog

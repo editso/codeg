@@ -63,6 +63,14 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
           const store = useAppWorkspaceStore.getState()
           if (change.kind === "upsert") {
             store.applyConversationUpsert(change.summary)
+            const targetFolder = store.getFolder(change.summary.folder_id)
+            if (targetFolder) {
+              useTabStore.getState().retargetConversationProject(
+                change.summary,
+                targetFolder.path,
+                targetFolder.kind === "chat"
+              )
+            }
             // This side-channel keeps the sidebar in sync but does NOT touch an
             // open conversation's detail. If THIS client is only viewing that
             // conversation (another client owns the live agent), a turn that
@@ -142,6 +150,9 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
           const store = useAppWorkspaceStore.getState()
           if (change.kind === "upsert") {
             store.upsertFolder(change.folder)
+            useTabStore
+              .getState()
+              .updateFolderWorkingDir(change.folder.id, change.folder.path)
             // Only seed the branch when the event actually carries one. A
             // freshly-minted worktree row stores `git_branch: null` (resolved
             // later by git-head detection), and re-broadcasting an existing root

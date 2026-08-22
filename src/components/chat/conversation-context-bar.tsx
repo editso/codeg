@@ -3,7 +3,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { Check, ChevronDown, Folder, MessageSquare } from "lucide-react"
+import { Check, ChevronDown, Folder, Lock, MessageSquare } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
@@ -13,6 +13,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import {
   Command,
   CommandEmpty,
@@ -34,6 +40,7 @@ import {
 import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
 import { FolderOptionItem } from "@/components/shared/folder-select"
 import { BranchDropdown } from "@/components/layout/branch-dropdown"
+import { rebindConversationProject } from "@/lib/api"
 
 interface ConversationContextBarProps {
   extraContent?: React.ReactNode
@@ -169,11 +176,10 @@ export const ConversationHeaderFolderPicker = memo(
     const titleFolderName = displayFolder
       ? formatFolderLabelWithAlias(displayFolder)
       : displayFolderName
+    const isNewConversation = ownTab.conversationId == null
+    const projectChangeLocked =
+      !isNewConversation && ownTab.status === "in_progress"
 
-    // The header folder is a static, un-themed breadcrumb: folder (and chat-mode)
-    // switching now lives in the below-composer picker row, so even a new
-    // conversation draft shows a plain label here — never a popover trigger,
-    // never the theme color.
     return (
       <FolderPicker
         variant="header"
@@ -182,10 +188,29 @@ export const ConversationHeaderFolderPicker = memo(
         currentFolderName={displayFolderName}
         alias={displayFolderAlias}
         title={`${t("folderTitle")}: ${titleFolderName}`}
-        editable={false}
+        editable={!projectChangeLocked}
+        disabledReason={
+          projectChangeLocked ? t("projectChangeLocked") : undefined
+        }
         onSelect={async (folderId) => {
           const target = folders.find((f) => f.id === folderId)
           if (!target) return
+          if (!isNewConversation) {
+            try {
+              await rebindConversationProject(
+                ownTab.conversationId as number,
+                target.id
+              )
+              toast.success(t("toasts.folderChanged", { name: target.name }))
+            } catch (err) {
+              console.error(
+                "[ConversationHeaderFolderPicker] bind project failed:",
+                err
+              )
+              toast.error(t("toasts.openFolderFailed"))
+            }
+            return
+          }
           try {
             // Route through openNewConversationTab so the target folder's saved
             // default agent is applied; the existing-draft branch reuses ownTab
@@ -208,6 +233,10 @@ export const ConversationHeaderFolderPicker = memo(
         labelChatMode={t("chatModeLabel")}
         isChatMode={isChatMode}
         onSelectChatMode={() => {
+          if (!isNewConversation) {
+            toast.info(t("toasts.savedConversationChatUnavailable"))
+            return
+          }
           try {
             openChatModeTab()
             toast.success(t("toasts.switchedToChatMode"))
@@ -280,6 +309,8 @@ export const ConversationFolderBranchPicker = memo(
     if (!ownFolder && !isChatMode) return null
 
     const isNewConversation = ownTab.conversationId == null
+    const projectChangeLocked =
+      !isNewConversation && ownTab.status === "in_progress"
     // Worktree folders surface their parent (root repo) name here; the picker's
     // own list below keeps real folder names/paths for selection, and every
     // git/path operation still uses `ownFolder` (the worktree) unchanged.
@@ -300,10 +331,29 @@ export const ConversationFolderBranchPicker = memo(
           currentFolderId={pickerSelectedId}
           currentFolderName={displayFolderName}
           title={`${t("folderTitle")}: ${displayFolderName}`}
-          editable={isNewConversation}
+          editable={!projectChangeLocked}
+          disabledReason={
+            projectChangeLocked ? t("projectChangeLocked") : undefined
+          }
           onSelect={async (folderId) => {
             const target = folders.find((f) => f.id === folderId)
             if (!target) return
+            if (!isNewConversation) {
+              try {
+                await rebindConversationProject(
+                  ownTab.conversationId as number,
+                  target.id
+                )
+                toast.success(t("toasts.folderChanged", { name: target.name }))
+              } catch (err) {
+                console.error(
+                  "[ConversationFolderBranchPicker] bind project failed:",
+                  err
+                )
+                toast.error(t("toasts.openFolderFailed"))
+              }
+              return
+            }
             try {
               // Route through openNewConversationTab so the target folder's
               // saved default agent is applied. The function's existing-
@@ -329,6 +379,10 @@ export const ConversationFolderBranchPicker = memo(
           labelChatMode={t("chatModeLabel")}
           isChatMode={isChatMode}
           onSelectChatMode={() => {
+            if (!isNewConversation) {
+              toast.info(t("toasts.savedConversationChatUnavailable"))
+              return
+            }
             try {
               openChatModeTab()
               toast.success(t("toasts.switchedToChatMode"))
@@ -398,6 +452,8 @@ interface FolderPickerProps {
   isChatMode: boolean
   /** Select folderless chat mode. */
   onSelectChatMode: () => void
+  /** Explains why the otherwise editable project trigger is locked. */
+  disabledReason?: string
   /** Trigger appearance. `"chip"` (default) = folder icon + name + chevron, the
    *  compact below-input row (mobile). `"header"` = bare text sized to the
    *  conversation title, alias-aware, themed while editable — the desktop
@@ -420,6 +476,7 @@ const FolderPicker = memo(function FolderPicker({
   labelChatMode,
   isChatMode,
   onSelectChatMode,
+  disabledReason,
   variant = "chip",
   alias = null,
 }: FolderPickerProps) {
@@ -445,11 +502,15 @@ const FolderPicker = memo(function FolderPicker({
       <button
         type="button"
         title={title}
+        disabled={disabledReason !== undefined}
+        aria-disabled={disabledReason !== undefined}
         className={cn(
           "flex shrink-0 items-center rounded-sm text-sm outline-none transition-colors",
           editable
             ? "cursor-pointer text-primary hover:text-primary/80 focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            : "cursor-default text-muted-foreground"
+            : disabledReason
+              ? "cursor-not-allowed text-muted-foreground"
+              : "cursor-default text-muted-foreground"
         )}
       >
         {/* Full display — the folder crumb never truncates; the neighbouring
@@ -462,12 +523,17 @@ const FolderPicker = memo(function FolderPicker({
         variant="ghost"
         size="xs"
         title={title}
+        disabled={disabledReason !== undefined}
+        aria-disabled={disabledReason !== undefined}
         // `px-1.5` (rem scale, so it tracks UI zoom) matches the composer "+"
         // button's icon breathing room; paired with the row's `pl-2` it lands the
         // folder icon on the same column as the centered "+" icon.
         className={cn(
           "min-w-0 gap-0.5 px-1.5",
-          !editable && "cursor-default opacity-60 hover:bg-transparent"
+          !editable &&
+            (disabledReason
+              ? "cursor-not-allowed opacity-60 hover:bg-transparent"
+              : "cursor-default opacity-60 hover:bg-transparent")
         )}
       >
         <Folder className="size-3 shrink-0 text-muted-foreground" />
@@ -477,6 +543,21 @@ const FolderPicker = memo(function FolderPicker({
     )
 
   if (!editable) {
+    if (disabledReason) {
+      return (
+        <TooltipProvider delayDuration={250}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex cursor-not-allowed">{trigger}</span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-64 text-center">
+              <Lock className="size-3 shrink-0" aria-hidden />
+              <span>{disabledReason}</span>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )
+    }
     return trigger
   }
 
