@@ -19,7 +19,7 @@ use tauri::Manager;
 
 use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
-use crate::db::service::folder_service;
+use crate::db::service::{conversation_service, folder_service};
 use crate::db::AppDatabase;
 use crate::models::GitCredentials;
 use crate::models::{FolderDetail, FolderHistoryEntry};
@@ -937,6 +937,111 @@ pub async fn update_folder_default_agent_core(
     Ok(detail)
 }
 
+/// Update a top-level project's filesystem location after it was renamed or
+/// moved outside Codeg. This is deliberately an all-or-nothing operation: every
+/// conversation in the root and its registered worktrees must be idle before
+/// any stored path can change, because their live ACP sessions must restart with
+/// the new working directory together.
+pub async fn update_project_location_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    manager: &crate::acp::manager::ConnectionManager,
+    folder_id: i32,
+    new_path: String,
+) -> Result<FolderDetail, AppCommandError> {
+    let new_path = new_path.trim().to_string();
+    if new_path.is_empty() {
+        return Err(AppCommandError::invalid_input(
+            "Project location must not be empty",
+        ));
+    }
+    let metadata = std::fs::metadata(&new_path).map_err(AppCommandError::io)?;
+    if !metadata.is_dir() {
+        return Err(AppCommandError::invalid_input(
+            "Project location must be an existing directory",
+        ));
+    }
+
+    let root = folder_service::get_open_folder_by_id(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found(format!("Project folder {folder_id} was not found")))?;
+    if root.kind != crate::db::entities::folder::FolderKind::Regular
+        || root.parent_id.is_some()
+    {
+        return Err(AppCommandError::invalid_input(
+            "Only a top-level workspace project can update its location",
+        ));
+    }
+    if root.path == new_path {
+        return Ok(root);
+    }
+
+    let project_folder_ids = folder_service::list_project_folder_ids(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    let conversations = conversation_service::list_live_by_folder_ids(
+        &db.conn,
+        &project_folder_ids,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+    let conversation_ids = conversations
+        .iter()
+        .map(|conversation| conversation.id)
+        .collect::<HashSet<_>>();
+    if conversations.iter().any(|conversation| {
+        conversation.status == crate::db::entities::conversation::ConversationStatus::InProgress
+    }) {
+        return Err(AppCommandError::new(
+            crate::app_error::AppErrorCode::TurnInProgress,
+            "Every conversation in this project must be idle before its location can change",
+        ));
+    }
+    if !manager.busy_conversation_ids(&conversation_ids).await.is_empty() {
+        return Err(AppCommandError::new(
+            crate::app_error::AppErrorCode::TurnInProgress,
+            "Every conversation in this project must be idle before its location can change",
+        ));
+    }
+
+    let relocation = folder_service::relocate_project_root(&db.conn, folder_id, &new_path)
+        .await
+        .map_err(AppCommandError::from)?;
+    let connection_ids = manager.connection_ids_for_conversations(&conversation_ids).await;
+    for connection_id in connection_ids {
+        if let Err(error) = manager.disconnect(&connection_id).await {
+            tracing::warn!(
+                folder_id,
+                connection_id,
+                error = %error,
+                "project relocation committed but an idle ACP connection did not disconnect"
+            );
+        }
+    }
+    for changed_folder_id in relocation.changed_folder_ids {
+        if let Some(detail) = folder_service::get_open_folder_by_id(&db.conn, changed_folder_id)
+            .await
+            .map_err(AppCommandError::from)?
+        {
+            emit_folder_upsert(emitter, detail);
+        }
+    }
+    for conversation_id in relocation.rebased_conversation_ids {
+        crate::commands::conversations::emit_conversation_upsert(
+            emitter,
+            &db.conn,
+            conversation_id,
+        )
+        .await;
+    }
+
+    folder_service::get_folder_by_id(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found(format!("Project folder {folder_id} was not found")))
+}
+
 // ---------------------------------------------------------------------------
 // Tauri command wrappers (thin shims over _core)
 // ---------------------------------------------------------------------------
@@ -1083,6 +1188,25 @@ pub async fn update_folder_default_agent(
         &db,
         folder_id,
         default_agent_type,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_project_location(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    folder_id: i32,
+    new_path: String,
+) -> Result<FolderDetail, AppCommandError> {
+    update_project_location_core(
+        &EventEmitter::Tauri(app),
+        &db,
+        &manager,
+        folder_id,
+        new_path,
     )
     .await
 }

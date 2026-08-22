@@ -224,6 +224,29 @@ pub async fn update_folder_default_agent(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateProjectLocationParams {
+    pub folder_id: i32,
+    pub new_path: String,
+}
+
+pub async fn update_project_location(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateProjectLocationParams>,
+) -> Result<Json<FolderDetail>, AppCommandError> {
+    Ok(Json(
+        folder_commands::update_project_location_core(
+            &state.emitter,
+            &state.db,
+            &state.connection_manager,
+            params.folder_id,
+            params.new_path,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PathParams {
     pub path: String,
 }

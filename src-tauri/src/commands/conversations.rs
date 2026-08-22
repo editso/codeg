@@ -515,6 +515,119 @@ pub async fn save_opened_tabs(
     .await
 }
 
+/// Bind one idle saved conversation to another open project. A regular
+/// conversation stays regular; a folderless chat is promoted into a regular
+/// project conversation while its hidden scratch folder is retired. The actual
+/// ACP reconnect happens on each client when the emitted conversation update
+/// retargets its tab's working directory.
+pub async fn rebind_conversation_project_core(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    manager: &crate::acp::manager::ConnectionManager,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<DbConversationSummary, AppCommandError> {
+    let conversation = conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    if conversation.status == "in_progress" {
+        return Err(AppCommandError::new(
+            crate::app_error::AppErrorCode::TurnInProgress,
+            "The conversation is working and cannot change projects",
+        ));
+    }
+    let conversation_kind = conversation.kind.clone();
+    if conversation_kind != conversation::ConversationKind::Regular
+        && conversation_kind != conversation::ConversationKind::Chat
+    {
+        return Err(AppCommandError::invalid_input(
+            "Only regular and chat conversations can change projects",
+        ));
+    }
+    let target = folder_service::get_open_folder_by_id(conn, target_folder_id)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| {
+            AppCommandError::not_found(format!(
+                "Open project folder {target_folder_id} was not found"
+            ))
+        })?;
+    if target.kind != FolderKind::Regular {
+        return Err(AppCommandError::invalid_input(
+            "A conversation can only be bound to a regular project folder",
+        ));
+    }
+    if conversation.folder_id == target_folder_id
+        && conversation_kind != conversation::ConversationKind::Chat
+    {
+        return Ok(conversation);
+    }
+
+    let conversation_ids = HashSet::from([conversation_id]);
+    if !manager.busy_conversation_ids(&conversation_ids).await.is_empty() {
+        return Err(AppCommandError::new(
+            crate::app_error::AppErrorCode::TurnInProgress,
+            "The conversation is working and cannot change projects",
+        ));
+    }
+
+    let mutation = conversation_service::rebind_conversation_to_project(
+        conn,
+        conversation_id,
+        target_folder_id,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+
+    let connection_ids = manager.connection_ids_for_conversations(&conversation_ids).await;
+    for connection_id in connection_ids {
+        if let Err(error) = manager.disconnect(&connection_id).await {
+            tracing::warn!(
+                conversation_id,
+                connection_id,
+                error = %error,
+                "project binding committed but an idle ACP connection did not disconnect"
+            );
+        }
+    }
+
+    emit_conversation_upsert(emitter, conn, conversation_id).await;
+    if let Some(folder_id) = mutation.retired_chat_folder_id {
+        crate::commands::folders::emit_folder_deleted(emitter, folder_id);
+    }
+    if mutation.tabs.changed {
+        emit_tabs_changed(
+            emitter,
+            mutation.tabs.version,
+            mutation.tabs.tabs,
+            "server".to_string(),
+        );
+    }
+
+    conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn rebind_conversation_project(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<DbConversationSummary, AppCommandError> {
+    rebind_conversation_project_core(
+        &db.conn,
+        &EventEmitter::Tauri(app),
+        &manager,
+        conversation_id,
+        target_folder_id,
+    )
+    .await
+}
+
 /// Synchronous implementation shared by list_conversations, list_folders, and get_stats.
 fn list_conversations_sync(
     agent_type: Option<AgentType>,

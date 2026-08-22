@@ -1,19 +1,29 @@
 use chrono::Utc;
+use std::path::{Path, PathBuf};
 use sea_orm::DatabaseConnection;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DbBackend, EntityTrait,
-    IntoActiveModel, QueryFilter, QueryOrder, Set, Statement,
+    IntoActiveModel, QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
 
-use crate::db::entities::folder;
+use crate::db::entities::{conversation, folder};
 use crate::db::entities::folder::FolderKind;
 use crate::db::error::DbError;
 use crate::models::agent::AgentType;
 use crate::models::{FolderDetail, FolderHistoryEntry};
+use crate::parsers::{folder_name_from_path, path_eq_for_matching};
 
 /// Theme color sentinel stored in the DB. The frontend leaves the folder group
 /// unscoped so it inherits the app-wide appearance theme color.
 pub const DEFAULT_FOLDER_COLOR: &str = "inherit";
+
+/// Rows changed by an explicit project-root relocation. The command layer uses
+/// the identifiers to emit the existing folder/conversation event contracts
+/// after the transaction commits.
+pub struct ProjectLocationRelocation {
+    pub changed_folder_ids: Vec<i32>,
+    pub rebased_conversation_ids: Vec<i32>,
+}
 
 fn to_entry(m: folder::Model) -> FolderHistoryEntry {
     FolderHistoryEntry {
@@ -56,6 +66,152 @@ pub async fn get_folder_by_id(
         .await?;
 
     Ok(row.map(to_detail))
+}
+
+/// Return the project root plus every registered worktree whose flattened
+/// `parent_id` points at it. Closed folders are deliberately included: their
+/// conversations still belong to the project and must participate in the
+/// server-side idle check before its location can move.
+pub async fn list_project_folder_ids(
+    conn: &DatabaseConnection,
+    root_folder_id: i32,
+) -> Result<Vec<i32>, DbError> {
+    let rows = folder::Entity::find()
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(
+            sea_orm::Condition::any()
+                .add(folder::Column::Id.eq(root_folder_id))
+                .add(folder::Column::ParentId.eq(root_folder_id)),
+        )
+        .all(conn)
+        .await?;
+    Ok(rows.into_iter().map(|row| row.id).collect())
+}
+
+/// Rebase `candidate` only when it is exactly `old_root` or a real child path.
+/// `Path::strip_prefix` is component-aware, so relocating `/work/app` cannot
+/// accidentally rewrite an unrelated `/work/application` path.
+fn rebase_path_from_root(candidate: &str, old_root: &str, new_root: &str) -> Option<String> {
+    if path_eq_for_matching(candidate, old_root) {
+        return Some(new_root.to_string());
+    }
+    let suffix = Path::new(candidate).strip_prefix(Path::new(old_root)).ok()?;
+    let rebased: PathBuf = Path::new(new_root).join(suffix);
+    Some(rebased.to_string_lossy().to_string())
+}
+
+/// Atomically update a top-level project's location and every path field that
+/// genuinely lives under its former root. External worktrees remain untouched:
+/// they are associated by `parent_id` but only rebase when their own path is a
+/// child of the moved root.
+pub async fn relocate_project_root(
+    conn: &DatabaseConnection,
+    root_folder_id: i32,
+    new_path: &str,
+) -> Result<ProjectLocationRelocation, DbError> {
+    let txn = conn.begin().await?;
+    let root = folder::Entity::find_by_id(root_folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::IsOpen.eq(true))
+        .one(&txn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("Project folder {root_folder_id} was not found")))?;
+    if root.kind != FolderKind::Regular || root.parent_id.is_some() {
+        return Err(DbError::Validation(
+            "Only a top-level workspace project can update its location".to_string(),
+        ));
+    }
+
+    if let Some(existing) = folder::Entity::find()
+        .filter(folder::Column::Path.eq(new_path))
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::Id.ne(root_folder_id))
+        .one(&txn)
+        .await?
+    {
+        return Err(DbError::Conflict(format!(
+            "Project location is already registered by folder {}",
+            existing.id
+        )));
+    }
+
+    let old_root_path = root.path.clone();
+    let folders = folder::Entity::find()
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(
+            sea_orm::Condition::any()
+                .add(folder::Column::Id.eq(root_folder_id))
+                .add(folder::Column::ParentId.eq(root_folder_id)),
+        )
+        .all(&txn)
+        .await?;
+    let project_folder_ids = folders.iter().map(|folder| folder.id).collect::<Vec<_>>();
+    if conversation::Entity::find()
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::FolderId.is_in(project_folder_ids))
+        .filter(
+            conversation::Column::Status
+                .eq(crate::db::entities::conversation::ConversationStatus::InProgress),
+        )
+        .one(&txn)
+        .await?
+        .is_some()
+    {
+        return Err(DbError::Validation(
+            "Every conversation in this project must be idle before its location can change"
+                .to_string(),
+        ));
+    }
+    let mut changed_folder_ids = Vec::new();
+    for row in folders {
+        let Some(rebased_path) =
+            rebase_path_from_root(&row.path, &old_root_path, new_path)
+        else {
+            continue;
+        };
+        if rebased_path == row.path {
+            continue;
+        }
+        let folder_id = row.id;
+        let mut active = row.into_active_model();
+        active.name = Set(folder_name_from_path(&rebased_path));
+        active.path = Set(rebased_path);
+        active.updated_at = Set(Utc::now());
+        active.update(&txn).await?;
+        changed_folder_ids.push(folder_id);
+    }
+
+    let conversations = conversation::Entity::find()
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::OriginCwd.is_not_null())
+        .all(&txn)
+        .await?;
+    let mut rebased_conversation_ids = Vec::new();
+    for row in conversations {
+        let Some(origin_cwd) = row.origin_cwd.as_deref() else {
+            continue;
+        };
+        let Some(rebased_path) =
+            rebase_path_from_root(origin_cwd, &old_root_path, new_path)
+        else {
+            continue;
+        };
+        if rebased_path == origin_cwd {
+            continue;
+        }
+        let id = row.id;
+        let mut active = row.into_active_model();
+        active.origin_cwd = Set(Some(rebased_path));
+        active.updated_at = Set(Utc::now());
+        active.update(&txn).await?;
+        rebased_conversation_ids.push(id);
+    }
+
+    txn.commit().await?;
+    Ok(ProjectLocationRelocation {
+        changed_folder_ids,
+        rebased_conversation_ids,
+    })
 }
 
 /// How [`add_folder_inner`] writes the `parent_id` column. The two callers want

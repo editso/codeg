@@ -24,6 +24,14 @@ fn version_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Acquire the process-local tab-version lock for a compound workspace
+/// mutation. Callers that update conversation/folder data and opened tabs in
+/// one transaction must take the same lock as the normal CAS save path, or a
+/// stale client save could win between the related writes.
+pub(crate) async fn lock_tab_version_mutation() -> tokio::sync::MutexGuard<'static, ()> {
+    version_lock().lock().await
+}
+
 /// Workspace-global logical clock for the open-tab set, stored in the
 /// `app_metadata` KV table (survives restart, stays monotonic). Bumped on every
 /// accepted mutation; used for compare-and-set (lost-update prevention) and for
@@ -189,6 +197,46 @@ pub async fn save_all_tabs_cas(
 pub struct TabInvalidation {
     pub version: i64,
     pub emit: Option<Vec<OpenedTab>>,
+}
+
+/// Outcome of moving a persisted conversation tab to a different folder.
+///
+/// The version advances even when no persisted row points at the conversation:
+/// it is still a barrier against a delayed client save that carries the old
+/// folder id. `changed` tells the caller whether the authoritative snapshot
+/// needs broadcasting immediately.
+pub struct TabRetarget {
+    pub version: i64,
+    pub tabs: Vec<OpenedTab>,
+    pub changed: bool,
+}
+
+/// Retarget every persisted tab for one conversation within an already-open
+/// transaction. The caller owns [`lock_tab_version_mutation`] so this composes
+/// atomically with the conversation row update.
+pub async fn retarget_conversation_tabs_and_bump<C: ConnectionTrait>(
+    conn: &C,
+    conversation_id: i32,
+    folder_id: i32,
+) -> Result<TabRetarget, DbError> {
+    use sea_orm::sea_query::Expr;
+
+    let changed = opened_tab::Entity::update_many()
+        .col_expr(opened_tab::Column::FolderId, Expr::value(folder_id))
+        .col_expr(opened_tab::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(opened_tab::Column::ConversationId.eq(conversation_id))
+        .exec(conn)
+        .await?
+        .rows_affected
+        > 0;
+    let next = get_tabs_version(conn).await? + 1;
+    app_metadata_service::upsert_value(conn, OPENED_TABS_VERSION_KEY, &next.to_string()).await?;
+    let tabs = list_all_tabs(conn).await?;
+    Ok(TabRetarget {
+        version: next,
+        tabs,
+        changed,
+    })
 }
 
 /// Atomically invalidate every tab pointing at a conversation: delete the rows,

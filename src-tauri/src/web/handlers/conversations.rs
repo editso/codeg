@@ -91,6 +91,29 @@ pub async fn save_opened_tabs(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RebindConversationProjectParams {
+    pub conversation_id: i32,
+    pub target_folder_id: i32,
+}
+
+pub async fn rebind_conversation_project(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<RebindConversationProjectParams>,
+) -> Result<Json<DbConversationSummary>, AppCommandError> {
+    Ok(Json(
+        conv_commands::rebind_conversation_project_core(
+            &state.db.conn,
+            &state.emitter,
+            &state.connection_manager,
+            params.conversation_id,
+            params.target_folder_id,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationConfigParams {
     pub conversation_id: i32,
 }

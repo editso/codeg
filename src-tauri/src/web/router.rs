@@ -118,6 +118,10 @@ pub fn build_router(
             post(handlers::conversations::save_opened_tabs),
         )
         .route(
+            "/rebind_conversation_project",
+            post(handlers::conversations::rebind_conversation_project),
+        )
+        .route(
             "/get_conversation_config",
             post(handlers::conversations::get_conversation_config),
         )
@@ -230,6 +234,10 @@ pub fn build_router(
         .route(
             "/update_folder_default_agent",
             post(handlers::folders::update_folder_default_agent),
+        )
+        .route(
+            "/update_project_location",
+            post(handlers::folders::update_project_location),
         )
         .route(
             "/list_folder_links",

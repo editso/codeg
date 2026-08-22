@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -3018,6 +3018,68 @@ impl ConnectionManager {
             }
         }
         None
+    }
+
+    /// Return the conversations in `conversation_ids` that currently have a
+    /// live ACP state which cannot safely be rebound or restarted. Persisted
+    /// `in_progress` rows are checked by the command layer as well; this covers
+    /// the narrower live states that have not yet reached a durable status
+    /// transition (connecting, permissions, active goals, and prompting turns).
+    pub async fn busy_conversation_ids(&self, conversation_ids: &HashSet<i32>) -> Vec<i32> {
+        if conversation_ids.is_empty() {
+            return Vec::new();
+        }
+        let connections = self.connections.lock().await;
+        let mut busy = Vec::new();
+        for connection in connections.values() {
+            let state = connection.state.read().await;
+            let Some(conversation_id) = state.conversation_id else {
+                continue;
+            };
+            if !conversation_ids.contains(&conversation_id) {
+                continue;
+            }
+            if state.turn_in_flight
+                || state.pending_permission.is_some()
+                || state.pending_question.is_some()
+                || state.pending_plan_approval.is_some()
+                || state.goal_active
+                || matches!(
+                    state.status,
+                    ConnectionStatus::Connecting | ConnectionStatus::Prompting
+                )
+            {
+                busy.push(conversation_id);
+            }
+        }
+        busy.sort_unstable();
+        busy.dedup();
+        busy
+    }
+
+    /// Snapshot live connection ids currently bound to any of the requested
+    /// conversations. This intentionally includes idle connections: callers
+    /// have already checked that their operation is safe, and must restart
+    /// those existing sessions under a newly selected working directory.
+    pub async fn connection_ids_for_conversations(
+        &self,
+        conversation_ids: &HashSet<i32>,
+    ) -> Vec<String> {
+        if conversation_ids.is_empty() {
+            return Vec::new();
+        }
+        let connections = self.connections.lock().await;
+        let mut ids = Vec::new();
+        for (connection_id, connection) in connections.iter() {
+            let state = connection.state.read().await;
+            if state
+                .conversation_id
+                .is_some_and(|conversation_id| conversation_ids.contains(&conversation_id))
+            {
+                ids.push(connection_id.clone());
+            }
+        }
+        ids
     }
 
     /// The in-flight user prompt for `conversation_id` and the instant its turn

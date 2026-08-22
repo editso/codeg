@@ -3,13 +3,23 @@ use std::collections::HashMap;
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set,
+    IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 
 use crate::db::entities::conversation::ConversationKind;
+use crate::db::entities::folder::FolderKind;
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
+use crate::db::service::tab_service;
 use crate::models::{AgentType, DbConversationSummary};
+
+/// Database result of moving one saved conversation to a different project.
+/// The tab mutation is included so command-layer event emission can use the
+/// exact snapshot committed with the conversation update.
+pub struct ConversationProjectRebind {
+    pub retired_chat_folder_id: Option<i32>,
+    pub tabs: tab_service::TabRetarget,
+}
 
 pub async fn create(
     conn: &DatabaseConnection,
@@ -924,6 +934,133 @@ pub async fn renormalize_external_id_alias(
     };
     query.exec(conn).await?;
     Ok(())
+}
+
+/// Return every live conversation directly under one of `folder_ids`.
+///
+/// Project relocation uses this before it writes anything to enforce its
+/// all-idle invariant across the root and every registered worktree.
+pub async fn list_live_by_folder_ids(
+    conn: &DatabaseConnection,
+    folder_ids: &[i32],
+) -> Result<Vec<conversation::Model>, DbError> {
+    if folder_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(conversation::Entity::find()
+        .filter(conversation::Column::FolderId.is_in(folder_ids.iter().copied()))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .all(conn)
+        .await?)
+}
+
+/// Move a saved conversation to an open regular project folder and retarget its
+/// persisted tabs in the same transaction.
+///
+/// The command layer performs user-facing eligibility and busy checks before
+/// calling this. The transaction repeats the durable shape checks because the
+/// source/target rows can change between those checks and the write. A chat
+/// conversation becomes regular here; its former hidden folder is soft-deleted
+/// only after the conversation has left it and no other live row still uses it.
+pub async fn rebind_conversation_to_project(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<ConversationProjectRebind, DbError> {
+    let _tab_guard = tab_service::lock_tab_version_mutation().await;
+    let txn = conn.begin().await?;
+
+    let source = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(&txn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("Conversation {conversation_id} was not found")))?;
+    let target = folder::Entity::find_by_id(target_folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::IsOpen.eq(true))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
+        .one(&txn)
+        .await?
+        .ok_or_else(|| {
+            DbError::NotFound(format!(
+                "Open project folder {target_folder_id} was not found"
+            ))
+        })?;
+
+    let source_kind = source.kind.clone();
+    if source_kind != ConversationKind::Regular && source_kind != ConversationKind::Chat {
+        return Err(DbError::Validation(
+            "Only regular and chat conversations can be moved to another project".to_string(),
+        ));
+    }
+    if source.status == conversation::ConversationStatus::InProgress {
+        return Err(DbError::Validation(
+            "The conversation is working and cannot change projects".to_string(),
+        ));
+    }
+    if source.folder_id == target.id && source_kind != ConversationKind::Chat {
+        return Err(DbError::Validation(
+            "Conversation is already bound to this project".to_string(),
+        ));
+    }
+
+    let source_folder = folder::Entity::find_by_id(source.folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(&txn)
+        .await?
+        .ok_or_else(|| {
+            DbError::NotFound(format!(
+                "Source folder {} for conversation {conversation_id} was not found",
+                source.folder_id
+            ))
+        })?;
+
+    let source_folder_id = source.folder_id;
+    let source_was_chat = source_kind == ConversationKind::Chat;
+    let origin_cwd = source
+        .origin_cwd
+        .clone()
+        .or_else(|| Some(source_folder.path.clone()));
+    let mut active = source.into_active_model();
+    active.folder_id = Set(target.id);
+    if source_was_chat {
+        active.kind = Set(ConversationKind::Regular);
+    }
+    active.origin_cwd = Set(origin_cwd);
+    active.updated_at = Set(Utc::now());
+    active.update(&txn).await?;
+
+    let retired_chat_folder_id = if source_folder.kind == FolderKind::Chat {
+        let remaining = conversation::Entity::find()
+            .filter(conversation::Column::FolderId.eq(source_folder_id))
+            .filter(conversation::Column::DeletedAt.is_null())
+            .one(&txn)
+            .await?;
+        if remaining.is_none() {
+            let mut active = source_folder.into_active_model();
+            active.deleted_at = Set(Some(Utc::now()));
+            active.updated_at = Set(Utc::now());
+            active.update(&txn).await?;
+            Some(source_folder_id)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let tabs = tab_service::retarget_conversation_tabs_and_bump(
+        &txn,
+        conversation_id,
+        target_folder_id,
+    )
+    .await?;
+    txn.commit().await?;
+
+    Ok(ConversationProjectRebind {
+        retired_chat_folder_id,
+        tabs,
+    })
 }
 
 /// Re-parent every live conversation of `from_folder_id` (a task worktree

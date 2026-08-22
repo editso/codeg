@@ -21,7 +21,9 @@ pub enum ConversationStatus {
 /// excluded from the sidebar list entirely (no write path yet — reserved for
 /// the loop engine); `delegate` is a delegation child nested under its
 /// parent's tool-call view. Invariant: `kind == Delegate` ⟺ `parent_id IS NOT
-/// NULL`. Written once at insert, never updated.
+/// NULL`. Written once at insert, except for an explicit user-requested
+/// `chat` -> `regular` project binding; that migration keeps an existing chat
+/// transcript while moving it out of its hidden scratch folder.
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
 #[serde(rename_all = "snake_case")]
