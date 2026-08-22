@@ -98,7 +98,7 @@ export function PermissionDialog({
   const hasStructured = hasOtherStructured || hasContentText
 
   return (
-    <div className="mb-2 w-full rounded-lg border border-border/70 bg-card/95 p-2.5 shadow-sm">
+    <div className="mb-2 w-full min-w-0 rounded-lg border border-border/70 bg-card/95 p-2.5 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5 text-xs font-medium">
@@ -316,7 +316,7 @@ export function PermissionDialog({
         )}
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      <div className="mt-2 flex w-full min-w-0 flex-wrap gap-1.5">
         {permission.options.map((opt) => {
           const isReject = opt.kind.startsWith("reject")
           return (
@@ -324,7 +324,7 @@ export function PermissionDialog({
               key={opt.option_id}
               variant={isReject ? "outline" : "default"}
               size="xs"
-              className="h-6 min-h-6 rounded-lg px-2 text-[11px] leading-tight whitespace-normal break-words text-left"
+              className="h-auto min-h-6 max-w-full min-w-0 shrink rounded-lg px-2 text-left text-[11px] leading-tight whitespace-normal [overflow-wrap:anywhere]"
               onClick={() => onRespond(permission.request_id, opt.option_id)}
             >
               {opt.name}

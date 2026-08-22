@@ -119,6 +119,31 @@ describe("PermissionDialog", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument()
   })
 
+  it("keeps long permission option labels inside the card width", () => {
+    const longLabel =
+      'Allow Commands Starting With "/bin/bash -lc tmpdir=$(mktemp -d); curl -fsSL https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-1.4.0.tgz"'
+    const permission: PendingPermission = {
+      request_id: "req-long-option",
+      tool_call: null,
+      options: [
+        { option_id: "allow", name: longLabel, kind: "allow_always" },
+        { option_id: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    }
+
+    renderWithIntl(
+      <PermissionDialog permission={permission} onRespond={() => {}} />
+    )
+
+    expect(screen.getByRole("button", { name: longLabel })).toHaveClass(
+      "max-w-full",
+      "min-w-0",
+      "shrink",
+      "h-auto",
+      "[overflow-wrap:anywhere]"
+    )
+  })
+
   it("invokes onRespond with the request_id + chosen option_id when clicked", () => {
     const onRespond = vi.fn()
     const permission: PendingPermission = {

@@ -57,7 +57,7 @@ export function PanelPermissionCard({
       : null
 
   return (
-    <div className="mt-1 rounded-md border border-amber-500/30 bg-amber-500/5 p-2">
+    <div className="mt-1 min-w-0 rounded-md border border-amber-500/30 bg-amber-500/5 p-2">
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
         {/* Same precedence as PermissionDialog: description (≥0.63 meta)
@@ -80,7 +80,7 @@ export function PanelPermissionCard({
         </div>
       ) : null}
 
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      <div className="mt-2 flex w-full min-w-0 flex-wrap gap-1.5">
         {permission.options.map((opt) => {
           const isReject = opt.kind.startsWith("reject")
           return (
@@ -89,7 +89,9 @@ export function PanelPermissionCard({
               size="sm"
               variant={isReject ? "outline" : "default"}
               disabled={busy}
-              className={cn("h-6 px-2 text-[11px]")}
+              className={cn(
+                "h-auto min-h-6 max-w-full min-w-0 shrink px-2 text-left text-[11px] leading-tight whitespace-normal [overflow-wrap:anywhere]"
+              )}
               onClick={() => respond(opt.option_id)}
             >
               {opt.name}
