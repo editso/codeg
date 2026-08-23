@@ -341,10 +341,19 @@ function sameDraftConfig(
   if (a == null || b == null) return a == null && b == null
   if (a.model_provider_id !== b.model_provider_id) return false
   if (a.additional_mcp_refs.length !== b.additional_mcp_refs.length) return false
-  return a.additional_mcp_refs.every((ref, index) => {
+  const mcpRefsEqual = a.additional_mcp_refs.every((ref, index) => {
     const other = b.additional_mcp_refs[index]
     return ref.id === other?.id && ref.fingerprint === other.fingerprint
   })
+  if (!mcpRefsEqual) return false
+  const aValues = a.session_config_values
+  const bValues = b.session_config_values
+  return (
+    Object.keys(aValues).length === Object.keys(bValues).length &&
+    Object.entries(aValues).every(
+      ([configId, valueId]) => bValues[configId] === valueId
+    )
+  )
 }
 
 function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
@@ -5781,9 +5790,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       )
       // A persisted conversation owns its selector values in the database.
       // Only an unbound draft keeps the historical per-agent default, and only
-      // after the agent confirms that it actually adopted the value.
-      if (applied && saveAsAgentDefault) {
-        saveConfigPreference(conn.agentType, configId, valueId)
+      // after the agent confirms that it actually adopted the value. A draft
+      // with a provider override keeps the value in its own launch config so
+      // it cannot leak into another provider's global defaults.
+      if (applied) {
+        if (saveAsAgentDefault) {
+          saveConfigPreference(conn.agentType, configId, valueId)
+        }
+        const remembered = lastConnectParamsRef.current.get(contextKey)
+        if (remembered?.draftConfig) {
+          lastConnectParamsRef.current.set(contextKey, {
+            ...remembered,
+            draftConfig: {
+              ...remembered.draftConfig,
+              session_config_values: {
+                ...remembered.draftConfig.session_config_values,
+                [configId]: valueId,
+              },
+            },
+          })
+        }
       }
       return applied
     },

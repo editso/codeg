@@ -38,13 +38,17 @@ pub struct ConversationConfigUpdate {
 }
 
 /// Launch-only overrides for a new-conversation draft that has not created its
-/// database row yet. The frontend persists this small reference set per draft
-/// tab, passes it to ACP connect, then writes it into the real conversation
+/// database row yet. The frontend persists this reference set per draft tab,
+/// passes it to ACP connect, then writes it into the real conversation
 /// configuration together with the first selector snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DraftConversationConfig {
     pub model_provider_id: Option<i32>,
     pub additional_mcp_refs: Vec<ConversationMcpRef>,
+    /// Values selected from the live ACP selector surface before the first
+    /// prompt creates the conversation row. Missing in older local draft blobs.
+    #[serde(default)]
+    pub session_config_values: BTreeMap<String, String>,
 }
 
 /// Safe display metadata for a candidate in the unified MCP catalog. The

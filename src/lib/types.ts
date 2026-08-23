@@ -467,10 +467,13 @@ export interface ConversationConfigUpdate {
   expected_version: number
 }
 
-/** Provider/MCP choices for a new-conversation tab before it has a DB row. */
+/** Provider/MCP/session-selector choices for a new-conversation tab before it
+ * has a DB row. The selector values are keyed by the ACP-provided config id
+ * (for example model and collaboration/thinking controls). */
 export interface DraftConversationConfig {
   model_provider_id: number | null
   additional_mcp_refs: ConversationMcpRef[]
+  session_config_values: Record<string, string>
 }
 
 export interface ConversationMcpCandidate {

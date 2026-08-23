@@ -326,6 +326,13 @@ export function ConversationConfigPopover({
           const nextDraftConfig: DraftConversationConfig = {
             model_provider_id: nextProviderId,
             additional_mcp_refs: nextMcpRefs,
+            // Selector values belong to the selected provider. Keep them when
+            // only MCP changes, but do not carry model/thinking ids across a
+            // provider switch where those ids may not exist.
+            session_config_values:
+              nextProviderId === config.model_provider_id
+                ? config.session_config_values
+                : {},
           }
           onDraftConfigChange(nextDraftConfig)
           const reconnected = await reapplyConfig(

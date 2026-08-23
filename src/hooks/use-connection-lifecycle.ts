@@ -31,6 +31,10 @@ interface UseConnectionLifecycleOptions {
   conversationId?: number
   /** Launch overrides selected while a new-conversation tab has no DB row. */
   draftConfig?: DraftConversationConfig
+  /** Persist selector values back into the unbound draft after ACP accepts
+   *  them. Bound conversations write the same values through the database
+   *  command instead. */
+  onDraftConfigChange?: (config: DraftConversationConfig) => void
   /**
    * Read at unmount-cleanup time: true when the component is unmounting
    * because the view is being REPARENTED (its tab moved between split groups /
@@ -123,6 +127,7 @@ export function useConnectionLifecycle({
   sessionId,
   conversationId,
   draftConfig,
+  onDraftConfigChange,
   isTransientUnmount,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const t = useTranslations("Folder.chat.connectionLifecycle")
@@ -498,17 +503,32 @@ export function useConnectionLifecycle({
         // The agent validates the opaque selector value first. Only a value it
         // accepted gets persisted, so a stale model/thinking id can never be
         // stored as if it were active for this conversation.
+        const saveAsAgentDefault =
+          conversationId == null &&
+          draftConfigRef.current?.model_provider_id == null
         const applied = await connSetConfigOption(
           configId,
           valueId,
-          conversationId == null
+          saveAsAgentDefault
         )
-        if (applied && conversationId != null) {
+        if (!applied) return
+        if (conversationId != null) {
           await updateConversationSessionConfigValue(
             conversationId,
             configId,
             valueId
           )
+          return
+        }
+        const currentDraft = draftConfigRef.current
+        if (currentDraft && onDraftConfigChange) {
+          onDraftConfigChange({
+            ...currentDraft,
+            session_config_values: {
+              ...currentDraft.session_config_values,
+              [configId]: valueId,
+            },
+          })
         }
       })().catch((error: unknown) => {
         const message = toErrorMessage(error)
@@ -516,7 +536,13 @@ export function useConnectionLifecycle({
         toast.error(message)
       })
     },
-    [connSetConfigOption, contextKey, conversationId, touchActivity]
+    [
+      connSetConfigOption,
+      contextKey,
+      conversationId,
+      onDraftConfigChange,
+      touchActivity,
+    ]
   )
 
   const handleRespondPermission = useCallback(

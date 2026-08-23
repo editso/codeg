@@ -13,7 +13,11 @@ interface PersistedDraftConversationConfig extends DraftConversationConfig {
 const STORAGE_PREFIX = "codeg:conversation-config-draft:v1"
 
 export function emptyDraftConversationConfig(): DraftConversationConfig {
-  return { model_provider_id: null, additional_mcp_refs: [] }
+  return {
+    model_provider_id: null,
+    additional_mcp_refs: [],
+    session_config_values: {},
+  }
 }
 
 function storageKey(tabId: string): string {
@@ -26,6 +30,17 @@ function isMcpRef(value: unknown): value is ConversationMcpRef {
   }
   const ref = value as Partial<ConversationMcpRef>
   return typeof ref.id === "string" && typeof ref.fingerprint === "string"
+}
+
+function isSessionConfigValues(
+  value: unknown
+): value is Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false
+  }
+  return Object.entries(value).every(
+    ([key, item]) => key.length > 0 && typeof item === "string"
+  )
 }
 
 export function loadDraftConversationConfig(
@@ -49,9 +64,14 @@ export function loadDraftConversationConfig(
     ) {
       return emptyDraftConversationConfig()
     }
+    const sessionConfigValues = parsed.session_config_values ?? {}
+    if (!isSessionConfigValues(sessionConfigValues)) {
+      return emptyDraftConversationConfig()
+    }
     return {
       model_provider_id: providerId,
       additional_mcp_refs: parsed.additional_mcp_refs,
+      session_config_values: sessionConfigValues,
     }
   } catch {
     return emptyDraftConversationConfig()
@@ -79,6 +99,8 @@ export function hasDraftConversationOverrides(
   config: DraftConversationConfig
 ): boolean {
   return (
-    config.model_provider_id != null || config.additional_mcp_refs.length > 0
+    config.model_provider_id != null ||
+    config.additional_mcp_refs.length > 0 ||
+    Object.keys(config.session_config_values).length > 0
   )
 }

@@ -9658,7 +9658,7 @@ pub(crate) async fn build_session_runtime_env_for_conversation(
             (
                 config.model_provider_id,
                 config.additional_mcp_refs.clone(),
-                BTreeMap::new(),
+                config.session_config_values.clone(),
                 "draft",
             )
         } else {

@@ -736,6 +736,10 @@ const ConversationTabView = memo(function ConversationTabView({
     // live on this conversation, attach to its connection instead of spawning.
     conversationId: dbConversationId ?? undefined,
     draftConfig: dbConversationId == null ? draftConversationConfig : undefined,
+    onDraftConfigChange:
+      dbConversationId == null
+        ? handleDraftConversationConfigChange
+        : undefined,
     // A cross-group move / unsplit reparents this view (React remounts it)
     // while the tab stays open — that unmount must not tear the connection
     // down. See `isReparentUnmount` for why "still open" alone is too broad.
