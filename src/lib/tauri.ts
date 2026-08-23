@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { normalizeAcpConnectResult } from "./acp-connect-result"
 import type {
   AgentType,
+  AcpConnectResult,
   ConversationSummary,
   ConversationDetail,
   ConversationConfigUpdate,
@@ -116,8 +118,8 @@ export async function acpConnect(
   preferredConfigValues?: Record<string, string> | null,
   conversationId?: number | null,
   draftConfig?: DraftConversationConfig | null
-): Promise<string> {
-  return invoke("acp_connect", {
+): Promise<AcpConnectResult> {
+  const result = await invoke<unknown>("acp_connect", {
     agentType,
     workingDir: workingDir ?? null,
     sessionId: sessionId ?? null,
@@ -125,7 +127,9 @@ export async function acpConnect(
     preferredConfigValues: preferredConfigValues ?? null,
     conversationId: conversationId ?? null,
     draftConfig: draftConfig ?? null,
+    includeConnectionInfo: true,
   })
+  return normalizeAcpConnectResult(result)
 }
 
 export async function acpPrompt(

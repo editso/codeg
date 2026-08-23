@@ -35,6 +35,7 @@ import {
   acpGetSessionSnapshot,
   acpFindConnectionForConversation,
 } from "@/lib/api"
+import { normalizeAcpConnectResult } from "@/lib/acp-connect-result"
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
 import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
 import {
@@ -341,7 +342,8 @@ function sameDraftConfig(
 ): boolean {
   if (a == null || b == null) return a == null && b == null
   if (a.model_provider_id !== b.model_provider_id) return false
-  if (a.additional_mcp_refs.length !== b.additional_mcp_refs.length) return false
+  if (a.additional_mcp_refs.length !== b.additional_mcp_refs.length)
+    return false
   const mcpRefsEqual = a.additional_mcp_refs.every((ref, index) => {
     const other = b.additional_mcp_refs[index]
     return ref.id === other?.id && ref.fingerprint === other.fingerprint
@@ -2904,8 +2906,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const inFlight = disconnectInFlightRef.current.get(connectionId)
       if (inFlight) return inFlight
 
-      let promise: Promise<void>
-      promise = acpDisconnect(connectionId).finally(() => {
+      const promise = acpDisconnect(connectionId).finally(() => {
         if (disconnectInFlightRef.current.get(connectionId) === promise) {
           disconnectInFlightRef.current.delete(connectionId)
         }
@@ -5176,15 +5177,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // re-open (the snapshot frame doesn't carry a `session_modes` event,
         // so the apply-on-event hook never fired).
         const savedPrefs = getSavedPrefsForConnect(agentType)
-        const connectionId = await acpConnect(
-          agentType,
-          workingDir,
-          sessionId,
-          savedPrefs.modeId,
-          savedPrefs.configValues,
-          conversationId,
-          draftConfig
-        )
+        const requestBackendConnection = () =>
+          acpConnect(
+            agentType,
+            workingDir,
+            sessionId,
+            savedPrefs.modeId,
+            savedPrefs.configValues,
+            conversationId,
+            draftConfig
+          )
+        const connectResult = await requestBackendConnection()
+        // Older frontend tests (and an older backend during a rolling
+        // upgrade) may still return the historical bare connection id. Treat
+        // that shape as a newly-created owner for compatibility. Current
+        // backends return `reused` atomically with the id, which is the only
+        // reliable way to distinguish another client's connection from one
+        // this request created.
+        let { connectionId, reused } = normalizeAcpConnectResult(connectResult)
 
         // If disconnect was requested while connect was in flight, tear down
         // immediately instead of registering the connection — but tear down
@@ -5197,17 +5207,69 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // Peek, don't consume: the `finally` clears the flag, and it has to
         // still see it to know this call established nothing (see there).
         if (abandonedKeysRef.current.has(contextKey)) {
-          if (!isConnectionReferencedLocally(connectionId)) {
+          if (!reused && !isConnectionReferencedLocally(connectionId)) {
             acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
         }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
-          if (!isConnectionReferencedLocally(connectionId)) {
+          if (!reused && !isConnectionReferencedLocally(connectionId)) {
             acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
+        }
+
+        // The backend's per-session lock makes the lookup/create decision
+        // atomic, but this browser still needs to preserve the resulting
+        // ownership. A reused connection belongs to the request that created
+        // it (possibly in another browser), so attach as a viewer and detach
+        // only this client's subscription on teardown.
+        if (reused) {
+          let attached = await connectAsViewer(
+            contextKey,
+            connectionId,
+            agentType,
+            nextWorkingDir
+          )
+          if (attached) return
+          const retryResult = await requestBackendConnection()
+          const normalizedRetryResult = normalizeAcpConnectResult(retryResult)
+          connectionId = normalizedRetryResult.connectionId
+          reused = normalizedRetryResult.reused
+
+          if (abandonedKeysRef.current.has(contextKey)) {
+            if (!reused && !isConnectionReferencedLocally(connectionId)) {
+              acpDisconnectOnce(connectionId).catch(() => {})
+            }
+            return
+          }
+          const pendingAfterRetry =
+            pendingConnectRequestsRef.current.get(contextKey)
+          if (
+            pendingAfterRetry &&
+            !sameConnectRequest(pendingAfterRetry, request)
+          ) {
+            if (!reused && !isConnectionReferencedLocally(connectionId)) {
+              acpDisconnectOnce(connectionId).catch(() => {})
+            }
+            return
+          }
+
+          if (reused) {
+            attached = await connectAsViewer(
+              contextKey,
+              connectionId,
+              agentType,
+              nextWorkingDir
+            )
+            if (attached) return
+            throw new Error(
+              "shared ACP connection disappeared before it could be attached"
+            )
+          }
+          // The retry above created a fresh owner after the shared connection
+          // disappeared between the result and the first attach.
         }
 
         lastActivityRef.current.set(contextKey, Date.now())

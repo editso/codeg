@@ -8,8 +8,8 @@ use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
-    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillLayout,
-    AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
+    AcpAgentInfo, AcpAgentStatus, AcpConnectResponse, AgentDiagnosticsReport, AgentSkillContent,
+    AgentSkillLayout, AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
@@ -77,12 +77,14 @@ pub struct AcpConnectParams {
     pub conversation_id: Option<i32>,
     #[serde(default)]
     pub draft_config: Option<DraftConversationConfig>,
+    #[serde(default)]
+    pub include_connection_info: bool,
 }
 
 pub async fn acp_connect(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpConnectParams>,
-) -> Result<Json<String>, AppCommandError> {
+) -> Result<Json<AcpConnectResponse>, AppCommandError> {
     let db = &state.db;
     let manager = &state.connection_manager;
 
@@ -91,6 +93,7 @@ pub async fn acp_connect(
         agent_type = %params.agent_type,
         conversation_id = ?params.conversation_id,
         resumes_existing_session = params.session_id.is_some(),
+        include_connection_info = params.include_connection_info,
         "received ACP connect request"
     );
 
@@ -118,8 +121,8 @@ pub async fn acp_connect(
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
 
     let emitter = state.emitter.clone();
-    let connection_id = manager
-        .spawn_agent(
+    let result = manager
+        .spawn_agent_with_result(
             params.agent_type,
             params.working_dir,
             params.session_id,
@@ -146,13 +149,17 @@ pub async fn acp_connect(
 
     tracing::info!(
         transport = "web",
-        connection_id = %connection_id,
+        connection_id = %result.connection_id,
+        reused = result.reused,
         agent_type = %params.agent_type,
         conversation_id = ?params.conversation_id,
         "ACP connection launch completed"
     );
 
-    Ok(Json(connection_id))
+    Ok(Json(AcpConnectResponse::from_result(
+        result,
+        params.include_connection_info,
+    )))
 }
 
 #[derive(Deserialize)]

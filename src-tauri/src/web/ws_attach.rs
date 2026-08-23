@@ -14,7 +14,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -43,6 +43,10 @@ pub enum ClientMsg {
     /// `None` requests a full snapshot.
     Attach {
         subscription_id: String,
+        // The canonical wire type is a string. Accept the exact detailed
+        // `acp_connect` result object as a temporary rolling-upgrade bridge;
+        // old/mixed frontend chunks otherwise leak that map into this field.
+        #[serde(deserialize_with = "deserialize_connection_id")]
         connection_id: String,
         #[serde(default)]
         since_seq: Option<u64>,
@@ -51,6 +55,39 @@ pub enum ClientMsg {
     Detach { subscription_id: String },
     /// Liveness check. Server replies with `pong`.
     Ping,
+}
+
+fn deserialize_connection_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ConnectionIdWire {
+        Legacy(String),
+        Detailed(DetailedConnectionId),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct DetailedConnectionId {
+        #[serde(rename = "connectionId", alias = "connection_id")]
+        connection_id: String,
+        // The WS attach handler only needs the id. Keep this field so Serde
+        // validates the compatibility object shape, but intentionally do not
+        // use the ownership bit at this protocol layer.
+        #[allow(dead_code)]
+        #[serde(rename = "reused")]
+        reused: bool,
+    }
+
+    match ConnectionIdWire::deserialize(deserializer)? {
+        ConnectionIdWire::Legacy(connection_id) => Ok(connection_id),
+        ConnectionIdWire::Detailed(DetailedConnectionId {
+            connection_id,
+            ..
+        }) => Ok(connection_id),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,4 +310,48 @@ pub fn spawn_forwarder(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_msg_accepts_the_legacy_string_connection_id() {
+        let msg: ClientMsg = serde_json::from_str(
+            r#"{"action":"attach","subscription_id":"sub-1","connection_id":"conn-1"}"#,
+        )
+        .unwrap();
+
+        match msg {
+            ClientMsg::Attach { connection_id, .. } => {
+                assert_eq!(connection_id, "conn-1")
+            }
+            _ => panic!("expected attach message"),
+        }
+    }
+
+    #[test]
+    fn client_msg_extracts_connection_id_from_detailed_result_object() {
+        let msg: ClientMsg = serde_json::from_str(
+            r#"{"action":"attach","subscription_id":"sub-1","connection_id":{"connectionId":"conn-1","reused":true}}"#,
+        )
+        .unwrap();
+
+        match msg {
+            ClientMsg::Attach { connection_id, .. } => {
+                assert_eq!(connection_id, "conn-1")
+            }
+            _ => panic!("expected attach message"),
+        }
+    }
+
+    #[test]
+    fn client_msg_rejects_an_unrelated_connection_id_object() {
+        let result = serde_json::from_str::<ClientMsg>(
+            r#"{"action":"attach","subscription_id":"sub-1","connection_id":{"id":"conn-1"}}"#,
+        );
+
+        assert!(result.is_err());
+    }
 }
