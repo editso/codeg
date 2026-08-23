@@ -23,6 +23,11 @@ import { cn } from "@/lib/utils"
 
 interface ChatInputProps {
   status: ConnectionStatus | null
+  /** Whether a missing connection is expected to be created for this
+   *  composer. Drafts without a working directory (or blocked agent setup)
+   *  should remain in their normal editable state instead of showing a wait
+   *  mask for `status=null`. */
+  connectionExpected?: boolean
   promptCapabilities: PromptCapabilitiesInfo
   defaultPath?: string
   agentName?: string
@@ -85,6 +90,7 @@ interface ChatInputProps {
 
 export const ChatInput = memo(function ChatInput({
   status,
+  connectionExpected = true,
   promptCapabilities,
   defaultPath,
   agentName,
@@ -132,6 +138,16 @@ export const ChatInput = memo(function ChatInput({
   const isConnected = status === "connected"
   const isPrompting = status === "prompting"
   const isConnecting = status === "connecting"
+  // A restart removes the old ACP entry before the replacement is created, so
+  // the store briefly exposes `null`; session initialization then keeps the
+  // connection interactive while selectors are still loading. Treat all three
+  // phases as one visual wait state for the composer. Offline drafts opt out so
+  // a brand-new conversation can still be written before its first launch.
+  const connectionLoading =
+    !allowOfflineCompose &&
+    (isConnecting ||
+      selectorsLoading ||
+      (status === null && connectionExpected))
   // The agent names its slash commands as part of coming up, so until it has
   // the composer's `/` panel shows a loading row rather than refusing to open.
   //
@@ -188,6 +204,7 @@ export const ChatInput = memo(function ChatInput({
             ? false
             : (!isConnected && !isPrompting) || selectorsLoading
         }
+        connectionLoading={connectionLoading}
         isPrompting={isPrompting}
         onCancel={onCancel}
         modes={modes}
@@ -221,7 +238,7 @@ export const ChatInput = memo(function ChatInput({
         injectContent={injectContent}
         onInjectConsumed={onInjectConsumed}
         placeholder={
-          isConnecting
+          connectionLoading
             ? t("connecting")
             : isPrompting
               ? t("agentResponding", { agent: agentName ?? "Agent" })

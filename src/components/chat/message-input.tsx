@@ -19,6 +19,7 @@ import {
   Cog,
   Copy,
   GitFork,
+  Loader2,
   MessageSquareText,
   Scissors,
   Send,
@@ -173,6 +174,10 @@ interface MessageInputProps {
   onFocus?: () => void
   className?: string
   isPrompting?: boolean
+  /** Show a non-blocking connection wait surface while ACP is starting or
+   *  initializing. The editor remains usable so an in-progress draft is not
+   *  lost during a restart. */
+  connectionLoading?: boolean
   onCancel?: () => void
   modes?: SessionModeInfo[]
   configOptions?: SessionConfigOptionInfo[]
@@ -317,6 +322,7 @@ export function MessageInput({
   onFocus,
   className,
   isPrompting = false,
+  connectionLoading = false,
   onCancel,
   modes,
   configOptions,
@@ -1912,6 +1918,7 @@ export function MessageInput({
                 // also exposes clear processing feedback.
                 showActiveFlow && "codeg-composer-flow",
                 isPrompting && "codeg-composer-processing",
+                connectionLoading && "codeg-composer-connecting",
                 showDragActive && "ring-1 ring-primary/40",
                 className
               )}
@@ -2068,6 +2075,29 @@ export function MessageInput({
               {showDragActive && (
                 <div className="pointer-events-none absolute inset-1 z-20 flex items-center justify-center rounded-md border border-dashed border-primary/50 bg-background/80 text-xs text-muted-foreground">
                   {t("dropFilesToAttach")}
+                </div>
+              )}
+              {connectionLoading && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[inherit] bg-card/70 px-4 backdrop-blur-[1.5px]"
+                >
+                  <div className="flex items-center gap-2 rounded-full border border-border/70 bg-background/85 px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-[0_8px_24px_-16px_rgb(0_0_0_/_0.55)]">
+                    <Loader2
+                      className="codeg-composer-connection-spinner size-3.5 shrink-0 animate-spin text-primary"
+                      aria-hidden="true"
+                    />
+                    <span>{resolvedPlaceholder}</span>
+                    <span
+                      aria-hidden="true"
+                      className="inline-flex items-end gap-0.5"
+                    >
+                      <span className="codeg-composer-connection-dot size-0.5 rounded-full bg-muted-foreground/70 animate-pulse" />
+                      <span className="codeg-composer-connection-dot size-0.5 rounded-full bg-muted-foreground/70 animate-pulse [animation-delay:150ms]" />
+                      <span className="codeg-composer-connection-dot size-0.5 rounded-full bg-muted-foreground/70 animate-pulse [animation-delay:300ms]" />
+                    </span>
+                  </div>
                 </div>
               )}
             </div>

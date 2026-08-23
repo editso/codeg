@@ -825,6 +825,12 @@ const ConversationTabView = memo(function ConversationTabView({
     () => (connIsForOtherAgent ? [] : (conn.availableCommands ?? [])),
     [connIsForOtherAgent, conn.availableCommands]
   )
+  const connectionExpected =
+    isActive &&
+    canAutoConnect &&
+    Boolean(workingDirForConnection) &&
+    !autoConnectError &&
+    !agentConnectError
   const selectedModeId = useMemo(() => {
     if (connectionModes.length === 0) return null
     if (modeId && connectionModes.some((mode) => mode.id === modeId)) {
@@ -2062,7 +2068,8 @@ const ConversationTabView = memo(function ConversationTabView({
           />
         </>
       }
-      status={connStatus}
+      status={composerConnStatus}
+      connectionExpected={connectionExpected}
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}
       agentName={getAgentLabel(selectedAgent)}
@@ -2203,6 +2210,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 // reads "connecting" until the connection's cwd matches, so the
                 // send affordance stays disabled until handleSend would accept it.
                 status={composerConnStatus}
+                connectionExpected={connectionExpected}
                 promptCapabilities={conn.promptCapabilities}
                 defaultPath={workingDirForConnection}
                 agentName={getAgentLabel(selectedAgent)}

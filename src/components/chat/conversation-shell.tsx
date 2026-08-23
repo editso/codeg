@@ -28,6 +28,9 @@ import { PlanApprovalCard } from "@/components/chat/plan-approval-card"
 
 interface ConversationShellProps {
   status: ConnectionStatus | null
+  /** True when this surface has all prerequisites for an ACP connection and
+   *  should render a wait state while the store entry is still being created. */
+  connectionExpected?: boolean
   promptCapabilities: PromptCapabilitiesInfo
   defaultPath?: string
   agentName?: string
@@ -117,6 +120,7 @@ interface ConversationShellProps {
 
 export function ConversationShell({
   status,
+  connectionExpected = true,
   promptCapabilities,
   defaultPath,
   agentName,
@@ -228,6 +232,7 @@ export function ConversationShell({
           <div className="mx-auto w-full max-w-3xl">
             <ChatInput
               status={status}
+              connectionExpected={connectionExpected}
               promptCapabilities={promptCapabilities}
               defaultPath={defaultPath}
               agentName={agentName}

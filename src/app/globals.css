@@ -2371,9 +2371,10 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   }
 }
 
-/* The composer uses one animated border for two related states: identifying the
-   active tile in a multi-session workspace, and showing that the model is
-   currently working. The gradient lives on the composer itself: its opaque
+/* The composer uses one animated border for related transient states:
+   identifying the active tile in a multi-session workspace, showing that the
+   model is currently working, and waiting for ACP readiness. The gradient lives
+   on the composer itself: its opaque
    first layer fills the padding box, leaving the second layer visible only in
    the existing 1px border. Animating the conic gradient's start angle makes the
    colour travel around the perimeter without rotating an element or pseudo
@@ -2385,7 +2386,8 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 }
 
 .codeg-composer-flow,
-.codeg-composer-processing {
+.codeg-composer-processing,
+.codeg-composer-connecting {
   border-color: transparent;
   background-color: var(--card);
   background-image:
@@ -2404,7 +2406,9 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 /* The active-tile cue yields to the focused editor. The processing cue does
    not: while the model works, the flow remains visible even as the user types
    a queued follow-up. */
-.codeg-composer-flow:not(.codeg-composer-processing):focus-within {
+.codeg-composer-flow:not(.codeg-composer-processing):not(
+    .codeg-composer-connecting
+  ):focus-within {
   border-color: var(--border);
   background-color: var(--card);
   background-image: none;
@@ -2413,6 +2417,17 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 @keyframes codeg-composer-flow {
   to {
     --codeg-composer-flow-angle: 1turn;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codeg-composer-connecting {
+    animation: none;
+  }
+
+  .codeg-composer-connection-spinner,
+  .codeg-composer-connection-dot {
+    animation: none;
   }
 }
 
