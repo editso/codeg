@@ -241,6 +241,24 @@ function contextFromPath(path: string | null): string | null {
   return parts.length > 2 ? parts.slice(0, -2).join("/") : null
 }
 
+function activityTitleFallback(title: string | null | undefined): string | null {
+  const trimmed = title?.trim()
+  if (!trimmed) return null
+
+  // Some adapters emit a wrapper such as `my_tool call`; keep the actual
+  // function name rather than repeating adapter terminology in the timeline.
+  const callName = trimmed.match(
+    /^[:：'"`“”‘’\s]*([a-z0-9_.-]+)(?:\s*[:：])?\s*call[\w-]*['"`“”‘’\s]*$/i
+  )
+  const candidate = callName?.[1] ?? trimmed
+
+  // `MCP: tool` is an adapter placeholder, not a name a reader can act on.
+  // Do not replace a meaningful input-derived subject with it.
+  if (/^(?:mcp:\s*)?tool$/i.test(candidate)) return null
+
+  return ellipsis(candidate, 88)
+}
+
 function genericSubject(input: string | null): string | null {
   const parsed = asRecord(input)
   const subject = parsed
@@ -264,12 +282,19 @@ function genericSubject(input: string | null): string | null {
  * hosts (Codex, Claude Code, Cline, and OpenCode).
  */
 export function describeToolActivity(
-  part: Pick<AdaptedToolCallPart, "toolName" | "input">
+  part: Pick<AdaptedToolCallPart, "toolName" | "input" | "displayTitle">
 ): ToolActivityPresentation {
   const name = normalizeToolName(part.toolName).toLowerCase()
   const parsed = asRecord(part.input)
   const paths = pathsFromInput(part.input)
   const command = commandFromInput(part.input)
+  const displayTitle = activityTitleFallback(part.displayTitle)
+  const inputSubject = genericSubject(part.input)
+  const genericSubjectWithTitle = displayTitle ?? inputSubject
+  const genericContext =
+    displayTitle && inputSubject && inputSubject !== displayTitle
+      ? inputSubject
+      : null
 
   if (name === CODEX_SCRIPT_TOOL_NAME) {
     const script = parseCodexScriptCard(part.input)
@@ -289,7 +314,7 @@ export function describeToolActivity(
       kind: "command",
       subject: command
         ? ellipsis(command.split("\n")[0] ?? command, 88)
-        : description,
+        : (description ?? displayTitle),
       context: command && description ? ellipsis(description, 64) : null,
       command,
       paths: [],
@@ -309,7 +334,7 @@ export function describeToolActivity(
     const subject = isStdin
       ? describeStdinChars(session?.chars ?? "")
       : (commandSubject ??
-        (session?.sessionId ? `#${session.sessionId}` : null))
+        (session?.sessionId ? `#${session.sessionId}` : displayTitle))
     return {
       kind: "session",
       subject,
@@ -329,7 +354,7 @@ export function describeToolActivity(
     const path = paths[0] ?? null
     return {
       kind: "read",
-      subject: path ? shortPath(path) : null,
+      subject: path ? shortPath(path) : displayTitle,
       context: contextFromPath(path),
       command: null,
       paths,
@@ -341,7 +366,7 @@ export function describeToolActivity(
     const allPaths = uniquePaths([...paths, ...patchPaths(part.input)])
     return {
       kind: "edit",
-      subject: titleForPaths(allPaths),
+      subject: titleForPaths(allPaths) ?? displayTitle,
       context:
         allPaths.length === 1 ? contextFromPath(allPaths[0] ?? null) : null,
       command: null,
@@ -360,7 +385,7 @@ export function describeToolActivity(
     const path = paths[0] ?? null
     return {
       kind: "write",
-      subject: path ? shortPath(path) : null,
+      subject: path ? shortPath(path) : displayTitle,
       context: contextFromPath(path),
       command: null,
       paths,
@@ -382,7 +407,9 @@ export function describeToolActivity(
     const scope = parsed ? findString(parsed, ["path"]) : null
     return {
       kind: "search",
-      subject: query ? ellipsis(query, 88) : scope ? shortPath(scope) : null,
+      subject: query
+        ? ellipsis(query, 88)
+        : (scope ? shortPath(scope) : displayTitle),
       context: query && scope ? ellipsis(scope, 56) : null,
       command: null,
       paths: [],
@@ -401,7 +428,7 @@ export function describeToolActivity(
     const target = parsed ? findString(parsed, ["url", "query"]) : null
     return {
       kind: "web",
-      subject: target ? ellipsis(target, 88) : null,
+      subject: target ? ellipsis(target, 88) : displayTitle,
       context: null,
       command: null,
       paths: [],
@@ -418,8 +445,8 @@ export function describeToolActivity(
   ) {
     return {
       kind: "todo",
-      subject: genericSubject(part.input),
-      context: null,
+      subject: genericSubjectWithTitle,
+      context: genericContext,
       command: null,
       paths: [],
       monospace: false,
@@ -429,8 +456,8 @@ export function describeToolActivity(
   if (name === "task" || name === "skill" || name === "new_task") {
     return {
       kind: "task",
-      subject: genericSubject(part.input),
-      context: null,
+      subject: genericSubjectWithTitle,
+      context: genericContext,
       command: null,
       paths: [],
       monospace: false,
@@ -439,8 +466,8 @@ export function describeToolActivity(
 
   return {
     kind: "tool",
-    subject: genericSubject(part.input),
-    context: null,
+    subject: genericSubjectWithTitle,
+    context: genericContext,
     command: null,
     paths,
     monospace: false,

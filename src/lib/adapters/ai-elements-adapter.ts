@@ -1027,6 +1027,10 @@ function adaptContentBlock(
         toolCallId:
           block.tool_use_id ?? generateToolCallId(messageId, blockIndex),
         toolName: block.tool_name,
+        // Persisted transcript blocks do not carry a separate ACP title; their
+        // `tool_name` is still the authoritative name and must reach the
+        // activity timeline instead of leaving a nameless wrench row.
+        displayTitle: block.display_title ?? block.tool_name,
         input: block.input_preview,
         state: "input-available",
         meta: block.meta ?? null,
@@ -1880,6 +1884,7 @@ export function adaptMessageTurn(
           type: "tool-call",
           toolCallId,
           toolName: block.tool_name,
+          displayTitle: block.display_title ?? block.tool_name,
           input: block.input_preview,
           state: isToolStillRunning
             ? "input-available"
@@ -1917,6 +1922,7 @@ export function adaptMessageTurn(
             type: "tool-call",
             toolCallId,
             toolName: block.tool_name,
+            displayTitle: block.display_title ?? block.tool_name,
             input: block.input_preview,
             state: positionalResult.is_error
               ? "output-error"
@@ -1943,6 +1949,7 @@ export function adaptMessageTurn(
             type: "tool-call",
             toolCallId,
             toolName: block.tool_name,
+            displayTitle: block.display_title ?? block.tool_name,
             input: block.input_preview,
             state:
               isStreaming || isToolStillRunning

@@ -1154,6 +1154,10 @@ export function buildStreamingTurnsFromLiveMessage(
           type: "tool_use",
           tool_use_id: block.info.tool_call_id,
           tool_name: toolName,
+          // Keep ACP's original title alongside the normalized routing name.
+          // Generic MCP tools often have no standard input fields from which
+          // the activity timeline could otherwise recover their name.
+          display_title: block.info.title,
           input_preview: resolveLiveToolInput(toolName, block.info),
           // Forward the ACP status so the render layer can drop an interrupted
           // arg-less orphan that survives promotion into `localTurns` at

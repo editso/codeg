@@ -188,6 +188,13 @@ export type ContentBlock =
       type: "tool_use"
       tool_use_id: string | null
       tool_name: string
+      /**
+       * Original ACP title for a live tool call. `tool_name` is normalized for
+       * routing (and can intentionally collapse to the generic `tool`), while
+       * this preserves the provider's concrete tool name for presentation.
+       * Persisted transcript rows normally omit it.
+       */
+      display_title?: string | null
       input_preview: string | null
       /**
        * ACP tool-call status when known. Live and promoted turns forward it
