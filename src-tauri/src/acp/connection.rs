@@ -1256,6 +1256,19 @@ async fn build_agent(
 /// into boxed sub-futures rather than raising it further.
 const ACP_CONNECTION_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+/// Launch-scoped values that are needed to normalize an agent's wire
+/// responses, but are not part of the protocol's generic session state.
+///
+/// Codex's app-server can expose the process-global model catalog even when a
+/// conversation launch receives its own `CODEX_CONFIG`. Keep that provider
+/// detail on the ACP connection only; `SessionState` stores the normalized
+/// `config_options` that are safe to expose in snapshots.
+#[derive(Debug, Clone, Default)]
+struct ConnectionLaunchOverrides {
+    codex_model_catalog: Option<Vec<serde_json::Value>>,
+    codex_model_default: Option<String>,
+}
+
 /// Spawn an ACP agent process and run the connection loop in a background task.
 ///
 /// On success, the newly created `AgentConnection` is inserted into
@@ -1297,6 +1310,12 @@ pub async fn spawn_agent_connection(
     let session_started_rx = initial_state.install_session_started_signal();
 
     let session_state = Arc::new(RwLock::new(initial_state));
+    let launch_overrides = load_codex_model_catalog_override(agent_type, &runtime_env)
+        .map(|(models, default_model)| ConnectionLaunchOverrides {
+            codex_model_catalog: Some(models),
+            codex_model_default: default_model,
+        })
+        .unwrap_or_default();
 
     emit_with_state(
         &session_state,
@@ -1450,6 +1469,7 @@ pub async fn spawn_agent_connection(
             terminal_shell_config,
             preferred_mode_id,
             preferred_config_values,
+            launch_overrides,
             additional_mcp_servers,
             delegation_injection,
             fs_policy,
@@ -2107,6 +2127,125 @@ fn map_session_config_options(
         .collect()
 }
 
+/// Read the catalog path carried by a conversation-scoped `CODEX_CONFIG`.
+/// Codex's app-server can still answer `model/list` from its process-global
+/// config even when the ACP adapter receives a session override, so the
+/// connection keeps this generated catalog as the source for the model
+/// selector it publishes to codeg clients.
+fn load_codex_model_catalog_override(
+    agent_type: AgentType,
+    runtime_env: &BTreeMap<String, String>,
+) -> Option<(Vec<serde_json::Value>, Option<String>)> {
+    if agent_type != AgentType::Codex {
+        return None;
+    }
+    let config = runtime_env
+        .get("CODEX_CONFIG")
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())?;
+    let catalog_path = config
+        .get("model_catalog_json")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())?;
+    let catalog = std::fs::read_to_string(catalog_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())?;
+    let models = catalog
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .filter(|models| !models.is_empty())
+        .cloned()?;
+    let default_model = config
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some((models, default_model))
+}
+
+/// Replace only Codex's model selector with the conversation-scoped catalog.
+/// Other ACP config options (approval, reasoning, MCP-related controls, …)
+/// remain exactly as advertised by the adapter.
+fn apply_codex_model_catalog_override(
+    options: &mut Vec<SessionConfigOptionInfo>,
+    models: &[serde_json::Value],
+    default_model: Option<&str>,
+) {
+    let mut seen = HashSet::new();
+    let model_options: Vec<SessionConfigSelectOptionInfo> = models
+        .iter()
+        .filter_map(|model| {
+            if model.get("visibility").and_then(serde_json::Value::as_str) != Some("list") {
+                return None;
+            }
+            let slug = model.get("slug").and_then(serde_json::Value::as_str)?.trim();
+            if slug.is_empty() || !seen.insert(slug.to_string()) {
+                return None;
+            }
+            Some(SessionConfigSelectOptionInfo {
+                value: slug.to_string(),
+                name: model
+                    .get("display_name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(slug)
+                    .to_string(),
+                description: model
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect();
+    if model_options.is_empty() {
+        return;
+    }
+
+    let model_index = options
+        .iter()
+        .position(|option| option.id == "model" || option.category.as_deref() == Some("model"));
+    let (name, description, current_value) = model_index
+        .and_then(|index| options.get(index))
+        .and_then(|option| match &option.kind {
+            SessionConfigKindInfo::Select(select) => Some((
+                option.name.clone(),
+                option.description.clone(),
+                select.current_value.clone(),
+            )),
+            SessionConfigKindInfo::Boolean(_) => None,
+        })
+        .unwrap_or_else(|| {
+            (
+                "Model".to_string(),
+                Some("Choose the model for this conversation".to_string()),
+                String::new(),
+            )
+        });
+    let contains = |value: &str| model_options.iter().any(|option| option.value == value);
+    let current_value = if contains(&current_value) {
+        current_value
+    } else if let Some(default) = default_model.filter(|value| contains(value)) {
+        default.to_string()
+    } else {
+        model_options[0].value.clone()
+    };
+    let replacement = SessionConfigOptionInfo {
+        id: "model".to_string(),
+        name,
+        description,
+        category: Some("model".to_string()),
+        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+            current_value,
+            options: model_options,
+            groups: Vec::new(),
+        }),
+    };
+    if let Some(index) = model_index {
+        options[index] = replacement;
+    } else {
+        options.insert(0, replacement);
+    }
+}
+
 /// Defensive fallback for Codex's approval-preset selector.
 ///
 /// codex-acp 1.0.0 advertises its modes through *both* standard ACP
@@ -2172,11 +2311,19 @@ async fn emit_session_config_options_values(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     config_options: Vec<SessionConfigOption>,
 ) {
     let mut mapped = map_session_config_options(&config_options);
     if agent_type == AgentType::Codex {
         ensure_codex_mode_option(&mut mapped);
+        if let Some(models) = launch_overrides.codex_model_catalog.as_deref() {
+            apply_codex_model_catalog_override(
+                &mut mapped,
+                models,
+                launch_overrides.codex_model_default.as_deref(),
+            );
+        }
     }
     emit_with_state(
         state,
@@ -2946,6 +3093,7 @@ async fn apply_and_emit_session_config_options(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     grok_meta: Option<&serde_json::Map<String, serde_json::Value>>,
     grok_model_specs: Option<&HashMap<String, GrokModelSpec>>,
     preferred_mode_id: Option<&str>,
@@ -2985,7 +3133,7 @@ async fn apply_and_emit_session_config_options(
         initial_config_options,
     )
     .await;
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, agent_type, launch_overrides, updated).await;
 }
 
 /// Grok's initialize still advertises `image: false` — the coding model
@@ -3881,6 +4029,7 @@ async fn run_connection(
     terminal_shell_config: TerminalShellRuntimeConfig,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
+    launch_overrides: ConnectionLaunchOverrides,
     additional_mcp_servers: Vec<McpServer>,
     delegation_injection: Option<DelegationInjection>,
     fs_policy: FsAccessPolicy,
@@ -4546,6 +4695,7 @@ async fn run_connection(
                                 &state,
                                 &emitter_clone,
                                 agent_type,
+                                &launch_overrides,
                                 grok_meta.as_ref(),
                                 grok_model_specs.as_ref(),
                                 preferred_mode_id.as_deref(),
@@ -4561,6 +4711,7 @@ async fn run_connection(
                                 &emitter_clone,
                                 &state,
                                 agent_type,
+                                &launch_overrides,
                                 &perms,
                                 &mut cmd_rx,
                                 terminal_runtime.clone(),
@@ -4583,6 +4734,7 @@ async fn run_connection(
                                 &emitter_clone,
                                 &state,
                                 agent_type,
+                                &launch_overrides,
                                 &perms,
                                 &mut cmd_rx,
                                 terminal_runtime.clone(),
@@ -4776,6 +4928,7 @@ async fn run_connection(
                             &state,
                             &emitter_clone,
                             agent_type,
+                            &launch_overrides,
                             grok_meta.as_ref(),
                             // `session/load` is a typed send with no raw `models`
                             // capture, so effort stays on the flat fallback.
@@ -4793,6 +4946,7 @@ async fn run_connection(
                             &emitter_clone,
                             &state,
                             agent_type,
+                            &launch_overrides,
                             &perms,
                             &mut cmd_rx,
                             terminal_runtime.clone(),
@@ -4811,6 +4965,7 @@ async fn run_connection(
                             &emitter_clone,
                             &state,
                             agent_type,
+                            &launch_overrides,
                             &perms,
                             &mut cmd_rx,
                             terminal_runtime.clone(),
@@ -4961,6 +5116,7 @@ async fn run_connection(
                             &state,
                             &emitter_clone,
                             agent_type,
+                            &launch_overrides,
                             grok_meta.as_ref(),
                             grok_model_specs.as_ref(),
                             preferred_mode_id.as_deref(),
@@ -4976,6 +5132,7 @@ async fn run_connection(
                             &emitter_clone,
                             &state,
                             agent_type,
+                            &launch_overrides,
                             &perms,
                             &mut cmd_rx,
                             terminal_runtime.clone(),
@@ -4996,6 +5153,7 @@ async fn run_connection(
                             &emitter_clone,
                             &state,
                             agent_type,
+                            &launch_overrides,
                             &perms,
                             &mut cmd_rx,
                             terminal_runtime.clone(),
@@ -5043,6 +5201,7 @@ async fn run_connection(
                     &state,
                     &emitter_clone,
                     agent_type,
+                    &launch_overrides,
                     grok_meta.as_ref(),
                     grok_model_specs.as_ref(),
                     preferred_mode_id.as_deref(),
@@ -5058,6 +5217,7 @@ async fn run_connection(
                     &emitter_clone,
                     &state,
                     agent_type,
+                    &launch_overrides,
                     &perms,
                     &mut cmd_rx,
                     terminal_runtime.clone(),
@@ -5076,6 +5236,7 @@ async fn run_connection(
                     &emitter_clone,
                     &state,
                     agent_type,
+                    &launch_overrides,
                     &perms,
                     &mut cmd_rx,
                     terminal_runtime.clone(),
@@ -5716,6 +5877,7 @@ async fn set_session_config_option(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     config_id: String,
     value_id: String,
 ) -> Result<bool, sacp::Error> {
@@ -5739,7 +5901,7 @@ async fn set_session_config_option(
     if let Some(rejection) = config_option_rejection(&mapped, &config_id, &value_id) {
         emit_with_state(state, emitter, rejection).await;
     }
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, agent_type, launch_overrides, updated).await;
     Ok(applied)
 }
 
@@ -6725,6 +6887,7 @@ async fn handle_fork_or_exit(
     emitter: &EventEmitter,
     state: &Arc<RwLock<SessionState>>,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     perms: &PendingPermissions,
     cmd_rx: &mut mpsc::Receiver<ConnectionCommand>,
     terminal_runtime: Arc<TerminalRuntime>,
@@ -6804,6 +6967,7 @@ async fn handle_fork_or_exit(
         state,
         emitter,
         agent_type,
+        launch_overrides,
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
         None,
@@ -6819,6 +6983,7 @@ async fn handle_fork_or_exit(
         emitter,
         state,
         agent_type,
+        launch_overrides,
         perms,
         cmd_rx,
         terminal_runtime.clone(),
@@ -6839,6 +7004,7 @@ async fn handle_fork_or_exit(
         emitter,
         state,
         agent_type,
+        launch_overrides,
         perms,
         cmd_rx,
         terminal_runtime,
@@ -6957,6 +7123,7 @@ fn is_agent_output_update(update: &SessionUpdate) -> bool {
 async fn handle_turn_notification(
     notif: SessionNotification,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     terminal_runtime: &TerminalRuntime,
@@ -6972,10 +7139,11 @@ async fn handle_turn_notification(
     probe.note_update(&notif.update);
     // Custom agents have no store of their own to parse later.
     record_transcript_update(agent_type, &session_id.0, &notif.update);
-    emit_conversation_update(
+    emit_conversation_update_with_overrides(
         state,
         emitter,
         agent_type,
+        launch_overrides,
         notif.update,
         cwd,
         raw_output_cache,
@@ -7331,6 +7499,7 @@ async fn run_conversation_loop<'a>(
     emitter: &EventEmitter,
     state: &Arc<RwLock<SessionState>>,
     agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     perms: &PendingPermissions,
     cmd_rx: &mut mpsc::Receiver<ConnectionCommand>,
     terminal_runtime: Arc<TerminalRuntime>,
@@ -7395,7 +7564,17 @@ async fn run_conversation_loop<'a>(
                             let _ = MatchDispatch::new(dispatch)
                                 .if_notification(
                                     async |notif: SessionNotification| {
-                                        emit_conversation_update(&st, &h, agent_type, notif.update, cwd_opt, &mut raw_output_cache, &mut cb_state).await;
+                                        emit_conversation_update_with_overrides(
+                                            &st,
+                                            &h,
+                                            agent_type,
+                                            launch_overrides,
+                                            notif.update,
+                                            cwd_opt,
+                                            &mut raw_output_cache,
+                                            &mut cb_state,
+                                        )
+                                        .await;
                                         Ok(())
                                     },
                                 )
@@ -7672,6 +7851,7 @@ async fn run_conversation_loop<'a>(
                                                 handle_turn_notification(
                                                     notif,
                                                     agent_type,
+                                                    launch_overrides,
                                                     &st,
                                                     &h,
                                                     runtime.as_ref(),
@@ -7961,7 +8141,13 @@ async fn run_conversation_loop<'a>(
                                         .await
                                     } else {
                                         set_session_config_option(
-                                            &cx, &sid, state, emitter, agent_type, config_id,
+                                            &cx,
+                                            &sid,
+                                            state,
+                                            emitter,
+                                            agent_type,
+                                            launch_overrides,
+                                            config_id,
                                             value_id,
                                         )
                                         .await
@@ -8250,7 +8436,14 @@ async fn run_conversation_loop<'a>(
                     set_grok_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 } else {
                     set_session_config_option(
-                        &cx, &sid, state, emitter, agent_type, config_id, value_id,
+                        &cx,
+                        &sid,
+                        state,
+                        emitter,
+                        agent_type,
+                        launch_overrides,
+                        config_id,
+                        value_id,
                     )
                     .await
                 };
@@ -10682,10 +10875,38 @@ fn fix_usage_update_nulls(mut dispatch: Dispatch) -> Dispatch {
 /// delegation card and un-nest its children) plus the open-sub-agent window used
 /// to suppress a CodeBuddy sub-agent's interleaved thought/message chunks.
 /// Mirrors `raw_output_cache`'s lifetime.
+/// Compatibility wrapper for callers that only render transcript/tool
+/// updates. Those paths do not need connection launch overrides; keeping the
+/// wrapper avoids making test/replay helpers carry provider-specific state.
 async fn emit_conversation_update(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
+    update: SessionUpdate,
+    cwd: Option<&str>,
+    raw_output_cache: &mut ToolCallOutputCache,
+    cb_state: &mut CodeBuddyLiveState,
+) {
+    let launch_overrides = ConnectionLaunchOverrides::default();
+    emit_conversation_update_with_overrides(
+        state,
+        emitter,
+        agent_type,
+        &launch_overrides,
+        update,
+        cwd,
+        raw_output_cache,
+        cb_state,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn emit_conversation_update_with_overrides(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
     update: SessionUpdate,
     cwd: Option<&str>,
     raw_output_cache: &mut ToolCallOutputCache,
@@ -11246,8 +11467,14 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
-            emit_session_config_options_values(state, emitter, agent_type, update.config_options)
-                .await;
+            emit_session_config_options_values(
+                state,
+                emitter,
+                agent_type,
+                launch_overrides,
+                update.config_options,
+            )
+            .await;
         }
         SessionUpdate::AvailableCommandsUpdate(update) => {
             // Drop config-option state toggles (codex `/plan` — see

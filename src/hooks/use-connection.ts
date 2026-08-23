@@ -4,7 +4,6 @@ import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
 import {
   useAcpActions,
   useConnectionStore,
-  getCachedSelectors,
   type ClaudeApiRetryState,
   type ConnectionState,
   type PendingPermission,
@@ -55,7 +54,6 @@ export interface UseConnectionReturn {
   promptCapabilities: PromptCapabilitiesInfo
   supportsFork: boolean
   selectorsReady: boolean
-  hasCachedSelectors: boolean
   sessionId: string | null
   /** The working directory the live connection was established with (null when
    *  not connected). Lets callers detect a connection that is mid-reconnect to a
@@ -216,14 +214,9 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const supportsFork = connection?.supportsFork ?? false
   const selectorsReady = connection?.selectorsReady ?? false
   const sessionId = connection?.sessionId ?? null
-  const cached = connection?.agentType
-    ? getCachedSelectors(connection.agentType)
-    : null
-  const hasCachedSelectors = cached !== null
   const connectedWorkingDir = connection?.workingDir ?? null
-  const modes = connection?.modes ?? cached?.modes ?? null
-  const configOptions =
-    connection?.configOptions ?? cached?.configOptions ?? null
+  const modes = connection?.modes ?? null
+  const configOptions = connection?.configOptions ?? null
   const availableCommands = connection?.availableCommands ?? null
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingUserMessage = connection?.pendingUserMessage ?? null
@@ -330,7 +323,6 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       promptCapabilities,
       supportsFork,
       selectorsReady,
-      hasCachedSelectors,
       sessionId,
       connectedWorkingDir,
       modes,
@@ -369,7 +361,6 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       promptCapabilities,
       supportsFork,
       selectorsReady,
-      hasCachedSelectors,
       sessionId,
       connectedWorkingDir,
       modes,

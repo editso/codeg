@@ -4635,7 +4635,7 @@ export async function setChatAuthoringSettings(
  * delegation-settings UI so the option set on screen matches exactly what
  * codeg-mcp will receive when a subagent is spawned for delegation.
  *
- * Does NOT touch chat-side `selectorsCache` or `localStorage` preferences. */
+ * Does NOT touch chat-side connection state or `localStorage` preferences. */
 export async function describeAgentOptions(
   agentType: AgentType,
   workingDir?: string | null

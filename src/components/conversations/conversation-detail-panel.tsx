@@ -25,7 +25,6 @@ import {
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
-  getCachedSelectors,
   useAcpActions,
   useAcpEvent,
 } from "@/contexts/acp-connections-context"
@@ -778,16 +777,13 @@ const ConversationTabView = memo(function ConversationTabView({
   // agent while `selectedAgent` has already advanced. When that's the case we
   // must NOT surface the previous agent's selectors / ready-state as the
   // selected one's: doing so showed the old agent's model + config list and
-  // (worse) let a send reach the wrong agent. Reconcile everything the composer
-  // reads against `selectedAgent`, falling back to that agent's own cached
-  // selectors (empty until it connects).
+  // (worse) let a send reach the wrong agent. Selector values are meaningful
+  // only for their live ACP connection, so never borrow them across agents.
   const connIsForOtherAgent =
     conn.agentType != null && conn.agentType !== selectedAgent
-  const effectiveModes = connIsForOtherAgent
-    ? (getCachedSelectors(selectedAgent)?.modes ?? null)
-    : conn.modes
+  const effectiveModes = connIsForOtherAgent ? null : conn.modes
   const effectiveConfigOptions = connIsForOtherAgent
-    ? (getCachedSelectors(selectedAgent)?.configOptions ?? null)
+    ? null
     : conn.configOptions
   // The live connection is ready for THIS tab only when it's connected AND its
   // cwd matches the tab's intended working dir. A just-retargeted chat draft (or
@@ -1279,9 +1275,12 @@ const ConversationTabView = memo(function ConversationTabView({
       ).slice(0, 80)
       const chatSend = sendOwnTab?.isChat === true
       const chatExistingDir = sendOwnTab?.workingDir
-      const initialSessionConfigValues = snapshotSessionConfigValues(
-        connectionConfigOptions
-      )
+      // A new row may only inherit selectors confirmed by this connection.
+      // In particular, it must never persist a list shown while ACP is still
+      // establishing the provider-selected session.
+      const initialSessionConfigValues = conn.selectorsReady
+        ? snapshotSessionConfigValues(connectionConfigOptions)
+        : {}
       const initialConversationConfig: InitialConversationConfig = {
         draft: draftConversationConfigRef.current,
         sessionConfigValues: initialSessionConfigValues,
@@ -1443,6 +1442,7 @@ const ConversationTabView = memo(function ConversationTabView({
       canAutoConnect,
       connectionConfigOptions,
       connectionReady,
+      conn.selectorsReady,
       effectiveConversationId,
       folderId,
       hasPersistedConversation,

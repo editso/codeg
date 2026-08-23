@@ -611,8 +611,10 @@ pub async fn acp_find_connection_for_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpFindConnectionForConversationParams>,
 ) -> Result<Json<Option<crate::acp::ConversationConnectionInfo>>, AppCommandError> {
-    let info = acp_commands::acp_find_connection_for_conversation_core(
+    let info = acp_commands::acp_find_connection_for_conversation_with_config(
         &state.connection_manager,
+        &state.db,
+        &state.data_dir,
         params.conversation_id,
         params.session_id.as_deref(),
         params.agent_type,

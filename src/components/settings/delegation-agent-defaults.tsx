@@ -6,7 +6,7 @@
  *
  * Isolation guarantees (critical — see the v2 plan):
  *   1. Options come from a LIVE probe (`describeAgentOptions`), not from the
- *      chat-side `selectorsCache`. What the user sees here is what codeg-mcp
+ *      chat-side selector state. What the user sees here is what codeg-mcp
  *      will actually receive when it spawns a subagent.
  *   2. Saving a value here does NOT call `acpSetConfigOption` or write to
  *      `selector-prefs-storage.ts` localStorage. The chat input's own

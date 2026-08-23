@@ -432,6 +432,13 @@ impl ConnectionManager {
         // spawning a fresh process — this is what makes a browser refresh
         // mid-turn re-attach to the existing live state rather than orphan it.
         let working_dir_path = working_dir.as_ref().map(PathBuf::from);
+        // A resumed session may keep the same `(agent, cwd, session_id)` while
+        // its launch inputs change (for example, a conversation-level model
+        // provider switch). Reusing by the logical session tuple alone would
+        // attach the new caller to the old process, so include the exact
+        // launch configuration in the reuse decision as well.
+        let requested_config_fingerprint =
+            crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
 
         // Acquire a per-(agent, working_dir, session_id) async mutex so two
         // concurrent connects for the same logical session can't both miss
@@ -462,7 +469,12 @@ impl ConnectionManager {
         };
 
         if let Some(existing) = self
-            .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), session_id.as_deref())
+            .find_connection_for_reuse_with_config(
+                agent_type,
+                working_dir_path.as_ref(),
+                session_id.as_deref(),
+                Some(&requested_config_fingerprint),
+            )
             .await
         {
             tracing::info!(
@@ -668,11 +680,27 @@ impl ConnectionManager {
     /// for an imperceptible latency win. The connections-map mutex is held
     /// across the awaits — fine because no path takes `state.write()` while
     /// holding the connections mutex (no lock-cycle).
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn find_connection_for_reuse(
         &self,
         agent_type: AgentType,
         working_dir: Option<&PathBuf>,
         session_id: Option<&str>,
+    ) -> Option<String> {
+        self.find_connection_for_reuse_with_config(agent_type, working_dir, session_id, None)
+            .await
+    }
+
+    /// Variant of the historical logical-session lookup that can require an
+    /// exact launch configuration fingerprint. Production `spawn_agent` always
+    /// supplies the fingerprint so a provider/config switch cannot reuse the
+    /// old process.
+    pub(crate) async fn find_connection_for_reuse_with_config(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<&PathBuf>,
+        session_id: Option<&str>,
+        config_fingerprint: Option<&str>,
     ) -> Option<String> {
         // No session_id → caller is opening a fresh session; never dedup.
         let session_id = session_id?;
@@ -687,6 +715,11 @@ impl ConnectionManager {
             }
             if state.working_dir.as_ref() != working_dir {
                 continue;
+            }
+            if let Some(expected) = config_fingerprint {
+                if conn.config_fingerprint != expected {
+                    continue;
+                }
             }
             if matches!(
                 state.status,
@@ -3010,10 +3043,28 @@ impl ConnectionManager {
     /// `try_read`-skip false negative that would intermittently return None
     /// while `emit_with_state` is mid-update — the wait is microseconds.
     pub async fn find_connection_by_conversation_id(&self, conversation_id: i32) -> Option<String> {
+        self.find_connection_by_conversation_id_with_config(conversation_id, None)
+            .await
+    }
+
+    /// Resolve a conversation to a live connection whose launch fingerprint
+    /// matches the requested effective configuration. Viewer discovery uses
+    /// this stricter form so a conversation-level provider override cannot
+    /// attach to an older process that happens to resume the same session.
+    pub async fn find_connection_by_conversation_id_with_config(
+        &self,
+        conversation_id: i32,
+        config_fingerprint: Option<&str>,
+    ) -> Option<String> {
         let connections = self.connections.lock().await;
         for (id, conn) in connections.iter() {
             let state = conn.state.read().await;
             if state.conversation_id == Some(conversation_id) {
+                if let Some(expected) = config_fingerprint {
+                    if conn.config_fingerprint != expected {
+                        continue;
+                    }
+                }
                 return Some(id.clone());
             }
         }
@@ -3135,6 +3186,19 @@ impl ConnectionManager {
         external_id: &str,
         agent_type: AgentType,
     ) -> Option<String> {
+        self.find_connection_by_external_id_with_config(external_id, agent_type, None)
+            .await
+    }
+
+    /// Resolve an external session id while requiring a matching launch
+    /// fingerprint. This is the pre-first-prompt counterpart to
+    /// `find_connection_by_conversation_id_with_config`.
+    pub async fn find_connection_by_external_id_with_config(
+        &self,
+        external_id: &str,
+        agent_type: AgentType,
+        config_fingerprint: Option<&str>,
+    ) -> Option<String> {
         let connections = self.connections.lock().await;
         for (id, conn) in connections.iter() {
             if conn.agent_type != agent_type {
@@ -3142,6 +3206,11 @@ impl ConnectionManager {
             }
             let state = conn.state.read().await;
             if state.external_id.as_deref() == Some(external_id) {
+                if let Some(expected) = config_fingerprint {
+                    if conn.config_fingerprint != expected {
+                        continue;
+                    }
+                }
                 return Some(id.clone());
             }
         }

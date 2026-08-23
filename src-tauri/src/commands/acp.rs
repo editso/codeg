@@ -10188,14 +10188,69 @@ pub async fn acp_get_session_snapshot_by_conversation(
 /// connection by `external_id` and the frontend would mis-tag it as a locally
 /// owned connection, tearing it down (killing the real owner's agent) on tab
 /// close. Discovering it here lets the second client attach as a viewer.
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) async fn acp_find_connection_for_conversation_core(
     manager: &ConnectionManager,
     conversation_id: i32,
     session_id: Option<&str>,
     agent_type: AgentType,
 ) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
+    acp_find_connection_for_conversation_with_fingerprint(
+        manager,
+        conversation_id,
+        session_id,
+        agent_type,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn acp_find_connection_for_conversation_with_config(
+    manager: &ConnectionManager,
+    db: &AppDatabase,
+    data_dir: &Path,
+    conversation_id: i32,
+    session_id: Option<&str>,
+    agent_type: AgentType,
+) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
+    // Viewer discovery must use the same effective launch configuration as a
+    // new owner connection. Otherwise a browser refresh can attach to an
+    // already-running process created before this conversation switched model
+    // providers; the following snapshot would then faithfully expose that
+    // process's old selector list.
+    let (runtime_env, _, _, _) = build_session_runtime_env_for_conversation(
+        db,
+        agent_type,
+        session_id,
+        data_dir,
+        Some(conversation_id),
+        None,
+    )
+    .await?;
+    let expected_config_fingerprint = fingerprint_config(agent_type, &runtime_env);
+
+    acp_find_connection_for_conversation_with_fingerprint(
+        manager,
+        conversation_id,
+        session_id,
+        agent_type,
+        Some(&expected_config_fingerprint),
+    )
+    .await
+}
+
+async fn acp_find_connection_for_conversation_with_fingerprint(
+    manager: &ConnectionManager,
+    conversation_id: i32,
+    session_id: Option<&str>,
+    agent_type: AgentType,
+    config_fingerprint: Option<&str>,
+) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
     let connection_id = match manager
-        .find_connection_by_conversation_id(conversation_id)
+        .find_connection_by_conversation_id_with_config(
+            conversation_id,
+            config_fingerprint,
+        )
         .await
     {
         Some(id) => id,
@@ -10205,7 +10260,11 @@ pub(crate) async fn acp_find_connection_for_conversation_core(
         None => match session_id {
             Some(sid) if !sid.is_empty() => {
                 match manager
-                    .find_connection_by_external_id(sid, agent_type)
+                    .find_connection_by_external_id_with_config(
+                        sid,
+                        agent_type,
+                        config_fingerprint,
+                    )
                     .await
                 {
                     Some(id) => id,
@@ -10248,9 +10307,18 @@ pub async fn acp_find_connection_for_conversation(
     session_id: Option<String>,
     agent_type: AgentType,
     manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
 ) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
-    acp_find_connection_for_conversation_core(
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|path| crate::paths::resolve_effective_data_dir(&path))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    acp_find_connection_for_conversation_with_config(
         &manager,
+        &db,
+        &data_dir,
         conversation_id,
         session_id.as_deref(),
         agent_type,

@@ -670,21 +670,6 @@ const MAX_RECONNECT_SETTLE_WAITS = 3
  */
 const CONNECT_SETTLE_WAIT_TIMEOUT_MS = 15_000
 
-// Per-agentType cache for selectors (modes / configOptions).
-// Populated when real data arrives from the backend.
-// Used as UI-layer fallback when the connection hasn't received real data yet.
-const selectorsCache = new Map<
-  string,
-  {
-    modes: SessionModeStateInfo | null
-    configOptions: SessionConfigOptionInfo[] | null
-  }
->()
-
-export function getCachedSelectors(agentType: string) {
-  return selectorsCache.get(agentType) ?? null
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null
@@ -2260,10 +2245,7 @@ function connectionsReducer(
     case "CONFIG_OPTION_CHANGED": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
-      const options =
-        conn.configOptions ??
-        selectorsCache.get(conn.agentType)?.configOptions ??
-        null
+      const options = conn.configOptions
       if (!options) return state
       const idx = options.findIndex((o) => o.id === action.configId)
       if (idx === -1) return state
@@ -3740,15 +3722,6 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey,
             modes: e.modes,
           })
-          const modeConn = storeRef.current.connections.get(contextKey)
-          if (modeConn) {
-            const entry = selectorsCache.get(modeConn.agentType) ?? {
-              modes: null,
-              configOptions: null,
-            }
-            entry.modes = e.modes
-            selectorsCache.set(modeConn.agentType, entry)
-          }
           break
         }
         case "session_config_options": {
@@ -3760,15 +3733,6 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey,
             configOptions: e.config_options,
           })
-          const cfgConn = storeRef.current.connections.get(contextKey)
-          if (cfgConn) {
-            const entry = selectorsCache.get(cfgConn.agentType) ?? {
-              modes: null,
-              configOptions: null,
-            }
-            entry.configOptions = e.config_options
-            selectorsCache.set(cfgConn.agentType, entry)
-          }
           break
         }
         case "config_option_rejected": {
@@ -3799,15 +3763,6 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "SELECTORS_READY",
             contextKey,
           })
-          // Cache for agent types that may not emit session_modes /
-          // session_config_options at all (no selectors).
-          const rdyConn = storeRef.current.connections.get(contextKey)
-          if (rdyConn && !selectorsCache.has(rdyConn.agentType)) {
-            selectorsCache.set(rdyConn.agentType, {
-              modes: rdyConn.modes,
-              configOptions: rdyConn.configOptions,
-            })
-          }
           break
         }
         case "prompt_capabilities":
@@ -5755,8 +5710,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     const conn = storeRef.current.connections.get(contextKey)
     if (!conn) return
     // Persist user's mode selection to localStorage
-    const modes =
-      conn.modes ?? selectorsCache.get(conn.agentType)?.modes ?? null
+    const modes = conn.modes
     if (modes) {
       saveModePreference(conn.agentType, {
         ...modes,
