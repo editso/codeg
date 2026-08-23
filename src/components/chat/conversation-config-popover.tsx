@@ -70,6 +70,20 @@ function refKey(ref: ConversationMcpRef): string {
   return `${ref.id}\u0000${ref.fingerprint}`
 }
 
+/**
+ * A provider switch must refresh the model selector, but it must not reset
+ * unrelated conversation selectors such as Codex's approval mode or reasoning
+ * effort. Their ids are part of the same ACP config map, so drop only the
+ * provider-dependent model value before the next launch.
+ */
+function preserveNonModelSessionConfigValues(
+  values: Record<string, string>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([configId]) => configId !== "model")
+  )
+}
+
 function OverviewRow({
   icon: Icon,
   label,
@@ -326,13 +340,15 @@ export function ConversationConfigPopover({
           const nextDraftConfig: DraftConversationConfig = {
             model_provider_id: nextProviderId,
             additional_mcp_refs: nextMcpRefs,
-            // Selector values belong to the selected provider. Keep them when
-            // only MCP changes, but do not carry model/thinking ids across a
-            // provider switch where those ids may not exist.
+            // Refresh only the provider-dependent model. Approval/reasoning
+            // selectors belong to the conversation and must survive a provider
+            // switch when the new provider exposes the same ACP ids.
             session_config_values:
               nextProviderId === config.model_provider_id
                 ? config.session_config_values
-                : {},
+                : preserveNonModelSessionConfigValues(
+                    config.session_config_values
+                  ),
           }
           onDraftConfigChange(nextDraftConfig)
           const reconnected = await reapplyConfig(
@@ -353,13 +369,15 @@ export function ConversationConfigPopover({
         const nextView = await updateConversationConfig(conversationId, {
           model_provider_id: nextProviderId,
           additional_mcp_refs: nextMcpRefs,
-          // A selector value belongs to the provider that exposed it. Changing
-          // providers must not carry an old model or thinking id into a new
-          // provider's capability list.
+          // Refresh only the provider-dependent model. Approval/reasoning
+          // selectors belong to the conversation and must survive a provider
+          // switch when the new provider exposes the same ACP ids.
           session_config_values:
             nextProviderId === persistedConfig.model_provider_id
               ? persistedConfig.session_config_values
-              : {},
+              : preserveNonModelSessionConfigValues(
+                  persistedConfig.session_config_values
+                ),
           expected_version: persistedConfig.version,
         })
         setConfigView(nextView)

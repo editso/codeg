@@ -1,10 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, type ReactNode } from "react"
+import { useEffect, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
@@ -31,7 +30,7 @@ interface TabProviderProps {
 
 /**
  * Thin lifecycle glue for `useTabStore`: injects the React-land dependencies
- * (i18n labels, `activateConversationPane`, `acpDisconnect`, agent availability)
+ * (i18n labels, `activateConversationPane`, and agent availability)
  * and drives the effects that need a React lifecycle — the persisted-tab
  * hydration, the debounced CAS save, the cross-client `tabs://changed` and
  * sub-session `conversation://changed` subscriptions, the provisional-agent
@@ -41,16 +40,6 @@ interface TabProviderProps {
 export function TabProvider({ children }: TabProviderProps) {
   const t = useTranslations("Folder.tabContext")
   const { activateConversationPane } = useWorkspaceActions()
-  const { disconnect } = useAcpActions()
-  // Tab teardown closes the surface either way, so the store's side effect
-  // stays `Promise<void>` and drops `disconnect`'s teardown-confirmed flag —
-  // that answer only matters to callers that report a restart to the user.
-  const acpDisconnect = useCallback(
-    async (contextKey: string) => {
-      await disconnect(contextKey)
-    },
-    [disconnect]
-  )
   const { sortedTypes: sortedAvailableAgents, fresh: agentsFresh } =
     useSortedAvailableAgents()
 
@@ -66,7 +55,6 @@ export function TabProvider({ children }: TabProviderProps) {
   const rawTabs = useTabStore((s) => s.rawTabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const previewReplacedTabIds = useTabStore((s) => s.previewReplacedTabIds)
-  const draftRetargetRequests = useTabStore((s) => s.draftRetargetRequests)
   const tabsHydrated = useTabStore((s) => s.tabsHydrated)
   const saveReconcileTick = useTabStore((s) => s.saveReconcileTick)
   const reseedTick = useTabStore((s) => s.reseedTick)
@@ -85,8 +73,8 @@ export function TabProvider({ children }: TabProviderProps) {
   useEffect(() => {
     useTabStore
       .getState()
-      .setSideEffects({ activateConversationPane, acpDisconnect })
-  }, [activateConversationPane, acpDisconnect])
+      .setSideEffects({ activateConversationPane })
+  }, [activateConversationPane])
 
   useEffect(() => {
     useTabStore
@@ -104,11 +92,6 @@ export function TabProvider({ children }: TabProviderProps) {
   useEffect(() => {
     useTabStore.getState().consumePreviewReplaced()
   }, [previewReplacedTabIds])
-
-  // Disconnect + retarget each queued draft-retarget request.
-  useEffect(() => {
-    useTabStore.getState().consumeDraftRetargets()
-  }, [draftRetargetRequests])
 
   // Hydrate from persisted opened_tabs on mount.
   useEffect(() => useTabStore.getState().hydrate(), [])

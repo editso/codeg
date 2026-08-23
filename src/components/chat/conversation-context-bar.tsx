@@ -7,6 +7,8 @@ import { Check, ChevronDown, Folder, Lock, MessageSquare } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
+import { useOptionalConnectionStatus } from "@/contexts/acp-connections-context"
+import { groupOfTab } from "@/stores/tab-store"
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -129,6 +131,11 @@ export const ConversationHeaderFolderPicker = memo(
     const { openNewConversationTab, openChatModeTab } = useTabActions()
     const folders = useAppWorkspaceStore((s) => s.folders)
     const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+    const liveConnectionStatus = useOptionalConnectionStatus(tabId)
+    const targetGroup = useTabStore((s) => {
+      const lookupId = tabId ?? s.activeTabId
+      return lookupId ? groupOfTab(s.groupOf, s.groupLayout, lookupId) : null
+    })
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
@@ -177,8 +184,16 @@ export const ConversationHeaderFolderPicker = memo(
       ? formatFolderLabelWithAlias(displayFolder)
       : displayFolderName
     const isNewConversation = ownTab.conversationId == null
+    // The persisted conversation status can remain `in_progress` after an
+    // agent process is restarted or disappears without a terminal turn event.
+    // Once this surface has an ACP store, the live connection is authoritative;
+    // only fall back to the persisted status in lightweight surfaces that have
+    // no ACP provider at all.
     const projectChangeLocked =
-      !isNewConversation && ownTab.status === "in_progress"
+      !isNewConversation &&
+      (liveConnectionStatus === "prompting" ||
+        liveConnectionStatus === "connecting" ||
+        (liveConnectionStatus === undefined && ownTab.status === "in_progress"))
 
     return (
       <FolderPicker
@@ -218,6 +233,7 @@ export const ConversationHeaderFolderPicker = memo(
             // user's current agent when the target folder has no pinned default.
             openNewConversationTab(target.id, target.path, {
               inheritFromActive: true,
+              targetGroup: targetGroup ?? undefined,
             })
             toast.success(t("toasts.folderChanged", { name: target.name }))
           } catch (err) {
@@ -238,7 +254,9 @@ export const ConversationHeaderFolderPicker = memo(
             return
           }
           try {
-            openChatModeTab()
+            openChatModeTab(
+              targetGroup != null ? { targetGroup } : undefined
+            )
             toast.success(t("toasts.switchedToChatMode"))
           } catch (err) {
             console.error(
@@ -276,6 +294,11 @@ export const ConversationFolderBranchPicker = memo(
     const { openNewConversationTab, openChatModeTab } = useTabActions()
     const folders = useAppWorkspaceStore((s) => s.folders)
     const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+    const liveConnectionStatus = useOptionalConnectionStatus(tabId)
+    const targetGroup = useTabStore((s) => {
+      const lookupId = tabId ?? s.activeTabId
+      return lookupId ? groupOfTab(s.groupOf, s.groupLayout, lookupId) : null
+    })
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
@@ -309,8 +332,14 @@ export const ConversationFolderBranchPicker = memo(
     if (!ownFolder && !isChatMode) return null
 
     const isNewConversation = ownTab.conversationId == null
+    // Prefer the live ACP lifecycle over the database summary. A stale
+    // `in_progress` summary must not make an idle conversation's project chip
+    // look locked after a restart.
     const projectChangeLocked =
-      !isNewConversation && ownTab.status === "in_progress"
+      !isNewConversation &&
+      (liveConnectionStatus === "prompting" ||
+        liveConnectionStatus === "connecting" ||
+        (liveConnectionStatus === undefined && ownTab.status === "in_progress"))
     // Worktree folders surface their parent (root repo) name here; the picker's
     // own list below keeps real folder names/paths for selection, and every
     // git/path operation still uses `ownFolder` (the worktree) unchanged.
@@ -364,6 +393,7 @@ export const ConversationFolderBranchPicker = memo(
               // — "I'm switching folders, keep my workflow".
               openNewConversationTab(target.id, target.path, {
                 inheritFromActive: true,
+                targetGroup: targetGroup ?? undefined,
               })
               toast.success(t("toasts.folderChanged", { name: target.name }))
             } catch (err) {
@@ -384,7 +414,9 @@ export const ConversationFolderBranchPicker = memo(
               return
             }
             try {
-              openChatModeTab()
+              openChatModeTab(
+                targetGroup != null ? { targetGroup } : undefined
+              )
               toast.success(t("toasts.switchedToChatMode"))
             } catch (err) {
               console.error(

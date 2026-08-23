@@ -425,7 +425,17 @@ const ConversationTabView = memo(function ConversationTabView({
   >(null)
   const dbConversationId = conversationId ?? createdConversationId
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
-  const selectedAgent = conversationId != null ? agentType : draftAgentType
+  // A store-driven folder/chat retarget changes the prop and the local draft
+  // state is mirrored by an effect below. Use the prop immediately for the
+  // render in between those two updates; otherwise the lifecycle can launch
+  // one connection with the old agent at the new cwd before the mirror runs.
+  const selectedAgentRef = useRef<AgentType>(agentType)
+  const selectedAgent =
+    conversationId != null
+      ? agentType
+      : agentType !== selectedAgentRef.current
+        ? agentType
+        : draftAgentType
   const [draftConversationConfig, setDraftConversationConfig] =
     useState<DraftConversationConfig>(() =>
       loadDraftConversationConfig(tabId, agentType)
@@ -512,7 +522,6 @@ const ConversationTabView = memo(function ConversationTabView({
   } | null>(null)
   const dbConvIdRef = useRef<number | null>(conversationId)
   const mountedRef = useRef(true)
-  const selectedAgentRef = useRef(selectedAgent)
   const createConversationPendingRef = useRef(false)
   // The first ACP connection starts while a draft is still unbound. Keep its
   // Provider/MCP draft plus selector snapshot until the newly created row has

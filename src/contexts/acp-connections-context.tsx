@@ -7,6 +7,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   type ReactNode,
 } from "react"
 import { useTranslations } from "next-intl"
@@ -2463,6 +2464,34 @@ export function useConnectionStore(): ConnectionStoreApi {
   return ctx
 }
 
+/**
+ * Read a connection's live status when a component may also be rendered by a
+ * lightweight/test surface without an ACP provider. `undefined` means there
+ * is no store provider at all; `null` means the provider is present but this
+ * context currently has no connection. Keeping those cases distinct lets UI
+ * controls retain their legacy fallback only in environments that cannot read
+ * live ACP state, while avoiding stale persisted conversation statuses in the
+ * real workspace.
+ */
+export function useOptionalConnectionStatus(
+  contextKey?: string | null
+): ConnectionStatus | null | undefined {
+  const store = useContext(ConnectionStoreContext)
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      if (!store || !contextKey) return () => {}
+      return store.subscribeKey(contextKey, callback)
+    },
+    [contextKey, store]
+  )
+  const getSnapshot = useCallback((): ConnectionStatus | null => {
+    if (!store || !contextKey) return null
+    return store.getConnection(contextKey)?.status ?? null
+  }, [contextKey, store])
+  const status = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return store ? status : undefined
+}
+
 // ── Actions context (unchanged interface) ──
 
 /**
@@ -2866,6 +2895,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   // Guard against concurrent connect() calls
   const connectingKeysRef = useRef(new Set<string>())
+  // A draft can request teardown from the tab store while the lifecycle hook
+  // is already replacing that same connection. Share one backend teardown per
+  // connection id so the two paths cannot race two independent disconnects.
+  const disconnectInFlightRef = useRef(new Map<string, Promise<void>>())
+  const acpDisconnectOnce = useCallback(
+    (connectionId: string): Promise<void> => {
+      const inFlight = disconnectInFlightRef.current.get(connectionId)
+      if (inFlight) return inFlight
+
+      let promise: Promise<void>
+      promise = acpDisconnect(connectionId).finally(() => {
+        if (disconnectInFlightRef.current.get(connectionId) === promise) {
+          disconnectInFlightRef.current.delete(connectionId)
+        }
+      })
+      disconnectInFlightRef.current.set(connectionId, promise)
+      return promise
+    },
+    []
+  )
   const pendingConnectRequestsRef = useRef(new Map<string, ConnectRequest>())
   // Last params `connect()` was called with, per contextKey — kept AFTER the
   // connection is gone (teardown removes the store entry entirely, so a
@@ -4239,8 +4288,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       if (!stream) return null
 
       let activeSub: EventStreamSubscription | null = null
+      const isCurrentConnection = () =>
+        storeRef.current.connections.get(contextKey)?.connectionId ===
+        connectionId
       const handlers: AttachHandlers = {
         onSnapshot: (snapshot) => {
+          if (!isCurrentConnection()) return
           const patch = denormalizeSnapshot(snapshot)
           dispatch({ type: "HYDRATE_FROM_SNAPSHOT", contextKey, patch })
           surfaceSnapshotErrorDetailsRef.current(contextKey, patch)
@@ -4256,6 +4309,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           )
         },
         onReplay: (events) => {
+          if (!isCurrentConnection()) return
           // Catching up on a gap (reconnect / lagged detach) re-delivers events
           // that already happened. They belong in the UI, but replaying them
           // must not fire a burst of notification sounds for turns that
@@ -4267,9 +4321,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
         },
         onEvent: (envelope) => {
+          if (!isCurrentConnection()) return
           applyMappedEnvelope(contextKey, envelope)
         },
         onDetached: (reason) => {
+          if (!isCurrentConnection()) return
           if (reason === "lagged" || reason === "server_shutdown") {
             // Transient: re-attach with the latest cursor so we either
             // replay the gap (small) or hydrate fresh (large). For
@@ -4578,7 +4634,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
 
       for (const { contextKey, connectionId } of toDisconnect) {
-        acpDisconnect(connectionId).catch(() => {})
+        acpDisconnectOnce(connectionId).catch(() => {})
         releaseConnectionRoute(connectionId, contextKey)
         teardownAttachSubscription(contextKey)
         lastActivityRef.current.delete(contextKey)
@@ -4593,6 +4649,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer)
   }, [
     captureIdentityBeforeRemoval,
+    acpDisconnectOnce,
     dispatch,
     releaseConnectionRoute,
     teardownAttachSubscription,
@@ -4628,7 +4685,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           if (conn?.isViewer) continue
           if (alreadyTornDown.has(connectionId)) continue
           alreadyTornDown.add(connectionId)
-          acpDisconnect(connectionId).catch(() => {})
+          acpDisconnectOnce(connectionId).catch(() => {})
         }
       }
       for (const [, sub] of attachSubs) {
@@ -4639,7 +4696,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-  }, [])
+  }, [acpDisconnectOnce])
 
   // True when this client already OWNS the given backend connection — i.e.
   // holds an entry whose teardown `acpDisconnect`s the agent. Guards the
@@ -4947,20 +5004,29 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             // acpDisconnect (that would kill the owner's agent). Owners are
             // disconnected normally before re-spawning under new params.
             if (!existing.isViewer) {
-              await acpDisconnect(existing.connectionId).catch(() => {})
+              await acpDisconnectOnce(existing.connectionId).catch(() => {})
             }
-            releaseConnectionRoute(existing.connectionId, contextKey)
-            teardownAttachSubscription(contextKey)
-            lastActivityRef.current.delete(contextKey)
-            pendingUnmappedEventsRef.current.delete(existing.connectionId)
-            // Routing is gone, so this entry can no longer be settled by an
-            // event. Retire it now rather than counting on the `acpConnect`
-            // below to overwrite it: a spawn that throws (agent removed
-            // mid-session), is abandoned, or is superseded returns early and
-            // would otherwise leave a routing-less non-terminal entry — the
-            // same immortal "responding" state this gate exists to prevent.
-            captureIdentityBeforeRemoval(contextKey)
-            dispatch({ type: "CONNECTION_REMOVED", contextKey })
+            // The tab-store teardown and this replacement can overlap. Only
+            // release resources when this key still points at the connection
+            // we just replaced; a late old teardown must never detach or
+            // remove the replacement connection.
+            const stillCurrent =
+              storeRef.current.connections.get(contextKey)?.connectionId ===
+              existing.connectionId
+            if (stillCurrent) {
+              releaseConnectionRoute(existing.connectionId, contextKey)
+              teardownAttachSubscription(contextKey)
+              lastActivityRef.current.delete(contextKey)
+              pendingUnmappedEventsRef.current.delete(existing.connectionId)
+              // Routing is gone, so this entry can no longer be settled by an
+              // event. Retire it now rather than counting on the `acpConnect`
+              // below to overwrite it: a spawn that throws (agent removed
+              // mid-session), is abandoned, or is superseded returns early and
+              // would otherwise leave a routing-less non-terminal entry — the
+              // same immortal "responding" state this gate exists to prevent.
+              captureIdentityBeforeRemoval(contextKey)
+              dispatch({ type: "CONNECTION_REMOVED", contextKey })
+            }
           }
         }
 
@@ -5132,14 +5198,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // still see it to know this call established nothing (see there).
         if (abandonedKeysRef.current.has(contextKey)) {
           if (!isConnectionReferencedLocally(connectionId)) {
-            acpDisconnect(connectionId).catch(() => {})
+            acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
         }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
           if (!isConnectionReferencedLocally(connectionId)) {
-            acpDisconnect(connectionId).catch(() => {})
+            acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
         }
@@ -5310,6 +5376,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     },
     [
       applyMappedEnvelope,
+      acpDisconnectOnce,
       bindConnectionRoute,
       buildOpenAgentsSettingsAction,
       captureIdentityBeforeRemoval,
@@ -5360,11 +5427,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // and disconnecting it would kill the owner's agent mid-turn. Mirrors
         // detachDelegationChild. The owner's own disconnect / the idle sweep
         // governs the connection's real lifetime.
-        teardownAttachSubscription(contextKey)
-        releaseConnectionRoute(conn.connectionId, contextKey)
-        pendingUnmappedEventsRef.current.delete(conn.connectionId)
-        lastActivityRef.current.delete(contextKey)
-        dispatch({ type: "CONNECTION_REMOVED", contextKey })
+        if (
+          storeRef.current.connections.get(contextKey)?.connectionId ===
+          conn.connectionId
+        ) {
+          teardownAttachSubscription(contextKey)
+          releaseConnectionRoute(conn.connectionId, contextKey)
+          pendingUnmappedEventsRef.current.delete(conn.connectionId)
+          lastActivityRef.current.delete(contextKey)
+          dispatch({ type: "CONNECTION_REMOVED", contextKey })
+        }
         return true
       }
       // A failed backend teardown must not strand the local entry: propagating
@@ -5381,20 +5453,29 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // the follow-up connect can re-attach to the process it believed it had
       // replaced. Report which happened and let the caller decide.
       let tornDown = true
-      await acpDisconnect(conn.connectionId).catch((error: unknown) => {
+      await acpDisconnectOnce(conn.connectionId).catch((error: unknown) => {
         if (isConnectionGoneError(error)) return
         console.warn("[Acp] backend teardown failed, releasing locally:", error)
         tornDown = false
       })
-      releaseConnectionRoute(conn.connectionId, contextKey)
-      teardownAttachSubscription(contextKey)
-      lastActivityRef.current.delete(contextKey)
-      pendingUnmappedEventsRef.current.delete(conn.connectionId)
-      dispatch({ type: "CONNECTION_REMOVED", contextKey })
+      // A replacement connection may have appeared while the backend teardown
+      // was in flight. Do not release its route/subscription or delete it from
+      // the store when this older disconnect finally settles.
+      if (
+        storeRef.current.connections.get(contextKey)?.connectionId ===
+        conn.connectionId
+      ) {
+        releaseConnectionRoute(conn.connectionId, contextKey)
+        teardownAttachSubscription(contextKey)
+        lastActivityRef.current.delete(contextKey)
+        pendingUnmappedEventsRef.current.delete(conn.connectionId)
+        dispatch({ type: "CONNECTION_REMOVED", contextKey })
+      }
       return tornDown
     },
     [
       captureIdentityBeforeRemoval,
+      acpDisconnectOnce,
       dispatch,
       releaseConnectionRoute,
       teardownAttachSubscription,
@@ -5615,7 +5696,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // that shared process before the normal viewer teardown + reconnect.
       // `reconnect` alone only re-attaches to the same process.
       try {
-        await acpDisconnect(conn.connectionId)
+        await acpDisconnectOnce(conn.connectionId)
       } catch (error) {
         if (!isConnectionGoneError(error)) {
           console.warn("[Acp] viewer-requested restart failed:", error)
@@ -5625,7 +5706,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
       return reconnect(contextKey)
     },
-    [reapplyConfig, reconnect]
+    [acpDisconnectOnce, reapplyConfig, reconnect]
   )
 
   const dismissConfigStale = useCallback(
@@ -5650,7 +5731,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // read-only subscription but never acpDisconnect (that would kill the
       // owner's agent). Owners are torn down normally.
       if (!conn.isViewer) {
-        promises.push(acpDisconnect(conn.connectionId).catch(() => {}))
+        promises.push(acpDisconnectOnce(conn.connectionId).catch(() => {}))
       }
       teardownAttachSubscription(contextKey)
       pendingUnmappedEventsRef.current.delete(conn.connectionId)
@@ -5669,7 +5750,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     rekeyGenerationRef.current.clear()
     await Promise.all(promises)
     dispatch({ type: "REMOVE_ALL" })
-  }, [dispatch, teardownAttachSubscription])
+  }, [acpDisconnectOnce, dispatch, teardownAttachSubscription])
 
   const sendPrompt = useCallback(
     async (
