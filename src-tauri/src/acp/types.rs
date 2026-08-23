@@ -780,6 +780,42 @@ pub struct ConnectionInfo {
     pub status: ConnectionStatus,
 }
 
+/// Result of an ACP connect request.
+///
+/// `reused` distinguishes a connection created by this request from one that
+/// was already alive and won the per-session deduplication race. The frontend
+/// uses that distinction to register cross-client attaches as non-owning
+/// viewers, so closing one browser cannot disconnect another browser's agent.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpConnectResult {
+    pub connection_id: String,
+    pub reused: bool,
+}
+
+/// Wire response for `acp_connect`.
+///
+/// The detailed response is opt-in so a server can be upgraded before all
+/// browser tabs have loaded the matching frontend bundle. Older callers omit
+/// `includeConnectionInfo` and continue receiving the historical bare string;
+/// newer callers request `Detailed` and get the atomic ownership bit.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum AcpConnectResponse {
+    Legacy(String),
+    Detailed(AcpConnectResult),
+}
+
+impl AcpConnectResponse {
+    pub fn from_result(result: AcpConnectResult, include_connection_info: bool) -> Self {
+        if include_connection_info {
+            Self::Detailed(result)
+        } else {
+            Self::Legacy(result.connection_id)
+        }
+    }
+}
+
 /// The live connection currently bound to a conversation, returned by
 /// `acp_find_connection_for_conversation`. The endpoint returns `None` when no
 /// live connection owns the conversation (the client reads the persisted detail
@@ -1333,6 +1369,29 @@ pub struct ForkResultInfo {
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
+
+    #[test]
+    fn acp_connect_response_negotiates_legacy_and_detailed_shapes() {
+        let legacy = AcpConnectResponse::from_result(
+            AcpConnectResult {
+                connection_id: "conn-legacy".to_string(),
+                reused: true,
+            },
+            false,
+        );
+        assert_eq!(serde_json::to_value(legacy).unwrap(), "conn-legacy");
+
+        let detailed = AcpConnectResponse::from_result(
+            AcpConnectResult {
+                connection_id: "conn-detailed".to_string(),
+                reused: true,
+            },
+            true,
+        );
+        let json = serde_json::to_value(detailed).unwrap();
+        assert_eq!(json["connectionId"], "conn-detailed");
+        assert_eq!(json["reused"], true);
+    }
 
     #[test]
     fn event_envelope_serializes_with_flat_payload() {

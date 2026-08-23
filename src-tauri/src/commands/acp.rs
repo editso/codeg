@@ -22,7 +22,9 @@ use crate::acp::types::{
     GrokStructuredConfig,
 };
 #[cfg(feature = "tauri-runtime")]
-use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
+use crate::acp::types::{
+    AcpConnectResponse, ConnectionInfo, ForkResultInfo, PromptInputBlock,
+};
 use crate::db::service::agent_setting_service;
 use crate::db::service::model_provider_service;
 use crate::db::AppDatabase;
@@ -9873,11 +9875,12 @@ pub async fn acp_connect(
     preferred_config_values: Option<BTreeMap<String, String>>,
     conversation_id: Option<i32>,
     draft_config: Option<DraftConversationConfig>,
+    include_connection_info: Option<bool>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
-) -> Result<String, AcpError> {
+) -> Result<AcpConnectResponse, AcpError> {
     // Resolve through the effective data dir so a custom `CODEG_DATA_DIR`
     // reaches the credential helper script the agent's git subprocess
     // will execute. `acp_connect` may be called before the app data dir
@@ -9910,7 +9913,7 @@ pub async fn acp_connect(
 
     let emitter = EventEmitter::Tauri(app_handle);
     manager
-        .spawn_agent(
+        .spawn_agent_with_result(
             agent_type,
             working_dir,
             session_id,
@@ -9934,6 +9937,12 @@ pub async fn acp_connect(
             additional_mcp_servers,
         )
         .await
+        .map(|result| {
+            AcpConnectResponse::from_result(
+                result,
+                include_connection_info.unwrap_or(false),
+            )
+        })
 }
 
 #[cfg(feature = "tauri-runtime")]

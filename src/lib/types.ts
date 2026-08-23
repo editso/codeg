@@ -2620,6 +2620,14 @@ export interface ConnectionInfo {
   status: ConnectionStatus
 }
 
+// Result returned by acp_connect. `reused` is true when the backend's
+// per-session deduplication handed this client a connection created by
+// another request; that client must attach as a non-owning viewer.
+export interface AcpConnectResult {
+  connectionId: string
+  reused: boolean
+}
+
 // Live connection bound to a conversation, returned by
 // acp_find_connection_for_conversation. `null` means no live connection (read
 // persisted detail instead of attaching). `event_seq` is the connection's

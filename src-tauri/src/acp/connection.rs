@@ -2162,9 +2162,110 @@ fn load_codex_model_catalog_override(
     Some((models, default_model))
 }
 
-/// Replace only Codex's model selector with the conversation-scoped catalog.
-/// Other ACP config options (approval, reasoning, MCP-related controls, …)
-/// remain exactly as advertised by the adapter.
+const CODEX_THOUGHT_LEVEL_OPTION_ID: &str = "thought_level";
+
+/// Build the Codex thought-level selector from one model-catalog entry.
+///
+/// The ACP adapter normally publishes this selector itself. With a
+/// conversation-scoped catalog, however, codex-acp can still describe the
+/// process-global model's thinking levels (or omit the selector altogether),
+/// even though the model picker has already been replaced with the scoped
+/// catalog. The catalog is authoritative for a custom model: its
+/// `supported_reasoning_levels` is exactly the vocabulary codex accepts for
+/// that model.
+fn codex_thought_level_option_for_model(
+    model: &serde_json::Value,
+    existing: Option<&SessionConfigOptionInfo>,
+) -> Option<SessionConfigOptionInfo> {
+    let levels = model
+        .get("supported_reasoning_levels")
+        .and_then(serde_json::Value::as_array)?;
+    let mut seen = HashSet::new();
+    let options: Vec<SessionConfigSelectOptionInfo> = levels
+        .iter()
+        .filter_map(|level| {
+            let effort = level
+                .get("effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())?;
+            if !seen.insert(effort.to_string()) {
+                return None;
+            }
+            let mut chars = effort.chars();
+            let name = chars
+                .next()
+                .map(|first| {
+                    format!(
+                        "{}{}",
+                        first.to_uppercase().collect::<String>(),
+                        chars.as_str()
+                    )
+                })
+                .unwrap_or_else(|| effort.to_string());
+            Some(SessionConfigSelectOptionInfo {
+                value: effort.to_string(),
+                name,
+                description: level
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+
+    let contains = |value: &str| options.iter().any(|option| option.value == value);
+    let current_value = existing
+        .and_then(|option| match &option.kind {
+            SessionConfigKindInfo::Select(select) if contains(&select.current_value) => {
+                Some(select.current_value.clone())
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            model
+                .get("default_reasoning_level")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| contains(value))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| options[0].value.clone());
+
+    Some(SessionConfigOptionInfo {
+        id: existing
+            .map(|option| option.id.clone())
+            .unwrap_or_else(|| CODEX_THOUGHT_LEVEL_OPTION_ID.to_string()),
+        name: existing
+            .map(|option| option.name.clone())
+            .unwrap_or_else(|| "Thinking".to_string()),
+        description: existing
+            .and_then(|option| option.description.clone())
+            .or_else(|| Some("Choose the reasoning level for this conversation".to_string())),
+        category: existing
+            .and_then(|option| option.category.clone())
+            .or_else(|| Some("thought_level".to_string())),
+        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+            current_value,
+            options,
+            groups: Vec::new(),
+        }),
+    })
+}
+
+fn is_codex_thought_level_option(option: &SessionConfigOptionInfo) -> bool {
+    option.id == CODEX_THOUGHT_LEVEL_OPTION_ID
+        || option.id == "reasoning_effort"
+        || option.category.as_deref() == Some("thought_level")
+}
+
+/// Replace Codex's model selector with the conversation-scoped catalog and
+/// rebind its thought-level selector to the selected model's catalog entry.
+/// Other ACP config options (approval, MCP-related controls, …) remain exactly
+/// as advertised by the adapter.
 fn apply_codex_model_catalog_override(
     options: &mut Vec<SessionConfigOptionInfo>,
     models: &[serde_json::Value],
@@ -2244,6 +2345,60 @@ fn apply_codex_model_catalog_override(
     } else {
         options.insert(0, replacement);
     }
+
+    // Codex's live response can carry the global model's thought-level option,
+    // or omit it while the scoped custom model is active. Once the model list
+    // is scoped, derive the option from that same entry so the UI and the
+    // `session/set_config_option` request share one vocabulary. A catalog entry
+    // that explicitly has no levels removes a stale global selector.
+    let selected_model = options
+        .iter()
+        .find(|option| is_model_config_option(*option))
+        .and_then(|option| match &option.kind {
+            SessionConfigKindInfo::Select(select) => Some(select.current_value.as_str()),
+            SessionConfigKindInfo::Boolean(_) => None,
+        });
+    let Some(selected_model) = selected_model else {
+        return;
+    };
+    let Some(model) = models.iter().find(|model| {
+        model
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|slug| slug == selected_model)
+    }) else {
+        return;
+    };
+    let thought_index = options
+        .iter()
+        .position(is_codex_thought_level_option);
+    let existing = thought_index.and_then(|index| options.get(index)).cloned();
+    if model.get("supported_reasoning_levels").is_none() {
+        return;
+    }
+    match codex_thought_level_option_for_model(model, existing.as_ref()) {
+        Some(thought) => {
+            if let Some(index) = thought_index {
+                options[index] = thought;
+            } else {
+                let insert_at = options
+                    .iter()
+                    .position(is_model_config_option)
+                    .map(|index| index + 1)
+                    .unwrap_or(0);
+                options.insert(insert_at, thought);
+            }
+        }
+        None => {
+            if let Some(index) = thought_index {
+                options.remove(index);
+            }
+        }
+    }
+}
+
+fn is_model_config_option(option: &SessionConfigOptionInfo) -> bool {
+    option.id == "model" || option.category.as_deref() == Some("model")
 }
 
 /// Defensive fallback for Codex's approval-preset selector.
@@ -2314,6 +2469,22 @@ async fn emit_session_config_options_values(
     launch_overrides: &ConnectionLaunchOverrides,
     config_options: Vec<SessionConfigOption>,
 ) {
+    let mapped = normalize_session_config_options(agent_type, launch_overrides, config_options);
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::SessionConfigOptions {
+            config_options: mapped,
+        },
+    )
+    .await;
+}
+
+fn normalize_session_config_options(
+    agent_type: AgentType,
+    launch_overrides: &ConnectionLaunchOverrides,
+    config_options: Vec<SessionConfigOption>,
+) -> Vec<SessionConfigOptionInfo> {
     let mut mapped = map_session_config_options(&config_options);
     if agent_type == AgentType::Codex {
         ensure_codex_mode_option(&mut mapped);
@@ -2325,14 +2496,7 @@ async fn emit_session_config_options_values(
             );
         }
     }
-    emit_with_state(
-        state,
-        emitter,
-        AcpEvent::SessionConfigOptions {
-            config_options: mapped,
-        },
-    )
-    .await;
+    mapped
 }
 
 async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &EventEmitter) {
@@ -5896,7 +6060,7 @@ async fn set_session_config_option(
     // Compare BEFORE emitting: the agent's answer is the only place a request and
     // its outcome are correlated. Once the option list is broadcast it is
     // indistinguishable from an unsolicited update.
-    let mapped = map_session_config_options(&updated);
+    let mapped = normalize_session_config_options(agent_type, launch_overrides, updated.clone());
     let applied = config_option_value_was_applied(&mapped, &config_id, &value_id);
     if let Some(rejection) = config_option_rejection(&mapped, &config_id, &value_id) {
         emit_with_state(state, emitter, rejection).await;

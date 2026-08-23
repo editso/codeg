@@ -6,6 +6,7 @@ import {
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
+import { normalizeAcpConnectResult } from "./acp-connect-result"
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
@@ -49,6 +50,7 @@ import type {
   AgentStats,
   SidebarData,
   ConnectionInfo,
+  AcpConnectResult,
   ConversationConnectionInfo,
   LiveSessionSnapshot,
   FeedbackItem,
@@ -206,8 +208,8 @@ export async function acpConnect(
   preferredConfigValues?: Record<string, string> | null,
   conversationId?: number | null,
   draftConfig?: DraftConversationConfig | null
-): Promise<string> {
-  return getTransport().call("acp_connect", {
+): Promise<AcpConnectResult> {
+  const result = await getTransport().call<unknown>("acp_connect", {
     agentType,
     workingDir: workingDir ?? null,
     sessionId: sessionId ?? null,
@@ -215,7 +217,12 @@ export async function acpConnect(
     preferredConfigValues: preferredConfigValues ?? null,
     conversationId: conversationId ?? null,
     draftConfig: draftConfig ?? null,
+    // Request the detailed shape without breaking older frontend bundles:
+    // servers that do not know this flag ignore it, and newer servers return
+    // the historical string when the flag is absent.
+    includeConnectionInfo: true,
   })
+  return normalizeAcpConnectResult(result)
 }
 
 /**

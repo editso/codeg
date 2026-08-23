@@ -231,7 +231,10 @@ async fn handle_ws_connection(
                                 ).await;
                             }
                             Err(e) => {
-                                tracing::warn!("[WS][WARN] malformed client message: {e}");
+                                tracing::warn!(
+                                    "[WS][WARN] malformed client message: {e}; {}",
+                                    describe_malformed_client_message(&text)
+                                );
                             }
                         }
                     }
@@ -248,6 +251,72 @@ async fn handle_ws_connection(
     // will be dropped, freeing the per-connection broadcaster slot.
     for (_, sub) in subscriptions.drain() {
         sub.handle.abort();
+    }
+}
+
+/// Produce a bounded diagnostic for a client frame that failed to deserialize.
+///
+/// The attach protocol only expects a handful of fields, so logging those
+/// fields (including their actual JSON kind) is more useful than the generic
+/// serde error alone. Keep the whole-frame preview bounded because this path
+/// is also reachable by arbitrary clients sending invalid JSON.
+fn describe_malformed_client_message(text: &str) -> String {
+    const RAW_PREVIEW_LIMIT: usize = 512;
+
+    let raw_preview = truncate_ws_diagnostic(text, RAW_PREVIEW_LIMIT);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return format!("raw_preview={raw_preview:?} json=parse_failed");
+    };
+
+    let Some(fields) = value.as_object() else {
+        return format!(
+            "json_kind={} raw_preview={raw_preview:?}",
+            json_value_kind(&value)
+        );
+    };
+
+    format!(
+        "action={} subscription_id={} connection_id={} since_seq={} raw_preview={raw_preview:?}",
+        describe_json_field(fields.get("action")),
+        describe_json_field(fields.get("subscription_id")),
+        describe_json_field(fields.get("connection_id")),
+        describe_json_field(fields.get("since_seq")),
+    )
+}
+
+fn describe_json_field(value: Option<&serde_json::Value>) -> String {
+    const FIELD_PREVIEW_LIMIT: usize = 256;
+
+    let Some(value) = value else {
+        return "<missing>".to_string();
+    };
+    let encoded = serde_json::to_string(value)
+        .unwrap_or_else(|_| "<unserializable>".to_string());
+    format!(
+        "{}({})",
+        json_value_kind(value),
+        truncate_ws_diagnostic(&encoded, FIELD_PREVIEW_LIMIT)
+    )
+}
+
+fn json_value_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn truncate_ws_diagnostic(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let truncated: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
     }
 }
 
@@ -329,6 +398,29 @@ async fn handle_client_msg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_client_diagnostic_reports_the_actual_field_shapes() {
+        let text = serde_json::json!({
+            "action": "attach",
+            "subscription_id": "sub-1",
+            "connection_id": {
+                "connectionId": "conn-1",
+                "reused": true,
+            },
+            "since_seq": null,
+        })
+        .to_string();
+
+        let diagnostic = describe_malformed_client_message(&text);
+
+        assert!(diagnostic.contains("action=string(\"attach\")"));
+        assert!(diagnostic.contains("subscription_id=string(\"sub-1\")"));
+        assert!(diagnostic.contains(
+            "connection_id=object({\"connectionId\":\"conn-1\",\"reused\":true})"
+        ));
+        assert!(diagnostic.contains("since_seq=null(null)"));
+    }
 
     /// Build an ActiveSubscription wrapping a no-op spawned task. The
     /// JoinHandle is real so abort() in cleanup paths is realistic.

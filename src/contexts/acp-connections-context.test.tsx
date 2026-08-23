@@ -265,6 +265,38 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
     )
   })
 
+  it("attaches a backend-reused connection as a viewer", async () => {
+    // The discovery window can miss while the first client's session is still
+    // binding its conversation. The backend dedup lock then returns the
+    // first client's connection to this request with reused=true.
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    h.acpConnect.mockResolvedValue({
+      connectionId: "shared-conn",
+      reused: true,
+    })
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+    expect(h.store!.getConnection(TAB)?.isViewer).toBe(true)
+    expect(h.attach).toHaveBeenCalledWith(
+      "shared-conn",
+      { sinceSeq: undefined },
+      expect.anything()
+    )
+
+    await act(async () => {
+      await h.actions!.disconnect(TAB)
+    })
+
+    // The second client only attached to the shared process; it must not tear
+    // down the connection when its tab closes.
+    expect(h.acpDisconnect).not.toHaveBeenCalled()
+  })
+
   it("skips discovery entirely when no persisted conversationId is given", async () => {
     await mountProvider()
 

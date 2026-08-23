@@ -28,8 +28,8 @@ use crate::acp::question::{
 };
 use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
-    AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
-    ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
+    AcpConnectResult, AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo,
+    ConnectionStatus, ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
 };
 use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
 use crate::db::service::conversation_service;
@@ -412,8 +412,12 @@ impl ConnectionManager {
         rx
     }
 
+    /// Spawn or reuse an ACP connection and report whether this request won
+    /// the create race. Most backend callers only need the id and continue to
+    /// use [`Self::spawn_agent`]; the user-facing `acp_connect` command needs
+    /// `reused` so a second browser can attach as a non-owning viewer.
     #[allow(clippy::too_many_arguments)]
-    pub async fn spawn_agent(
+    pub async fn spawn_agent_with_result(
         &self,
         agent_type: AgentType,
         working_dir: Option<String>,
@@ -424,7 +428,7 @@ impl ConnectionManager {
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
         additional_mcp_servers: Vec<McpServer>,
-    ) -> Result<String, AcpError> {
+    ) -> Result<AcpConnectResult, AcpError> {
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
         // the same external session in the same working_dir for the same
@@ -482,7 +486,10 @@ impl ConnectionManager {
                 existing,
                 session_id.as_deref().unwrap_or("")
             );
-            return Ok(existing);
+            return Ok(AcpConnectResult {
+                connection_id: existing,
+                reused: true,
+            });
         }
 
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -536,7 +543,45 @@ impl ConnectionManager {
 
         drop(dedup_lock);
 
-        Ok(connection_id)
+        Ok(AcpConnectResult {
+            connection_id,
+            reused: false,
+        })
+    }
+
+    /// Spawn or reuse an ACP connection and return only its id.
+    ///
+    /// Keep this compatibility wrapper for internal callers that own the
+    /// connection lifecycle themselves (automation, work tasks, chat
+    /// channels, and delegation). User-facing `acp_connect` callers should use
+    /// [`Self::spawn_agent_with_result`] so they can preserve owner/viewer
+    /// ownership across clients.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_agent(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        additional_mcp_servers: Vec<McpServer>,
+    ) -> Result<String, AcpError> {
+        self.spawn_agent_with_result(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+            additional_mcp_servers,
+        )
+        .await
+        .map(|result| result.connection_id)
     }
 
     /// Bump `last_activity_at` for a live connection so the idle sweep

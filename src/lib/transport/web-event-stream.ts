@@ -89,9 +89,20 @@ export class WebEventStream implements EventStream {
     options: AttachOptions,
     handlers: AttachHandlers
   ): EventStreamSubscription {
+    // Keep the wire invariant at the last boundary before JSON encoding.
+    // During a rolling upgrade an older caller can pass the detailed
+    // `acp_connect` response object instead of extracting its id. Accept the
+    // known response shapes here so it can never become a map-valued
+    // `connection_id` in an attach frame.
+    const normalizedConnectionId = normalizeConnectionId(connectionId)
+    if (normalizedConnectionId === null) {
+      throw new TypeError(
+        "[WebEventStream] attach requires a non-empty string connection id"
+      )
+    }
     const subscriptionId = randomUUID()
     this.subs.set(subscriptionId, {
-      connectionId,
+      connectionId: normalizedConnectionId,
       lastAppliedSeq: options.sinceSeq,
       handlers,
     })
@@ -190,6 +201,22 @@ export class WebEventStream implements EventStream {
       this.sendAttach(subscriptionId)
     }
   }
+}
+
+function normalizeConnectionId(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value.trim().length > 0 ? value : null
+  }
+  if (!value || typeof value !== "object") return null
+
+  const record = value as Record<string, unknown>
+  const candidate =
+    typeof record.connectionId === "string"
+      ? record.connectionId
+      : typeof record.connection_id === "string"
+        ? record.connection_id
+        : null
+  return candidate && candidate.trim().length > 0 ? candidate : null
 }
 
 function isAttachFrame(frame: unknown): frame is ServerAttachFrame {
