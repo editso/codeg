@@ -3,6 +3,7 @@
 import type {
   AgentType,
   ConversationMcpRef,
+  ConversationProxyMode,
   DraftConversationConfig,
 } from "@/lib/types"
 
@@ -17,6 +18,8 @@ export function emptyDraftConversationConfig(): DraftConversationConfig {
     model_provider_id: null,
     additional_mcp_refs: [],
     session_config_values: {},
+    proxy_mode: "follow_global",
+    proxy_url: null,
   }
 }
 
@@ -41,6 +44,12 @@ function isSessionConfigValues(
   return Object.entries(value).every(
     ([key, item]) => key.length > 0 && typeof item === "string"
   )
+}
+
+function isConversationProxyMode(
+  value: unknown
+): value is ConversationProxyMode {
+  return value === "follow_global" || value === "direct" || value === "custom"
 }
 
 export function loadDraftConversationConfig(
@@ -68,10 +77,21 @@ export function loadDraftConversationConfig(
     if (!isSessionConfigValues(sessionConfigValues)) {
       return emptyDraftConversationConfig()
     }
+    const proxyMode = parsed.proxy_mode ?? "follow_global"
+    const proxyUrl = parsed.proxy_url ?? null
+    if (
+      !isConversationProxyMode(proxyMode) ||
+      !(proxyUrl === null || typeof proxyUrl === "string") ||
+      (proxyMode === "custom" && !proxyUrl?.trim())
+    ) {
+      return emptyDraftConversationConfig()
+    }
     return {
       model_provider_id: providerId,
       additional_mcp_refs: parsed.additional_mcp_refs,
       session_config_values: sessionConfigValues,
+      proxy_mode: proxyMode,
+      proxy_url: proxyMode === "custom" ? proxyUrl : null,
     }
   } catch {
     return emptyDraftConversationConfig()
@@ -101,6 +121,7 @@ export function hasDraftConversationOverrides(
   return (
     config.model_provider_id != null ||
     config.additional_mcp_refs.length > 0 ||
-    Object.keys(config.session_config_values).length > 0
+    Object.keys(config.session_config_values).length > 0 ||
+    config.proxy_mode !== "follow_global"
   )
 }

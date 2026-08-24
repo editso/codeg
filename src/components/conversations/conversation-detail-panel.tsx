@@ -298,6 +298,8 @@ async function persistInitialConversationConfig(
     model_provider_id: initialConfig.draft.model_provider_id,
     additional_mcp_refs: initialConfig.draft.additional_mcp_refs,
     session_config_values: initialConfig.sessionConfigValues,
+    proxy_mode: initialConfig.draft.proxy_mode,
+    proxy_url: initialConfig.draft.proxy_url,
     expected_version: 0,
   })
 }

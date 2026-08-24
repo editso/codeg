@@ -13,6 +13,8 @@ pub struct Model {
     pub additional_mcp_refs_json: String,
     #[sea_orm(column_type = "Text")]
     pub session_config_values_json: String,
+    pub proxy_mode: String,
+    pub proxy_url: Option<String>,
     pub version: i32,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,

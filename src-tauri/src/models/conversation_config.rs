@@ -12,9 +12,44 @@ pub struct ConversationMcpRef {
     pub fingerprint: String,
 }
 
+/// How one conversation resolves network proxy settings for its agent process
+/// and the ACP terminal commands it launches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationProxyMode {
+    /// Inherit the process-wide proxy configured in System Settings (or by the
+    /// host environment when Codeg has no explicit global proxy).
+    #[default]
+    FollowGlobal,
+    /// Explicitly remove inherited proxy variables for this conversation.
+    Direct,
+    /// Override the inherited proxy with `proxy_url` for this conversation.
+    Custom,
+}
+
+impl ConversationProxyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FollowGlobal => "follow_global",
+            Self::Direct => "direct",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "follow_global" => Some(Self::FollowGlobal),
+            "direct" => Some(Self::Direct),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
 /// Persisted, explicit session-level overrides. `model_provider_id: None`
 /// means follow the agent default; MCP refs are additions only — the agent's
-/// own native MCP configuration is left untouched.
+/// own native MCP configuration is left untouched. Proxy fields affect only
+/// the process launched for this conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationConfigInfo {
     pub conversation_id: i32,
@@ -23,6 +58,8 @@ pub struct ConversationConfigInfo {
     /// Values selected from ACP session config selectors (including model and
     /// reasoning controls), keyed by the agent-provided config id.
     pub session_config_values: BTreeMap<String, String>,
+    pub proxy_mode: ConversationProxyMode,
+    pub proxy_url: Option<String>,
     pub version: i32,
     pub updated_at: DateTime<Utc>,
 }
@@ -34,6 +71,11 @@ pub struct ConversationConfigUpdate {
     pub model_provider_id: Option<i32>,
     pub additional_mcp_refs: Vec<ConversationMcpRef>,
     pub session_config_values: BTreeMap<String, String>,
+    /// Missing for an older client preserves the stored proxy choice. New
+    /// clients always send an explicit mode as part of the full replacement.
+    #[serde(default)]
+    pub proxy_mode: Option<ConversationProxyMode>,
+    pub proxy_url: Option<String>,
     pub expected_version: i32,
 }
 
@@ -49,6 +91,10 @@ pub struct DraftConversationConfig {
     /// prompt creates the conversation row. Missing in older local draft blobs.
     #[serde(default)]
     pub session_config_values: BTreeMap<String, String>,
+    /// Missing in drafts written by older frontends follows the global proxy.
+    #[serde(default)]
+    pub proxy_mode: ConversationProxyMode,
+    pub proxy_url: Option<String>,
 }
 
 /// Safe display metadata for a candidate in the unified MCP catalog. The
@@ -81,4 +127,23 @@ pub struct ConversationMcpCatalog {
 pub struct ConversationConfigView {
     pub config: ConversationConfigInfo,
     pub mcp_catalog: ConversationMcpCatalog,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_proxy_update_shape_deserializes_as_preserve_existing() {
+        let update: ConversationConfigUpdate = serde_json::from_value(serde_json::json!({
+            "model_provider_id": null,
+            "additional_mcp_refs": [],
+            "session_config_values": {},
+            "expected_version": 3
+        }))
+        .expect("deserialize legacy conversation config update");
+
+        assert!(update.proxy_mode.is_none());
+        assert!(update.proxy_url.is_none());
+    }
 }

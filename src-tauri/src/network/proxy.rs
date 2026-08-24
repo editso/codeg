@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use sea_orm::DatabaseConnection;
 
 use crate::app_error::AppCommandError;
-use crate::models::SystemProxySettings;
+use crate::models::{ConversationProxyMode, SystemProxySettings};
 
 const PROXY_ENV_KEYS: [&str; 6] = [
     "HTTP_PROXY",
@@ -11,6 +13,91 @@ const PROXY_ENV_KEYS: [&str; 6] = [
     "https_proxy",
     "all_proxy",
 ];
+
+/// Internal launch marker used to distinguish a conversation override from a
+/// similarly named variable in an agent's global environment settings. It is
+/// part of the config fingerprint but removed before the child is spawned.
+const CONVERSATION_PROXY_MARKER_ENV: &str = "CODEG_INTERNAL_CONVERSATION_PROXY_MODE";
+
+pub(crate) fn is_proxy_env_key(key: &str) -> bool {
+    PROXY_ENV_KEYS.contains(&key)
+}
+
+pub(crate) fn has_conversation_proxy_override(env: &BTreeMap<String, String>) -> bool {
+    env.contains_key(CONVERSATION_PROXY_MARKER_ENV)
+}
+
+pub(crate) fn remove_conversation_proxy_marker(env: &mut BTreeMap<String, String>) {
+    env.remove(CONVERSATION_PROXY_MARKER_ENV);
+}
+
+/// Validate and canonicalize the optional URL attached to a conversation
+/// proxy mode. Inactive modes deliberately discard a stale URL so restoring
+/// global defaults cannot leave a hidden credential in the conversation row.
+pub(crate) fn normalize_conversation_proxy(
+    mode: ConversationProxyMode,
+    proxy_url: Option<&str>,
+) -> Result<Option<String>, AppCommandError> {
+    match mode {
+        ConversationProxyMode::FollowGlobal | ConversationProxyMode::Direct => Ok(None),
+        ConversationProxyMode::Custom => {
+            let proxy_url = proxy_url
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppCommandError::configuration_missing(
+                        "Proxy URL is required for a custom conversation proxy",
+                    )
+                })?;
+            normalize_proxy_url(proxy_url).map(Some)
+        }
+    }
+}
+
+/// Apply one conversation's proxy decision to its launch environment.
+///
+/// Follow-global adds nothing, allowing the child to inherit Codeg's process
+/// environment. Direct writes empty sentinels that both ACP and terminal spawn
+/// paths translate to `env_remove`. Custom writes the normalized URL to every
+/// conventional casing/scope so Node, Python, git, and native CLIs agree on the
+/// same endpoint.
+pub(crate) fn apply_conversation_proxy_env(
+    env: &mut BTreeMap<String, String>,
+    mode: ConversationProxyMode,
+    proxy_url: Option<&str>,
+) -> Result<(), AppCommandError> {
+    // Reserve the marker even if an agent's free-form global env happened to
+    // use the same name. Only this validated conversation config may set it.
+    env.remove(CONVERSATION_PROXY_MARKER_ENV);
+    let normalized = normalize_conversation_proxy(mode, proxy_url)?;
+    match mode {
+        ConversationProxyMode::FollowGlobal => {}
+        ConversationProxyMode::Direct => {
+            env.insert(
+                CONVERSATION_PROXY_MARKER_ENV.to_string(),
+                mode.as_str().to_string(),
+            );
+            for key in PROXY_ENV_KEYS {
+                env.insert(key.to_string(), String::new());
+            }
+        }
+        ConversationProxyMode::Custom => {
+            let proxy_url = normalized.ok_or_else(|| {
+                AppCommandError::configuration_missing(
+                    "Proxy URL is required for a custom conversation proxy",
+                )
+            })?;
+            env.insert(
+                CONVERSATION_PROXY_MARKER_ENV.to_string(),
+                mode.as_str().to_string(),
+            );
+            for key in PROXY_ENV_KEYS {
+                env.insert(key.to_string(), proxy_url.clone());
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Canonicalize a user-entered proxy address into a URL that carries an
 /// explicit scheme.
@@ -180,4 +267,50 @@ pub fn current_proxy_env_vars() -> Vec<(String, String)> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_conversation_proxy_is_normalized_and_applied_to_every_key() {
+        let mut env = BTreeMap::new();
+
+        apply_conversation_proxy_env(
+            &mut env,
+            ConversationProxyMode::Custom,
+            Some(" 127.0.0.1:7890 "),
+        )
+        .expect("valid custom proxy");
+
+        assert!(has_conversation_proxy_override(&env));
+        for key in PROXY_ENV_KEYS {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("http://127.0.0.1:7890")
+            );
+        }
+    }
+
+    #[test]
+    fn direct_conversation_proxy_clears_every_inherited_key() {
+        let mut env = BTreeMap::new();
+
+        apply_conversation_proxy_env(&mut env, ConversationProxyMode::Direct, None)
+            .expect("direct mode needs no URL");
+
+        assert!(has_conversation_proxy_override(&env));
+        for key in PROXY_ENV_KEYS {
+            assert_eq!(env.get(key).map(String::as_str), Some(""));
+        }
+    }
+
+    #[test]
+    fn custom_conversation_proxy_requires_an_address() {
+        assert!(normalize_conversation_proxy(ConversationProxyMode::Custom, None).is_err());
+        assert!(
+            normalize_conversation_proxy(ConversationProxyMode::Custom, Some("  ")).is_err()
+        );
+    }
 }

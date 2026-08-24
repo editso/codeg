@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   Check,
@@ -12,10 +12,13 @@ import {
   ServerCog,
   SlidersHorizontal,
   Sparkles,
+  Wifi,
+  WifiOff,
   type LucideIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import {
   Popover,
   PopoverContent,
@@ -45,11 +48,14 @@ import {
   type ConversationMcpCatalog,
   type ConversationMcpCandidate,
   type ConversationMcpRef,
+  type ConversationProxyMode,
   type DraftConversationConfig,
   type ModelProviderInfo,
 } from "@/lib/types"
 
-type Panel = "overview" | "provider" | "mcp"
+type Panel = "overview" | "provider" | "mcp" | "proxy"
+
+const PROXY_EXAMPLE = "http://127.0.0.1:7890"
 
 interface ConversationConfigPopoverProps {
   conversationId: number | null | undefined
@@ -60,9 +66,9 @@ interface ConversationConfigPopoverProps {
    *  session after a Provider switch and obtain that Provider's real selector
    *  defaults. */
   connectionKey?: string | null
-  /** Provider and MCP overrides apply only when a session starts. Lock this
-   *  surface while a turn is running so the saved launch config never implies
-   *  it changed the already-running agent process. */
+  /** Provider, MCP, and proxy overrides apply only when a session starts. Lock
+   *  this surface while a turn is running so the saved launch config never
+   *  implies it changed the already-running agent process. */
   isPrompting?: boolean
 }
 
@@ -197,8 +203,9 @@ function McpListItem({
 /**
  * Session launch overrides. Persisted conversations save them in the database;
  * a new-conversation tab keeps them in its draft until first send. The surface
- * never edits an agent's native config: a provider becomes a one-launch
- * environment override and MCP selections become ACP session additions.
+ * never edits an agent's native config: provider and proxy values become
+ * one-launch environment overrides, while MCP selections become ACP session
+ * additions.
  */
 export function ConversationConfigPopover({
   conversationId,
@@ -221,6 +228,9 @@ export function ConversationConfigPopover({
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [proxyUrlDraft, setProxyUrlDraft] = useState("")
+  const [proxyUrlError, setProxyUrlError] = useState<string | null>(null)
+  const proxyInputId = useId()
 
   const load = useCallback(async () => {
     if (conversationId == null && agentType == null) return
@@ -299,6 +309,13 @@ export function ConversationConfigPopover({
     conversationId == null
       ? (draftConfig ?? null)
       : (configView?.config ?? null)
+
+  useEffect(() => {
+    if (panel !== "proxy") return
+    setProxyUrlDraft(config?.proxy_url ?? "")
+    setProxyUrlError(null)
+  }, [config?.proxy_url, panel])
+
   const catalog =
     conversationId == null ? draftCatalog : (configView?.mcp_catalog ?? null)
   const selectedRefKeys = useMemo(
@@ -309,19 +326,31 @@ export function ConversationConfigPopover({
     (item) => item.id === config?.model_provider_id
   )
   const additionalMcpCount = config?.additional_mcp_refs.length ?? 0
+  const proxyMode = config?.proxy_mode ?? "follow_global"
   const overrideCount =
-    Number(config?.model_provider_id != null) + additionalMcpCount
+    Number(config?.model_provider_id != null) +
+    additionalMcpCount +
+    Number(proxyMode !== "follow_global")
 
   const save = useCallback(
     async (
       nextProviderId: number | null,
-      nextMcpRefs: ConversationMcpRef[]
+      nextMcpRefs: ConversationMcpRef[],
+      nextProxyMode: ConversationProxyMode,
+      nextProxyUrl: string | null
     ) => {
       if (isPrompting || config == null) return
       const providerChanged = nextProviderId !== config.model_provider_id
+      const normalizedNextProxyUrl =
+        nextProxyMode === "custom" ? nextProxyUrl?.trim() || null : null
+      const proxyChanged =
+        nextProxyMode !== config.proxy_mode ||
+        normalizedNextProxyUrl !== config.proxy_url
       const requiresDraftRestart = conversationId == null
       const restartConnectionKey =
-        providerChanged || requiresDraftRestart ? connectionKey : null
+        providerChanged || proxyChanged || requiresDraftRestart
+          ? connectionKey
+          : null
       if (restartConnectionKey == null && requiresDraftRestart) {
         setError(
           "The conversation connection is unavailable, so the draft configuration cannot be applied."
@@ -349,6 +378,8 @@ export function ConversationConfigPopover({
                 : preserveNonModelSessionConfigValues(
                     config.session_config_values
                   ),
+            proxy_mode: nextProxyMode,
+            proxy_url: normalizedNextProxyUrl,
           }
           onDraftConfigChange(nextDraftConfig)
           const reconnected = await reapplyConfig(
@@ -378,9 +409,12 @@ export function ConversationConfigPopover({
               : preserveNonModelSessionConfigValues(
                   persistedConfig.session_config_values
                 ),
+          proxy_mode: nextProxyMode,
+          proxy_url: normalizedNextProxyUrl,
           expected_version: persistedConfig.version,
         })
         setConfigView(nextView)
+        setProxyUrlDraft(nextView.config.proxy_url ?? "")
         if (restartConnectionKey != null) {
           // Provider credentials and model defaults are process-start inputs.
           // The session is idle here (the trigger is frozen while prompting).
@@ -393,7 +427,7 @@ export function ConversationConfigPopover({
           const reconnected = await restart(restartConnectionKey)
           if (!reconnected) {
             throw new Error(
-              "The provider was saved, but the current conversation could not be refreshed."
+              "The conversation configuration was saved, but the current conversation could not be refreshed."
             )
           }
           setOpen(false)
@@ -434,7 +468,12 @@ export function ConversationConfigPopover({
             { id: candidate.id, fingerprint: candidate.fingerprint },
           ]
         : config.additional_mcp_refs.filter((ref) => refKey(ref) !== key)
-      void save(config.model_provider_id, nextRefs)
+      void save(
+        config.model_provider_id,
+        nextRefs,
+        config.proxy_mode,
+        config.proxy_url
+      )
     },
     [config, isPrompting, save]
   )
@@ -448,7 +487,14 @@ export function ConversationConfigPopover({
         type="button"
         aria-current={selected ? "true" : undefined}
         disabled={isLocked || config == null}
-        onClick={() => void save(null, config?.additional_mcp_refs ?? [])}
+        onClick={() =>
+          void save(
+            null,
+            config?.additional_mcp_refs ?? [],
+            config?.proxy_mode ?? "follow_global",
+            config?.proxy_url ?? null
+          )
+        }
         className={cn(
           "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
           selected
@@ -501,7 +547,12 @@ export function ConversationConfigPopover({
                     aria-current={selected ? "true" : undefined}
                     disabled={isLocked || config == null}
                     onClick={() =>
-                      void save(item.id, config?.additional_mcp_refs ?? [])
+                      void save(
+                        item.id,
+                        config?.additional_mcp_refs ?? [],
+                        config?.proxy_mode ?? "follow_global",
+                        config?.proxy_url ?? null
+                      )
                     }
                     className={cn(
                       "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/65 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
@@ -593,10 +644,182 @@ export function ConversationConfigPopover({
       )
     }
 
+    if (panel === "proxy") {
+      const selectedMode = config?.proxy_mode ?? "follow_global"
+      const selectProxyMode = (
+        mode: ConversationProxyMode,
+        proxyUrl: string | null
+      ) => {
+        if (config == null) return
+        void save(
+          config.model_provider_id,
+          config.additional_mcp_refs,
+          mode,
+          proxyUrl
+        )
+      }
+
+      return (
+        <>
+          <DetailHeader
+            title={t("conversationConfigProxy")}
+            onBack={() => setPanel("overview")}
+          />
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
+            <button
+              type="button"
+              aria-current={
+                selectedMode === "follow_global" ? "true" : undefined
+              }
+              disabled={isLocked || config == null}
+              onClick={() => selectProxyMode("follow_global", null)}
+              className={cn(
+                "flex w-full cursor-pointer items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                selectedMode === "follow_global"
+                  ? "border-primary/30 bg-primary/7 text-foreground"
+                  : "border-transparent bg-muted/50 hover:bg-muted",
+                (isLocked || config == null) && "cursor-not-allowed opacity-60"
+              )}
+            >
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/75 text-muted-foreground">
+                <Globe2 className="size-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-medium">
+                  {t("conversationConfigFollowGlobal")}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+                  {t("conversationConfigFollowGlobalDescription")}
+                </span>
+              </span>
+              {selectedMode === "follow_global" ? (
+                <Check className="size-3.5 shrink-0 text-primary" />
+              ) : null}
+            </button>
+
+            <button
+              type="button"
+              aria-current={selectedMode === "direct" ? "true" : undefined}
+              disabled={isLocked || config == null}
+              onClick={() => selectProxyMode("direct", null)}
+              className={cn(
+                "flex w-full cursor-pointer items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                selectedMode === "direct"
+                  ? "border-primary/30 bg-primary/7 text-foreground"
+                  : "border-transparent bg-muted/50 hover:bg-muted",
+                (isLocked || config == null) && "cursor-not-allowed opacity-60"
+              )}
+            >
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/75 text-muted-foreground">
+                <WifiOff className="size-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-medium">
+                  {t("conversationConfigProxyDirect")}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+                  {t("conversationConfigProxyDirectDescription")}
+                </span>
+              </span>
+              {selectedMode === "direct" ? (
+                <Check className="size-3.5 shrink-0 text-primary" />
+              ) : null}
+            </button>
+
+            <form
+              className={cn(
+                "mt-1 space-y-2 rounded-lg border px-2.5 py-2.5",
+                selectedMode === "custom"
+                  ? "border-primary/30 bg-primary/7"
+                  : "border-border bg-muted/25"
+              )}
+              onSubmit={(event) => {
+                event.preventDefault()
+                const proxyUrl = proxyUrlDraft.trim()
+                if (!proxyUrl) {
+                  setProxyUrlError(t("conversationConfigProxyRequired"))
+                  return
+                }
+                setProxyUrlError(null)
+                selectProxyMode("custom", proxyUrl)
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/75 text-muted-foreground">
+                  <Wifi className="size-3.5" />
+                </span>
+                <label
+                  htmlFor={proxyInputId}
+                  className="min-w-0 flex-1 text-xs font-medium"
+                >
+                  {t("conversationConfigProxyCustom")}
+                </label>
+                {selectedMode === "custom" ? (
+                  <Check className="size-3.5 shrink-0 text-primary" />
+                ) : null}
+              </div>
+              <Input
+                id={proxyInputId}
+                value={proxyUrlDraft}
+                disabled={isLocked || config == null}
+                onChange={(event) => {
+                  setProxyUrlDraft(event.target.value)
+                  if (event.target.value.trim()) setProxyUrlError(null)
+                }}
+                placeholder={PROXY_EXAMPLE}
+                autoCapitalize="none"
+                autoCorrect="off"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={proxyUrlError ? true : undefined}
+                aria-describedby={`${proxyInputId}-hint${
+                  proxyUrlError ? ` ${proxyInputId}-error` : ""
+                }`}
+                className="h-8 text-xs"
+              />
+              {proxyUrlError ? (
+                <p
+                  id={`${proxyInputId}-error`}
+                  className="text-[11px] text-destructive"
+                >
+                  {proxyUrlError}
+                </p>
+              ) : null}
+              <p
+                id={`${proxyInputId}-hint`}
+                className="text-[11px] leading-snug text-muted-foreground"
+              >
+                {t("conversationConfigProxyHint", {
+                  example: PROXY_EXAMPLE,
+                })}
+              </p>
+              <Button
+                type="submit"
+                size="sm"
+                className="h-8 w-full cursor-pointer text-xs"
+                disabled={isLocked || config == null}
+              >
+                {saving ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : null}
+                {t("conversationConfigProxyApply")}
+              </Button>
+            </form>
+          </div>
+        </>
+      )
+    }
+
     const providerLabel =
       config?.model_provider_id == null
         ? t("conversationConfigFollowGlobal")
         : (provider?.name ?? t("conversationConfigProviderUnavailable"))
+    const proxyLabel =
+      proxyMode === "follow_global"
+        ? t("conversationConfigFollowGlobal")
+        : proxyMode === "direct"
+          ? t("conversationConfigProxyDirect")
+          : (config?.proxy_url ?? t("conversationConfigProxyCustom"))
 
     return (
       <>
@@ -617,7 +840,7 @@ export function ConversationConfigPopover({
             variant="ghost"
             size="icon-xs"
             disabled={isLocked || config == null || overrideCount === 0}
-            onClick={() => void save(null, [])}
+            onClick={() => void save(null, [], "follow_global", null)}
             title={t("conversationConfigRestoreGlobal")}
             aria-label={t("conversationConfigRestoreGlobal")}
           >
@@ -651,6 +874,13 @@ export function ConversationConfigPopover({
                 }
                 overridden={additionalMcpCount > 0}
                 onClick={() => setPanel("mcp")}
+              />
+              <OverviewRow
+                icon={Wifi}
+                label={t("conversationConfigProxy")}
+                value={proxyLabel}
+                overridden={proxyMode !== "follow_global"}
+                onClick={() => setPanel("proxy")}
               />
             </>
           )}

@@ -30,7 +30,7 @@ pub use conversation::{
 pub use conversation_config::{
     ConversationConfigInfo, ConversationConfigUpdate, ConversationConfigView,
     ConversationMcpCandidate, ConversationMcpCatalog, ConversationMcpRef,
-    DraftConversationConfig,
+    ConversationProxyMode, DraftConversationConfig,
 };
 pub use folder::{
     FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab, OpenedTabsSnapshot,

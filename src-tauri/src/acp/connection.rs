@@ -61,6 +61,14 @@ fn merge_agent_env(
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
+    merge_agent_env_with_proxy_env(env, runtime_env, proxy::current_proxy_env_vars())
+}
+
+fn merge_agent_env_with_proxy_env(
+    env: &[(&'static str, &'static str)],
+    runtime_env: &BTreeMap<String, String>,
+    process_proxy_env: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
     // Env var order is not semantically meaningful; use map overwrite semantics
     // to keep precedence while avoiding repeated O(n) scans.
     let mut merged = BTreeMap::<String, String>::new();
@@ -77,9 +85,23 @@ fn merge_agent_env(
         merged.insert(key.clone(), value.clone());
     }
 
-    for (key, value) in proxy::current_proxy_env_vars() {
+    for (key, value) in process_proxy_env {
         merged.insert(key, value);
     }
+
+    // The process-wide proxy is the inherited baseline, but an explicit
+    // conversation proxy is more specific. Apply just those keys again after
+    // the global merge so one conversation can use a different proxy — or an
+    // empty value to remove the inherited proxy — without changing precedence
+    // for agent-level environment variables or unrelated runtime values.
+    if proxy::has_conversation_proxy_override(runtime_env) {
+        for (key, value) in runtime_env {
+            if proxy::is_proxy_env_key(key) {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    proxy::remove_conversation_proxy_marker(&mut merged);
 
     // Ensure agent-invoked `officecli …` (from an enabled office skill) resolves
     // even when codeg installed the binary outside the user's shell PATH — the
@@ -1931,15 +1953,20 @@ pub async fn spawn_agent_connection(
     // per-agent `runtime_env`, which does not survive into `run_connection`.
     let host_tools = HostToolsPolicy::from_env(&runtime_env);
 
-    // Forward only the codeg git credential helper keys into the terminal
-    // runtime — not the agent's API tokens or model provider credentials.
-    // This makes `git fetch`/`git push` issued through the ACP
-    // `terminal/create` tool authenticate via the same helper path the
-    // agent process uses, while keeping unrelated secrets scoped to the
-    // agent and out of arbitrary shell commands it runs.
+    // Forward only the codeg git credential helper keys and the conversation's
+    // explicit proxy override into the terminal runtime — not the agent's API
+    // tokens or model provider credentials. ACP terminal commands are spawned
+    // by Codeg rather than as children of the agent, so without copying these
+    // proxy keys they would silently use the global route while the agent
+    // process used the conversation route.
+    let has_conversation_proxy_override =
+        proxy::has_conversation_proxy_override(&runtime_env);
     let mut terminal_base_env: BTreeMap<String, String> = runtime_env
         .iter()
-        .filter(|(k, _)| k.starts_with("GIT_CONFIG_"))
+        .filter(|(k, _)| {
+            k.starts_with("GIT_CONFIG_")
+                || (has_conversation_proxy_override && proxy::is_proxy_env_key(k))
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     // Also surface a codeg-installed OfficeCLI on the terminal's PATH: agents run
@@ -12637,6 +12664,59 @@ mod tests {
             SessionConfigKindInfo::Select(sel) => sel,
             other => panic!("expected a select config option, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn conversation_proxy_env_overrides_the_process_proxy_baseline() {
+        let process_proxy = vec![(
+            "HTTPS_PROXY".to_string(),
+            "http://global.example:8080".to_string(),
+        )];
+        let mut runtime_env = BTreeMap::new();
+        proxy::apply_conversation_proxy_env(
+            &mut runtime_env,
+            crate::models::ConversationProxyMode::Custom,
+            Some("socks5://session.example:1080"),
+        )
+        .expect("valid session proxy");
+
+        let merged = merge_agent_env_with_proxy_env(&[], &runtime_env, process_proxy.clone());
+        let merged = BTreeMap::from_iter(merged);
+        assert_eq!(
+            merged.get("HTTPS_PROXY").map(String::as_str),
+            Some("socks5://session.example:1080")
+        );
+
+        proxy::apply_conversation_proxy_env(
+            &mut runtime_env,
+            crate::models::ConversationProxyMode::Direct,
+            None,
+        )
+        .expect("direct mode");
+        let merged = merge_agent_env_with_proxy_env(&[], &runtime_env, process_proxy);
+        let merged = BTreeMap::from_iter(merged);
+        assert_eq!(merged.get("HTTPS_PROXY").map(String::as_str), Some(""));
+        assert!(!merged.contains_key("CODEG_INTERNAL_CONVERSATION_PROXY_MODE"));
+    }
+
+    #[test]
+    fn follow_global_keeps_process_proxy_precedence_over_agent_env() {
+        let process_proxy = vec![(
+            "HTTPS_PROXY".to_string(),
+            "http://global.example:8080".to_string(),
+        )];
+        let mut runtime_env = BTreeMap::new();
+        runtime_env.insert(
+            "HTTPS_PROXY".to_string(),
+            "http://agent-env.example:8080".to_string(),
+        );
+
+        let merged = merge_agent_env_with_proxy_env(&[], &runtime_env, process_proxy);
+        let merged = BTreeMap::from_iter(merged);
+        assert_eq!(
+            merged.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://global.example:8080")
+        );
     }
 
     // ── PermissionQueue (#442) ──────────────────────────────────────────────

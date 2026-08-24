@@ -13,6 +13,7 @@ use crate::db::service::{
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
+use crate::network::proxy;
 use crate::parsers::acp_native::AcpNativeParser;
 use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
@@ -201,11 +202,20 @@ fn conversation_config_info_from_row(
         ))
         .with_detail(error.to_string())
     })?;
+    let proxy_mode = ConversationProxyMode::from_stored(&row.proxy_mode).ok_or_else(|| {
+        AppCommandError::configuration_invalid(format!(
+            "conversation config for {} has invalid proxy mode",
+            row.conversation_id
+        ))
+        .with_detail(row.proxy_mode.clone())
+    })?;
     Ok(ConversationConfigInfo {
         conversation_id: row.conversation_id,
         model_provider_id: row.model_provider_id,
         additional_mcp_refs,
         session_config_values,
+        proxy_mode,
+        proxy_url: row.proxy_url,
         version: row.version,
         updated_at: row.updated_at,
     })
@@ -237,6 +247,8 @@ async fn conversation_config_info_for(
             model_provider_id: None,
             additional_mcp_refs: Vec::new(),
             session_config_values: BTreeMap::new(),
+            proxy_mode: ConversationProxyMode::FollowGlobal,
+            proxy_url: None,
             version: 0,
             updated_at: conversation.updated_at,
         },
@@ -326,6 +338,19 @@ pub async fn update_conversation_config_core(
         &update.additional_mcp_refs,
     )?;
 
+    // A rolling-upgrade browser may still send the pre-proxy update shape.
+    // Preserve both proxy fields when the mode is absent instead of silently
+    // resetting a persisted conversation override to follow-global.
+    let (proxy_mode, proxy_url) = if let Some(proxy_mode) = update.proxy_mode {
+        (
+            proxy_mode,
+            proxy::normalize_conversation_proxy(proxy_mode, update.proxy_url.as_deref())?,
+        )
+    } else {
+        let current = conversation_config_info_for(conn, &conversation).await?;
+        (current.proxy_mode, current.proxy_url)
+    };
+
     let additional_mcp_refs_json = serde_json::to_string(&update.additional_mcp_refs).map_err(
         |error| {
             AppCommandError::configuration_invalid("failed to serialize conversation MCP references")
@@ -346,6 +371,8 @@ pub async fn update_conversation_config_core(
         update.model_provider_id,
         additional_mcp_refs_json,
         session_config_values_json,
+        proxy_mode.as_str().to_string(),
+        proxy_url,
         update.expected_version,
     )
     .await
@@ -391,6 +418,8 @@ pub async fn update_conversation_session_config_value_core(
             model_provider_id: current.config.model_provider_id,
             additional_mcp_refs: current.config.additional_mcp_refs,
             session_config_values,
+            proxy_mode: Some(current.config.proxy_mode),
+            proxy_url: current.config.proxy_url,
             expected_version: current.config.version,
         },
     )

@@ -516,7 +516,11 @@ impl TerminalRuntime {
         // codeg credential helper), then layer the agent's request env on top
         // so agents can still override or scrub specific keys.
         for (key, value) in &self.base_env {
-            command.env(key, value);
+            if value.is_empty() && crate::network::proxy::is_proxy_env_key(key) {
+                command.env_remove(key);
+            } else {
+                command.env(key, value);
+            }
         }
         for env_var in &request.env {
             command.env(&env_var.name, &env_var.value);
@@ -962,6 +966,27 @@ fn decode_available_utf8(pending: &mut Vec<u8>) -> String {
 #[cfg(test)]
 mod shell_config_tests {
     use super::*;
+
+    #[test]
+    fn blank_base_proxy_removes_the_inherited_variable() {
+        let mut base_env = BTreeMap::new();
+        base_env.insert("HTTPS_PROXY".to_string(), String::new());
+        let runtime = TerminalRuntime::with_base_env(base_env);
+        let request = CreateTerminalRequest::new(
+            sacp::schema::SessionId::new("proxy-test".to_string()),
+            "ignored".to_string(),
+        );
+        let mut command = tokio::process::Command::new("ignored");
+
+        runtime.configure_command(&mut command, &request);
+
+        let proxy_entry = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("HTTPS_PROXY"))
+            .expect("proxy env operation");
+        assert!(proxy_entry.1.is_none(), "blank proxy must use env_remove");
+    }
 
     #[tokio::test]
     async fn default_shell_config_hot_swaps() {

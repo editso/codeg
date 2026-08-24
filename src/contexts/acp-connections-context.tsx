@@ -354,6 +354,7 @@ function sameDraftConfig(
 ): boolean {
   if (a == null || b == null) return a == null && b == null
   if (a.model_provider_id !== b.model_provider_id) return false
+  if (a.proxy_mode !== b.proxy_mode || a.proxy_url !== b.proxy_url) return false
   if (a.additional_mcp_refs.length !== b.additional_mcp_refs.length)
     return false
   const mcpRefsEqual = a.additional_mcp_refs.every((ref, index) => {

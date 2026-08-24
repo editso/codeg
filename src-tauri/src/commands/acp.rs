@@ -9824,6 +9824,11 @@ pub(crate) async fn build_session_runtime_env(
         runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
     }
 
+    // This key is reserved for the validated per-conversation proxy layer
+    // below. A free-form agent environment must not be able to impersonate a
+    // conversation override and change proxy precedence.
+    crate::network::proxy::remove_conversation_proxy_marker(&mut runtime_env);
+
     Ok(runtime_env)
 }
 
@@ -9857,32 +9862,41 @@ pub(crate) async fn build_session_runtime_env_for_conversation(
         ));
     }
 
-    let (model_provider_id, additional_mcp_refs, session_config_values, config_source) =
-        if let Some(conversation_id) = conversation_id {
-            let config =
-                crate::commands::conversations::get_conversation_config_for_agent_core(
-                    &db.conn,
-                    conversation_id,
-                    agent_type,
-                )
-                .await
-                .map_err(|error| AcpError::protocol(error.to_string()))?;
-            (
-                config.model_provider_id,
-                config.additional_mcp_refs,
-                config.session_config_values,
-                "persisted",
-            )
-        } else if let Some(config) = draft_config {
-            (
-                config.model_provider_id,
-                config.additional_mcp_refs.clone(),
-                config.session_config_values.clone(),
-                "draft",
-            )
-        } else {
-            return Ok((runtime_env, Vec::new(), BTreeMap::new(), false));
-        };
+    let (
+        model_provider_id,
+        additional_mcp_refs,
+        session_config_values,
+        proxy_mode,
+        proxy_url,
+        config_source,
+    ) = if let Some(conversation_id) = conversation_id {
+        let config = crate::commands::conversations::get_conversation_config_for_agent_core(
+            &db.conn,
+            conversation_id,
+            agent_type,
+        )
+        .await
+        .map_err(|error| AcpError::protocol(error.to_string()))?;
+        (
+            config.model_provider_id,
+            config.additional_mcp_refs,
+            config.session_config_values,
+            config.proxy_mode,
+            config.proxy_url,
+            "persisted",
+        )
+    } else if let Some(config) = draft_config {
+        (
+            config.model_provider_id,
+            config.additional_mcp_refs.clone(),
+            config.session_config_values.clone(),
+            config.proxy_mode,
+            config.proxy_url.clone(),
+            "draft",
+        )
+    } else {
+        return Ok((runtime_env, Vec::new(), BTreeMap::new(), false));
+    };
 
     tracing::info!(
         conversation_id = ?conversation_id,
@@ -9892,6 +9906,7 @@ pub(crate) async fn build_session_runtime_env_for_conversation(
         provider_id = ?model_provider_id,
         additional_mcp_refs = additional_mcp_refs.len(),
         session_selector_values = session_config_values.len(),
+        proxy_mode = proxy_mode.as_str(),
         "resolved conversation ACP launch configuration"
     );
 
@@ -9900,6 +9915,12 @@ pub(crate) async fn build_session_runtime_env_for_conversation(
         apply_model_provider_override_env(agent_type, provider_id, &mut runtime_env, &db.conn)
             .await?;
     }
+    crate::network::proxy::apply_conversation_proxy_env(
+        &mut runtime_env,
+        proxy_mode,
+        proxy_url.as_deref(),
+    )
+    .map_err(|error| AcpError::protocol(error.to_string()))?;
 
     let entries = crate::commands::mcp::resolve_conversation_mcp_refs(
         agent_type,
