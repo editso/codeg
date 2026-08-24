@@ -96,6 +96,13 @@ export async function getConversation(
   return invoke("get_conversation", { agentType, conversationId })
 }
 
+export async function getSubagentConversation(
+  agentType: AgentType,
+  conversationId: string
+): Promise<ConversationDetail> {
+  return invoke("get_subagent_conversation", { agentType, conversationId })
+}
+
 export async function listFolders(): Promise<FolderInfo[]> {
   return invoke("list_folders")
 }

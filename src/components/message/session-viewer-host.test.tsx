@@ -1,6 +1,6 @@
 /**
- * The invariant the host exists for: a "查看会话" drawer must outlive the card
- * that opened it.
+ * The invariant the host exists for: a delegated-session drawer must outlive
+ * the card that opened it.
  *
  * The cards live in virtua's rows, so scrolling far enough unmounts them. When
  * each card owned its own `open` state and rendered its own drawer, that
@@ -14,9 +14,9 @@ import { describe, expect, it, vi } from "vitest"
 
 import { SessionViewerHost, useSessionViewerHost } from "./session-viewer-host"
 
-// Both viewers reach the runtime provider tree / the conversation API. Stub
-// them to sentinels that report what they were pointed at — this file is about
-// ownership and lifetime, not about what a transcript renders.
+// The delegated viewer reaches the runtime provider tree / the conversation
+// API. Stub it to a sentinel that reports what it was pointed at — this file is
+// about ownership and lifetime, not about what a transcript renders.
 vi.mock("./sub-agent-session-dialog", () => ({
   SubAgentSessionDialog: ({
     open,
@@ -32,25 +32,6 @@ vi.mock("./sub-agent-session-dialog", () => ({
       />
     ) : null,
 }))
-vi.mock("./subagent-session-dialog", () => ({
-  SubagentSessionDialog: ({
-    open,
-    sessionId,
-    live,
-  }: {
-    open: boolean
-    sessionId: string
-    live: boolean
-  }) =>
-    open ? (
-      <div
-        data-testid="agent-session-viewer"
-        data-session-id={sessionId}
-        data-live={String(live)}
-      />
-    ) : null,
-}))
-
 // The delegation branch re-derives its model from the raw source; drive that
 // resolution directly rather than booting the connection/binding stores.
 vi.mock("@/hooks/use-delegation-card-model", () => ({
@@ -128,43 +109,6 @@ describe("SessionViewerHost", () => {
     )
   })
 
-  it("hosts the standalone agent-session viewer too", () => {
-    function GrokOpener() {
-      const host = useSessionViewerHost()
-      return (
-        <button
-          type="button"
-          onClick={() =>
-            host?.open({
-              kind: "agentSession",
-              sessionId: "sess-7",
-              agentType: "grok",
-              live: true,
-            })
-          }
-        >
-          open grok
-        </button>
-      )
-    }
-
-    render(
-      <Harness>
-        <GrokOpener />
-      </Harness>
-    )
-    act(() => {
-      screen.getByText("open grok").click()
-    })
-    act(() => {
-      screen.getByText("scroll away").click()
-    })
-
-    const viewer = screen.getByTestId("agent-session-viewer")
-    expect(viewer).toHaveAttribute("data-session-id", "sess-7")
-    expect(viewer).toHaveAttribute("data-live", "true")
-  })
-
   it("renders nothing until something asks for a viewer", () => {
     render(
       <Harness>
@@ -172,10 +116,9 @@ describe("SessionViewerHost", () => {
       </Harness>
     )
     expect(screen.queryByTestId("delegation-viewer")).not.toBeInTheDocument()
-    expect(screen.queryByTestId("agent-session-viewer")).not.toBeInTheDocument()
   })
 
-  it("reports no host outside a provider, so cards keep their own drawer", () => {
+  it("reports no host outside a provider", () => {
     function Probe() {
       const host = useSessionViewerHost()
       return <span data-testid="probe">{host === null ? "none" : "host"}</span>

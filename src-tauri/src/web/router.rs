@@ -50,6 +50,10 @@ pub fn build_router(
             post(handlers::conversations::get_conversation),
         )
         .route(
+            "/get_subagent_conversation",
+            post(handlers::conversations::get_subagent_conversation),
+        )
+        .route(
             "/list_all_conversations",
             post(handlers::conversations::list_all_conversations),
         )

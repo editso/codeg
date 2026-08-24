@@ -50,6 +50,7 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
+import { useSubagentTranscriptAncestry } from "./subagent-transcript-context"
 import { AskQuestionResultCard } from "./ask-question-result-card"
 import { CodegMcpToolCard } from "./codeg-mcp-tool-card"
 import { CollabAgentCard } from "./collab-agent-card"
@@ -86,7 +87,9 @@ import { PlanModeCard } from "./plan-mode-card"
 import { PlainTextWithBadges } from "./plain-text-with-badges"
 import {
   AssistantActivityGroup,
+  AssistantActivityRows,
   type AssistantActivityItem,
+  type ActivityItemRenderOptions,
 } from "./assistant-activity-group"
 import { describeToolActivity } from "./tool-activity-presentation"
 import { shouldUseLargeToolOutputViewer } from "./large-tool-output"
@@ -135,6 +138,36 @@ export function extractJsonField(input: string, key: string): string | null {
   const re = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`)
   const m = input.match(re)
   return m?.[1]?.replace(/\\"/g, '"').replace(/\\\\/g, "\\") ?? null
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+/**
+ * Keep the parent activity header and its Agent picker readable while the
+ * child card is still streaming. This intentionally mirrors the Agent card's
+ * title fallback without importing that component and creating a render
+ * dependency cycle.
+ */
+function activityAgentLabel(
+  part: Extract<AdaptedContentPart, { type: "tool-call" }>,
+  fallback: string
+): string {
+  const parsed = part.input ? tryParseJson(part.input) : null
+  const agentType =
+    asText(parsed?.subagent_type) ??
+    asText(parsed?.agent_type) ??
+    asText(parsed?.subagentType) ??
+    asText((parsed?.subagentType as { case?: unknown } | undefined)?.case) ??
+    (part.input ? extractJsonField(part.input, "subagent_type") : null) ??
+    (part.input ? extractJsonField(part.input, "agent_type") : null)
+  const description =
+    asText(parsed?.description) ??
+    (part.input ? extractJsonField(part.input, "description") : null)
+
+  if (agentType) return description ? `${agentType}: ${description}` : agentType
+  return description || fallback
 }
 
 function asObjectLike(value: unknown): Record<string, unknown> | null {
@@ -3117,16 +3150,48 @@ function activityMessageItemsFromText(
   }))
 }
 
+function isRecursiveNativeAgentLaunch(
+  part: AdaptedContentPart,
+  ancestorSessionIds: ReadonlySet<string>
+): boolean {
+  if (
+    ancestorSessionIds.size === 0 ||
+    part.type !== "tool-call" ||
+    normalizeToolName(part.toolName).toLowerCase() !== "agent" ||
+    !part.input
+  ) {
+    return false
+  }
+
+  const input = tryParseJson(part.input)
+  const sessionId = input?.agent_id
+  return (
+    input?.__codegCodexSubagentLaunch === true &&
+    typeof sessionId === "string" &&
+    ancestorSessionIds.has(sessionId)
+  )
+}
+
 function activityItemsFromPart(
   part: AdaptedContentPart,
-  index: number
+  index: number,
+  ancestorSessionIds: ReadonlySet<string>
 ): AssistantActivityItem[] | null {
+  if (isRecursiveNativeAgentLaunch(part, ancestorSessionIds)) {
+    return null
+  }
+
   if (part.type === "reasoning") {
     return activityReasoningItemsFromPart(part, index)
   }
 
   if (part.type === "tool-group" && part.items.length > 0) {
-    return part.items.map((item, itemIndex) => ({
+    const items = part.items.filter(
+      (item) => !isRecursiveNativeAgentLaunch(item, ancestorSessionIds)
+    )
+    if (items.length === 0) return null
+
+    return items.map((item, itemIndex) => ({
       id: `tool-${index}-${item.toolCallId ?? itemIndex}-${itemIndex}`,
       type: "tool-call" as const,
       part: item,
@@ -3211,10 +3276,11 @@ function activityItemsFromPart(
  * a nested `N tools` chip, owns the disclosure.
  */
 function buildAssistantContentBlocks(
-  parts: AdaptedContentPart[]
+  parts: AdaptedContentPart[],
+  ancestorSessionIds: ReadonlySet<string>
 ): AssistantContentBlock[] {
   const operationalItems = parts.map((part, index) =>
-    activityItemsFromPart(part, index)
+    activityItemsFromPart(part, index, ancestorSessionIds)
   )
   const lastOperationalIndex = operationalItems.reduce(
     (lastIndex, items, index) => (items ? index : lastIndex),
@@ -3293,6 +3359,74 @@ function buildAssistantContentBlocks(
   flushFinalText()
 
   return result
+}
+
+/**
+ * A standalone child rollout belongs below its Agent activity node, not in a
+ * second message surface. Unlike the parent reply projection, all child text
+ * stays in the activity rail — a child has no separate "final answer" bubble
+ * in its parent's thread.
+ */
+function buildInlineActivityBlocks(
+  parts: AdaptedContentPart[],
+  ancestorSessionIds: ReadonlySet<string>
+): AssistantContentBlock[] {
+  const blocks: AssistantContentBlock[] = []
+  let items: AssistantActivityItem[] = []
+  let firstItemIndex: number | null = null
+
+  const flushItems = () => {
+    if (items.length === 0 || firstItemIndex == null) return
+    blocks.push({
+      id: `inline-activity-${firstItemIndex}`,
+      type: "activity",
+      items,
+    })
+    items = []
+    firstItemIndex = null
+  }
+
+  parts.forEach((part, index) => {
+    const activityItems = activityItemsFromPart(part, index, ancestorSessionIds)
+    if (activityItems) {
+      if (firstItemIndex == null) firstItemIndex = index
+      items.push(...activityItems)
+      return
+    }
+
+    if (part.type === "text") {
+      const text = part.text.trim()
+      if (text) {
+        if (firstItemIndex == null) firstItemIndex = index
+        items.push(...activityMessageItemsFromText(text, index))
+      }
+      return
+    }
+
+    // Recursive Codex launch cards are copied from the parent rollout. Empty
+    // and all-recursive tool groups carry no independent child activity either.
+    const skipToolGroup =
+      part.type === "tool-group" &&
+      (part.items.length === 0 ||
+        part.items.every((item) =>
+          isRecursiveNativeAgentLaunch(item, ancestorSessionIds)
+        ))
+    if (
+      isRecursiveNativeAgentLaunch(part, ancestorSessionIds) ||
+      skipToolGroup
+    ) {
+      return
+    }
+
+    // Keep uncommon parts (for example generated images and proposed plans) in
+    // chronological position rather than silently dropping them. They use the
+    // normal renderer but still sit on the same activity rail.
+    flushItems()
+    blocks.push({ type: "part", id: `inline-part-${index}`, part })
+  })
+
+  flushItems()
+  return blocks
 }
 
 function activityPreviewSource(value: unknown): string | null {
@@ -3630,6 +3764,13 @@ interface ContentPartsRendererProps {
   role?: MessageRole
   activityDurationMs?: number | null
   isResponseComplete?: boolean
+  /**
+   * Render every child-session turn as activity rows. This intentionally keeps
+   * text that would normally be a formal response in the same nested timeline.
+   */
+  inlineActivity?: boolean
+  /** Override the child-session row inset when its parent already owns a rail. */
+  activityRowsClassName?: string
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
@@ -3637,20 +3778,37 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   role,
   activityDurationMs,
   isResponseComplete = true,
+  inlineActivity = false,
+  activityRowsClassName,
 }: ContentPartsRendererProps) {
+  const ancestorSessionIds = useSubagentTranscriptAncestry()
+  const contentT = useTranslations("Folder.chat.contentParts")
   const activityStreaming = role === "assistant" && !isResponseComplete
-  const contentBlocks = useMemo(
-    () =>
-      role === "assistant"
-        ? buildAssistantContentBlocks(parts)
-        : parts.map(
-            (part, index): AssistantContentBlock => ({
-              type: "part",
-              id: `part-${index}`,
-              part,
-            })
-          ),
-    [parts, role]
+  const contentBlocks = useMemo(() => {
+    if (inlineActivity) {
+      return buildInlineActivityBlocks(parts, ancestorSessionIds)
+    }
+    return role === "assistant"
+      ? buildAssistantContentBlocks(parts, ancestorSessionIds)
+      : parts.map(
+          (part, index): AssistantContentBlock => ({
+            type: "part",
+            id: `part-${index}`,
+            part,
+          })
+        )
+  }, [ancestorSessionIds, inlineActivity, parts, role])
+
+  const getActivityAgentLabel = useCallback(
+    (
+      item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+      index: number
+    ) =>
+      activityAgentLabel(
+        item.part,
+        contentT("agentLabel", { count: index + 1 })
+      ),
+    [contentT]
   )
 
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
@@ -3665,11 +3823,18 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     }
 
     if (part.type === "tool-call") {
+      if (isRecursiveNativeAgentLaunch(part, ancestorSessionIds)) {
+        return null
+      }
       return <ToolCallPart key={`tc-${part.toolCallId ?? keyId}`} part={part} />
     }
 
     if (part.type === "tool-group") {
-      return <ToolGroupPart key={`tg-${keyId}`} part={part} />
+      const items = part.items.filter(
+        (item) => !isRecursiveNativeAgentLaunch(item, ancestorSessionIds)
+      )
+      if (items.length === 0) return null
+      return <ToolGroupPart key={`tg-${keyId}`} part={{ ...part, items }} />
     }
 
     if (part.type === "goal-run") {
@@ -3724,7 +3889,10 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     return null
   }
 
-  const renderActivityItem = (item: AssistantActivityItem): ReactNode => {
+  const renderActivityItem = (
+    item: AssistantActivityItem,
+    options?: ActivityItemRenderOptions
+  ): ReactNode => {
     if (item.type === "message") return null
     if (item.type === "reasoning") return null
     if (item.type === "context-compaction") {
@@ -3733,6 +3901,25 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
       )
     }
     if (item.type === "tool-call") {
+      if (normalizeToolName(item.part.toolName).toLowerCase() === "agent") {
+        return (
+          <AgentToolCallPart
+            part={item.part}
+            display={options?.agentDisplay === "dialog" ? "dialog" : "inline"}
+            alignTimelineToParent={options?.alignAgentTimelineToParent ?? false}
+            renderToolCall={(childPart, key) => (
+              <ToolCallPart
+                key={key}
+                part={{
+                  ...childPart,
+                  agentStats: undefined,
+                  agentTranscript: undefined,
+                }}
+              />
+            )}
+          />
+        )
+      }
       return <ActivityToolPreview part={item.part} />
     }
     if (item.type === "tool-result") {
@@ -3763,16 +3950,41 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   }
 
   return (
-    <div className="space-y-4">
+    <div className={inlineActivity ? "min-w-0" : "space-y-4"}>
       {contentBlocks.map((block) =>
         block.type === "activity" ? (
-          <AssistantActivityGroup
+          inlineActivity ? (
+            <AssistantActivityRows
+              key={block.id}
+              items={block.items}
+              renderItem={renderActivityItem}
+              className={activityRowsClassName}
+            />
+          ) : (
+            <AssistantActivityGroup
+              key={block.id}
+              items={block.items}
+              renderItem={renderActivityItem}
+              getAgentLabel={getActivityAgentLabel}
+              durationMs={activityDurationMs}
+              streaming={activityStreaming}
+            />
+          )
+        ) : inlineActivity ? (
+          <div
             key={block.id}
-            items={block.items}
-            renderItem={renderActivityItem}
-            durationMs={activityDurationMs}
-            streaming={activityStreaming}
-          />
+            className="relative z-10 flex min-w-0 gap-2 px-1.5 py-1 text-[13px] leading-5 text-muted-foreground"
+          >
+            <span
+              aria-hidden="true"
+              className="relative z-10 inline-grid h-5 w-5 shrink-0 place-items-center"
+            >
+              <WrenchIcon className="size-3.5 text-muted-foreground/75" />
+            </span>
+            <div className="min-w-0 flex-1">
+              {renderPart(block.part, block.id)}
+            </div>
+          </div>
         ) : (
           renderPart(block.part, block.id)
         )

@@ -40,6 +40,47 @@ describe("AgentCapsule", () => {
     expect(screen.getByText("EAGER BODY")).toBeInTheDocument()
   })
 
+  it("opens when live timeline activity arrives unless the user chose a state", () => {
+    const { rerender } = render(
+      <AgentCapsule title="Child" isRunning isError={false}>
+        <div>CHILD ACTIVITY</div>
+      </AgentCapsule>
+    )
+    expect(screen.queryByText("CHILD ACTIVITY")).not.toBeInTheDocument()
+
+    rerender(
+      <AgentCapsule title="Child" isRunning isError={false} autoOpen>
+        <div>CHILD ACTIVITY</div>
+      </AgentCapsule>
+    )
+    expect(screen.getByText("CHILD ACTIVITY")).toBeInTheDocument()
+  })
+
+  it("uses a direct timeline body without the card surface", () => {
+    const { container } = render(
+      <AgentCapsule
+        title="Child"
+        isRunning={false}
+        isError={false}
+        presentation="timeline"
+        defaultOpen
+      >
+        <div>CHILD ROW</div>
+      </AgentCapsule>
+    )
+
+    const capsule = container.querySelector(
+      '[data-agent-capsule-presentation="timeline"]'
+    )
+    expect(capsule).not.toBeNull()
+    expect(
+      capsule?.querySelector('[data-agent-capsule-body="timeline"]')
+    ).not.toBeNull()
+    expect(
+      capsule?.querySelector('[data-agent-capsule-body="card"]')
+    ).toBeNull()
+  })
+
   it("renders the right suffix", () => {
     render(
       <AgentCapsule

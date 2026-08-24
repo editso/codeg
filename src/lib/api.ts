@@ -186,6 +186,22 @@ export async function getConversation(
   return getTransport().call("get_conversation", { agentType, conversationId })
 }
 
+/**
+ * Read the transcript attached to an Agent activity node. Codex native team
+ * children replay their parent's pre-fork history, so this explicit mode
+ * returns only the child's post-fork work while ordinary conversations retain
+ * their complete inherited history.
+ */
+export async function getSubagentConversation(
+  agentType: AgentType,
+  conversationId: string
+): Promise<ConversationDetail> {
+  return getTransport().call("get_subagent_conversation", {
+    agentType,
+    conversationId,
+  })
+}
+
 export async function listFolders(): Promise<FolderInfo[]> {
   return getTransport().call("list_folders")
 }

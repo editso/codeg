@@ -20,6 +20,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   LoaderCircleIcon,
+  Maximize2Icon,
   SearchIcon,
   TerminalIcon,
   TimerIcon,
@@ -30,6 +31,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { cn } from "@/lib/utils"
 import {
   Collapsible,
@@ -42,6 +44,10 @@ import {
   describeToolActivity,
   type ToolActivityKind,
 } from "./tool-activity-presentation"
+import {
+  AgentActivityDialog,
+  type AgentActivityDialogEntry,
+} from "./agent-activity-dialog"
 
 /**
  * The operational parts of one assistant reply. Each keeps its existing card
@@ -95,9 +101,26 @@ export type AssistantActivityItem =
       part: Extract<AdaptedContentPart, { type: "background-task-group" }>
     }
 
+export type ActivityItemRenderOptions = {
+  /** Agent nodes use a flat, timeline-aware detail instead of a card body. */
+  agentDisplay?: "inline" | "dialog"
+  /** Return an expanded Agent transcript to this group's activity rail. */
+  alignAgentTimelineToParent?: boolean
+}
+
+export type ActivityItemRenderer = (
+  item: AssistantActivityItem,
+  options?: ActivityItemRenderOptions
+) => ReactNode
+
 interface AssistantActivityGroupProps {
   items: AssistantActivityItem[]
-  renderItem: (item: AssistantActivityItem) => ReactNode
+  renderItem: ActivityItemRenderer
+  /** A readable label derived by the content renderer from the Agent input. */
+  getAgentLabel?: (
+    item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+    index: number
+  ) => string
   durationMs?: number | null
   streaming?: boolean
 }
@@ -425,7 +448,7 @@ function ActivityContextCompactionRow({
   renderItem,
 }: {
   item: Extract<AssistantActivityItem, { type: "context-compaction" }>
-  renderItem: (item: AssistantActivityItem) => ReactNode
+  renderItem: ActivityItemRenderer
 }) {
   const active = isStreaming(item)
 
@@ -447,6 +470,66 @@ function ActivityContextCompactionRow({
   )
 }
 
+function isAgentActivity(
+  item: AssistantActivityItem
+): item is Extract<AssistantActivityItem, { type: "tool-call" }> {
+  return (
+    item.type === "tool-call" &&
+    normalizeToolName(item.part.toolName).toLowerCase() === "agent"
+  )
+}
+
+function ActivityAgentRow({
+  item,
+  renderItem,
+  onOpenAgent,
+}: {
+  item: Extract<AssistantActivityItem, { type: "tool-call" }>
+  renderItem: ActivityItemRenderer
+  onOpenAgent?: (
+    item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+    trigger: HTMLButtonElement
+  ) => void
+}) {
+  const t = useTranslations("Folder.chat.contentParts")
+  const active = isStreaming(item)
+
+  return (
+    <div className="group/activity-agent relative z-10 min-w-0 px-1.5 py-1">
+      <span
+        aria-hidden="true"
+        className="absolute left-1.5 top-1 z-10 inline-grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-background"
+      >
+        {active ? (
+          <LoaderCircleIcon className="size-3.5 animate-spin text-foreground/70" />
+        ) : (
+          <UsersIcon className="size-3.5 text-muted-foreground/75" />
+        )}
+      </span>
+      <div className="min-w-0 ps-7">
+        {renderItem(item, {
+          agentDisplay: "inline",
+          alignAgentTimelineToParent: true,
+        })}
+      </div>
+      {onOpenAgent ? (
+        <button
+          type="button"
+          aria-label={t("openAgentSession")}
+          title={t("openAgentSession")}
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenAgent(item, event.currentTarget)
+          }}
+          className="absolute right-1 top-1 z-20 inline-grid size-6 cursor-pointer place-items-center rounded-md bg-background/90 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border/60 transition-[color,opacity,background-color] hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 group-hover/activity-agent:opacity-100 group-focus-within/activity-agent:opacity-100"
+        >
+          <Maximize2Icon aria-hidden="true" className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 function ActivityDetailRow({
   item,
   renderItem,
@@ -455,7 +538,7 @@ function ActivityDetailRow({
     AssistantActivityItem,
     { type: "reasoning" } | { type: "message" } | { type: "context-compaction" }
   >
-  renderItem: (item: AssistantActivityItem) => ReactNode
+  renderItem: ActivityItemRenderer
 }) {
   const t = useTranslations("Folder.chat.contentParts")
   const active = isStreaming(item)
@@ -579,14 +662,28 @@ function ActivityMessageRow({
 function ActivityRow({
   item,
   renderItem,
+  onOpenAgent,
 }: {
   item: AssistantActivityItem
-  renderItem: (item: AssistantActivityItem) => ReactNode
+  renderItem: ActivityItemRenderer
+  onOpenAgent?: (
+    item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+    trigger: HTMLButtonElement
+  ) => void
 }) {
   if (item.type === "reasoning") return <ActivityReasoningRow item={item} />
   if (item.type === "message") return <ActivityMessageRow item={item} />
   if (item.type === "context-compaction") {
     return <ActivityContextCompactionRow item={item} renderItem={renderItem} />
+  }
+  if (isAgentActivity(item)) {
+    return (
+      <ActivityAgentRow
+        item={item}
+        renderItem={renderItem}
+        onOpenAgent={onOpenAgent}
+      />
+    )
   }
   return <ActivityDetailRow item={item} renderItem={renderItem} />
 }
@@ -656,12 +753,43 @@ function usePinnedActivityScroll(enabled: boolean, dependency: unknown) {
   return { scrollerRef, handleScroll }
 }
 
+export const AssistantActivityRows = memo(function AssistantActivityRows({
+  items,
+  renderItem,
+  className,
+  onOpenAgent,
+}: Pick<AssistantActivityGroupProps, "items" | "renderItem"> & {
+  className?: string
+  onOpenAgent?: (
+    item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+    trigger: HTMLButtonElement
+  ) => void
+}) {
+  return (
+    <div className={cn("grid gap-0.5 pl-[15px] pr-2", className)}>
+      {items.map((item) => (
+        <ActivityRow
+          key={item.id}
+          item={item}
+          renderItem={renderItem}
+          onOpenAgent={onOpenAgent}
+        />
+      ))}
+    </div>
+  )
+})
+
 function ActivityItemList({
   items,
   renderItem,
   streaming,
+  onOpenAgent,
 }: Pick<AssistantActivityGroupProps, "items" | "renderItem"> & {
   streaming: boolean
+  onOpenAgent?: (
+    item: Extract<AssistantActivityItem, { type: "tool-call" }>,
+    trigger: HTMLButtonElement
+  ) => void
 }) {
   const { scrollerRef, handleScroll } = usePinnedActivityScroll(
     streaming,
@@ -684,16 +812,20 @@ function ActivityItemList({
         >
           {items.map((item) => (
             <div key={item.id} className="pb-0.5 pl-[15px] pr-2">
-              <ActivityRow item={item} renderItem={renderItem} />
+              <ActivityRow
+                item={item}
+                renderItem={renderItem}
+                onOpenAgent={onOpenAgent}
+              />
             </div>
           ))}
         </Virtualizer>
       ) : (
-        <div className="grid gap-0.5 pl-[15px] pr-2">
-          {items.map((item) => (
-            <ActivityRow key={item.id} item={item} renderItem={renderItem} />
-          ))}
-        </div>
+        <AssistantActivityRows
+          items={items}
+          renderItem={renderItem}
+          onOpenAgent={onOpenAgent}
+        />
       )}
     </div>
   )
@@ -702,10 +834,12 @@ function ActivityItemList({
 export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   items,
   renderItem,
+  getAgentLabel,
   durationMs,
   streaming,
 }: AssistantActivityGroupProps) {
   const t = useTranslations("Folder.chat.contentParts.toolGroup")
+  const contentT = useTranslations("Folder.chat.contentParts")
   const statusT = useTranslations("Folder.chat.tool.status")
   const groupRef = useRef<HTMLDivElement>(null)
   const preserveDisclosureScrollPosition =
@@ -715,8 +849,27 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   // deriving disclosure state from the last item makes the whole group flap.
   const active = streaming ?? items.some(isStreaming)
   const [open, setOpen] = useState(() => active)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const previousActiveRef = useRef(active)
   const userSetOpenRef = useRef(false)
+
+  const agentEntries = useMemo<
+    AgentActivityDialogEntry<
+      Extract<AssistantActivityItem, { type: "tool-call" }>
+    >[]
+  >(
+    () =>
+      items.filter(isAgentActivity).map((item, index) => ({
+        id: item.id,
+        item,
+        label:
+          getAgentLabel?.(item, index) ??
+          contentT("agentLabel", { count: index + 1 }),
+        active: isStreaming(item),
+        error: hasError(item),
+      })),
+    [contentT, getAgentLabel, items]
+  )
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -760,7 +913,8 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
         tools += Math.max(1, item.part.polls.length)
       } else if (
         item.type !== "context-compaction" &&
-        item.type !== "message"
+        item.type !== "message" &&
+        !isAgentActivity(item)
       ) {
         tools += 1
       }
@@ -783,6 +937,15 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
     ? `${statusLabel}\u2003\u2003\u2003${summary}`
     : statusLabel
   const toneClass = active ? "text-foreground/85" : "text-muted-foreground/85"
+  const agentCountLabel = agentEntries.length
+    ? contentT("agentCount", { count: agentEntries.length })
+    : null
+  const openAgent = useCallback(
+    (item: Extract<AssistantActivityItem, { type: "tool-call" }>) => {
+      setSelectedAgentId(item.id)
+    },
+    []
+  )
 
   return (
     <Collapsible
@@ -822,6 +985,24 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
             )}
           />
         </CollapsibleTrigger>
+        {agentCountLabel ? (
+          <button
+            type="button"
+            aria-label={contentT("openAgentSessions", {
+              count: agentEntries.length,
+            })}
+            title={contentT("openAgentSessions", {
+              count: agentEntries.length,
+            })}
+            onClick={() => openAgent(agentEntries[0].item)}
+            className={cn(
+              "shrink-0 cursor-pointer rounded-sm px-0.5 text-[13px] font-medium underline decoration-muted-foreground/30 underline-offset-[3px] outline-none transition-colors hover:text-foreground hover:decoration-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50",
+              toneClass
+            )}
+          >
+            {agentCountLabel}
+          </button>
+        ) : null}
         {!active && summary ? (
           <span
             className={cn(
@@ -838,8 +1019,18 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
           items={items}
           renderItem={renderItem}
           streaming={active}
+          onOpenAgent={openAgent}
         />
       </CollapsibleContent>
+      <AgentActivityDialog
+        agents={agentEntries}
+        selectedAgentId={selectedAgentId}
+        onSelect={setSelectedAgentId}
+        onClose={() => setSelectedAgentId(null)}
+        renderAgent={(agent) =>
+          renderItem(agent.item, { agentDisplay: "dialog" })
+        }
+      />
     </Collapsible>
   )
 })

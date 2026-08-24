@@ -1,13 +1,37 @@
 import { type ReactElement } from "react"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { describe, expect, it } from "vitest"
+import { StickToBottom } from "use-stick-to-bottom"
+import { describe, expect, it, vi } from "vitest"
 
 import { AgentToolCallPart } from "./agent-tool-call"
+import { ContentPartsRenderer } from "./content-parts-renderer"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 import enMessages from "@/i18n/messages/en.json"
 
 type ToolCallPart = Extract<AdaptedContentPart, { type: "tool-call" }>
+
+vi.mock("./subagent-session-transcript", () => ({
+  SubagentSessionTranscript: ({
+    sessionId,
+    agentType,
+    live,
+    alignToParentRail,
+  }: {
+    sessionId: string
+    agentType: string
+    live: boolean
+    alignToParentRail?: boolean
+  }) => (
+    <div
+      data-testid="agent-session-transcript"
+      data-agent-type={agentType}
+      data-live={String(live)}
+      data-session-id={sessionId}
+      data-parent-rail={String(Boolean(alignToParentRail))}
+    />
+  ),
+}))
 
 function renderCard(part: ToolCallPart) {
   const ui: ReactElement = (
@@ -150,11 +174,12 @@ describe("AgentToolCallPart title", () => {
     expect(screen.getByText("01a0098a")).toBeInTheDocument()
     // No empty "Prompt" disclosure, and above all no base64 anywhere.
     expect(screen.queryByText("Prompt")).not.toBeInTheDocument()
-    // The settled card must not read as "the sub-agent finished": codex only
-    // acknowledged the launch, and an async child may still be working.
-    // Completed capsules mount collapsed; expand to see the body.
-    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
-    expect(screen.getByText(/reports no further progress/)).toBeInTheDocument()
+    // The launch opens its own timeline. The old caveat claimed the result
+    // would only arrive in the parent, which is no longer true once we read
+    // the native child rollout directly.
+    expect(
+      screen.queryByText(/reports no further progress/)
+    ).not.toBeInTheDocument()
   })
 
   it("does not claim launch-only semantics for an ordinary sub-agent card", () => {
@@ -289,20 +314,26 @@ describe("AgentToolCallPart live subagent transcript", () => {
     agentTranscript: entries,
   })
 
-  /** The capsule body is collapsed by default while running (matching the
-   *  existing child-tool-call UX) — expand it via the pill trigger. */
+  /** A card with no meaningful live child rows keeps the ordinary disclosure
+   * behavior, so it can still be expanded to inspect its other content. */
   const expandRunningCapsule = () =>
     fireEvent.click(screen.getByRole("button", { name: "Running" }))
 
   it("renders text and thinking entries while running", () => {
-    renderCard(
+    const { container } = renderCard(
       withTranscript("input-available", [
         { type: "thinking", text: "planning the sweep" },
         { type: "text", text: "found three matches" },
       ])
     )
-    expandRunningCapsule()
-    expect(screen.getByText("Live activity")).toBeInTheDocument()
+    const capsule = container.querySelector(
+      '[data-agent-capsule-presentation="timeline"]'
+    )
+    expect(capsule).not.toBeNull()
+    expect(
+      capsule?.querySelector('[data-agent-capsule-body="card"]')
+    ).toBeNull()
+    expect(screen.queryByText("Live activity")).not.toBeInTheDocument()
     expect(screen.getByText("planning the sweep")).toBeInTheDocument()
     expect(screen.getByText("found three matches")).toBeInTheDocument()
   })
@@ -312,8 +343,7 @@ describe("AgentToolCallPart live subagent transcript", () => {
       withTranscript("input-available", [{ type: "thinking", text: "   " }])
     )
     expandRunningCapsule()
-    // Label shows (the list is non-empty) but the blank entry renders nothing.
-    expect(screen.getByText("Live activity")).toBeInTheDocument()
+    expect(screen.queryByText("Live activity")).not.toBeInTheDocument()
 
     // A settled card never shows the transcript section — the store stops
     // attaching it, and even a stale prop must not render.
@@ -332,7 +362,6 @@ describe("AgentToolCallPart live subagent transcript", () => {
       text: `entry-${i}`,
     }))
     renderCard(withTranscript("input-available", entries))
-    expandRunningCapsule()
     // 25 entries, tail bound 20 → the first five never mount.
     expect(screen.queryByText("entry-0")).not.toBeInTheDocument()
     expect(screen.queryByText("entry-4")).not.toBeInTheDocument()
@@ -415,10 +444,126 @@ describe("AgentToolCallPart grok live progress", () => {
   })
 })
 
-describe("AgentToolCallPart child session action", () => {
-  it("offers the child's session from the live spawn meta", () => {
-    // Grok forwards none of the child's work over ACP, so the action has to be
-    // there WHILE it runs — the meta stamp is what makes that possible.
+describe("AgentToolCallPart inline child session transcript", () => {
+  it("uses a flat activity node and returns child rows to the parent rail", () => {
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AgentToolCallPart
+          part={basePart(
+            JSON.stringify({
+              subagent_type: "codeg_event_cursor_review",
+              agent_id: "01a031ee-b090-7e21-8034-37aee6627f8c",
+              __codegCodexSubagentLaunch: true,
+            }),
+            "output-available"
+          )}
+          display="inline"
+          alignTimelineToParent
+          renderToolCall={() => null}
+        />
+      </NextIntlClientProvider>
+    )
+
+    const capsule = container.querySelector(
+      '[data-agent-capsule-presentation="timeline"]'
+    )
+    const trigger = capsule?.querySelector('[data-slot="collapsible-trigger"]')
+    const timelineBody = capsule?.querySelector(
+      '[data-agent-capsule-body="timeline"]'
+    )
+
+    // Inline Agents are timeline nodes, not the rounded primary capsule used
+    // for standalone cards. The body cancels the header/icon inset so child
+    // rows share the parent activity rail.
+    expect(trigger).toHaveClass("rounded-md")
+    expect(trigger).not.toHaveClass("rounded-full")
+    expect(timelineBody).toHaveClass("-ms-[34px]")
+    expect(screen.getByTestId("agent-session-transcript")).toHaveAttribute(
+      "data-parent-rail",
+      "true"
+    )
+  })
+
+  it("renders a Codex native child directly from its launch marker and agent id", () => {
+    const { container } = renderCard(
+      basePart(
+        JSON.stringify({
+          subagent_type: "codeg_event_cursor_review",
+          agent_id: "01a031ee-b090-7e21-8034-37aee6627f8c",
+          __codegCodexSubagentLaunch: true,
+        }),
+        "output-available"
+      )
+    )
+
+    const capsule = container.querySelector(
+      '[data-agent-capsule-presentation="timeline"]'
+    )
+    expect(capsule).not.toBeNull()
+    expect(
+      capsule?.querySelector('[data-agent-capsule-body="timeline"]')
+    ).not.toBeNull()
+    expect(
+      capsule?.querySelector('[data-agent-capsule-body="card"]')
+    ).toBeNull()
+
+    const transcript = screen.getByTestId("agent-session-transcript")
+    expect(transcript).toHaveAttribute("data-agent-type", "codex")
+    expect(transcript).toHaveAttribute(
+      "data-session-id",
+      "01a031ee-b090-7e21-8034-37aee6627f8c"
+    )
+    // A Codex native launch settles as soon as the child starts, so the inline
+    // transcript keeps polling even though the launch card says completed.
+    expect(transcript).toHaveAttribute("data-live", "true")
+    expect(
+      screen.queryByRole("button", { name: "View sub-agent session" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("keeps a Codex Agent card inside the parent activity flow", () => {
+    const part = basePart(
+      JSON.stringify({
+        subagent_type: "codeg_event_cursor_review",
+        agent_id: "01a031ee-b090-7e21-8034-37aee6627f8c",
+        __codegCodexSubagentLaunch: true,
+      }),
+      "output-available"
+    )
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer parts={[part]} role="assistant" />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    // The settled parent activity is compact. Its single disclosure reveals
+    // the real Agent capsule and inline child transcript, not a generic JSON
+    // tool preview and not a side-panel action.
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
+    expect(screen.getByTestId("agent-session-transcript")).toHaveAttribute(
+      "data-session-id",
+      "01a031ee-b090-7e21-8034-37aee6627f8c"
+    )
+  })
+
+  it("does not treat an arbitrary agent_id as a Codex child session", () => {
+    renderCard(
+      basePart(
+        JSON.stringify({
+          subagent_type: "worker",
+          agent_id: "not-a-codex-native-child",
+        }),
+        "output-available"
+      )
+    )
+    expect(
+      screen.queryByTestId("agent-session-transcript")
+    ).not.toBeInTheDocument()
+  })
+
+  it("renders the child's session from live Grok spawn metadata", () => {
     renderCard({
       ...basePart(
         JSON.stringify({ subagent_type: "explore", description: "map repo" }),
@@ -431,13 +576,17 @@ describe("AgentToolCallPart child session action", () => {
         },
       },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Running" }))
-    expect(
-      screen.getByRole("button", { name: "View sub-agent session" })
-    ).toBeInTheDocument()
+
+    const transcript = screen.getByTestId("agent-session-transcript")
+    expect(transcript).toHaveAttribute("data-agent-type", "grok")
+    expect(transcript).toHaveAttribute(
+      "data-session-id",
+      "019fe6bf-0bcb-70c2-a02d-e5c006dfc32a"
+    )
+    expect(transcript).toHaveAttribute("data-live", "true")
   })
 
-  it("offers it from the parsed stats on a settled historical card", () => {
+  it("renders a settled historical child session when the capsule expands", () => {
     renderCard({
       ...basePart(
         JSON.stringify({ subagent_type: "explore", description: "map repo" }),
@@ -451,14 +600,16 @@ describe("AgentToolCallPart child session action", () => {
       },
     })
     fireEvent.click(screen.getByRole("button", { name: "Completed" }))
-    expect(
-      screen.getByRole("button", { name: "View sub-agent session" })
-    ).toBeInTheDocument()
+
+    const transcript = screen.getByTestId("agent-session-transcript")
+    expect(transcript).toHaveAttribute(
+      "data-session-id",
+      "019fe6bf-0bcb-70c2-a02d-e5c006dfc32a"
+    )
+    expect(transcript).toHaveAttribute("data-live", "false")
   })
 
-  it("stays hidden for a sub-agent with no session of its own", () => {
-    // Every other agent folds its child into the parent transcript — there is
-    // nothing to open.
+  it("does not render a transcript for a sub-agent with no session of its own", () => {
     renderCard({
       ...basePart(
         JSON.stringify({ subagent_type: "Explore", description: "map repo" }),
@@ -468,7 +619,7 @@ describe("AgentToolCallPart child session action", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Completed" }))
     expect(
-      screen.queryByRole("button", { name: "View sub-agent session" })
+      screen.queryByTestId("agent-session-transcript")
     ).not.toBeInTheDocument()
   })
 })

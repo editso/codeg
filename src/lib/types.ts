@@ -127,8 +127,8 @@ export interface AgentExecutionStats {
   /** The child's own session id, when the sub-agent ran as a standalone session
    *  on disk instead of as chunks folded into the parent (Grok: every
    *  `spawn_subagent` child). Drives the Agent card's "open the sub-agent's
-   *  session" action — `getConversation` resolves it even though the session is
-   *  hidden from the sidebar. Absent for every other agent. */
+   *  session" action — `getSubagentConversation` resolves it even though the
+   *  session is hidden from the sidebar. Absent for every other agent. */
   child_session_id?: string | null
 }
 

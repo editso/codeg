@@ -1,9 +1,11 @@
 import { memo, useMemo, useState, type ReactNode } from "react"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
-import type { AgentToolCall, AgentType } from "@/lib/types"
+import type {
+  AgentToolCall,
+  AgentTranscriptEntry,
+  AgentType,
+} from "@/lib/types"
 import { tryParseJson, extractJsonField } from "./content-parts-renderer"
-import { SubagentSessionDialog } from "./subagent-session-dialog"
-import { useSessionViewerHost } from "./session-viewer-host"
 import { shortAgentId } from "@/lib/collab-tool"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
@@ -13,9 +15,15 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/instant-collapsible"
 import { cn } from "@/lib/utils"
-import { ChevronRightIcon, Clock3, Loader2, MessagesSquare } from "lucide-react"
+import { ChevronRightIcon, Clock3, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentCapsule } from "./agent-capsule"
+import {
+  AssistantActivityRows,
+  type AssistantActivityItem,
+} from "./assistant-activity-group"
+import { SubagentSessionTranscript } from "./subagent-session-transcript"
+import { useSubagentTranscriptAncestry } from "./subagent-transcript-context"
 import {
   isAsyncLaunchAckText,
   parseBackgroundTaskMarker,
@@ -117,6 +125,40 @@ function parseTaskOutcomeEnvelope(
  *  so the count stays small in practice; this is a backstop). */
 const AGENT_TRANSCRIPT_RENDER_TAIL = 20
 
+function liveTranscriptActivityItems(
+  entries: readonly AgentTranscriptEntry[]
+): AssistantActivityItem[] {
+  const items: AssistantActivityItem[] = []
+
+  entries.forEach((entry, index) => {
+    const text = entry.text.trim()
+    if (!text) return
+
+    if (entry.type === "thinking") {
+      items.push({
+        id: `agent-transcript-thinking-${index}`,
+        type: "reasoning",
+        part: {
+          type: "reasoning",
+          content: text,
+          // The source pre-merges a growing entry. Only its newest thinking
+          // row remains active; earlier entries are stable history.
+          isStreaming: index === entries.length - 1,
+        },
+      })
+      return
+    }
+
+    items.push({
+      id: `agent-transcript-message-${index}`,
+      type: "message",
+      text,
+    })
+  })
+
+  return items
+}
+
 interface GrokSubagentProgress {
   durationMs: number | null
   turnCount: number | null
@@ -157,24 +199,27 @@ function parseGrokSubagentProgress(
 
 /**
  * The child's own session, when the sub-agent ran as a standalone session on
- * disk. Grok is the case that has one: it runs every `spawn_subagent` child as
- * a full session that streams its transcript to disk, and forwards none of it
- * over ACP — so opening that session is the ONLY way to watch the child work.
+ * disk. Grok and Codex native team-of-agents both do this: they write the
+ * child's transcript separately and do not stream its messages into the
+ * parent's ACP response. Its transcript is rendered beneath the launch card
+ * so the child remains part of the parent's activity flow.
  *
  * Live it arrives as `meta.grokSubagentSession.childSessionId`
  * (`connection.rs::grok_subagent_meta`, re-sent on every progress tick because
  * meta is replaced wholesale); in history it comes off the parsed
- * `agent_stats.child_session_id` (`parsers/grok.rs::subagent_stats`). `null`
- * for every other agent.
+ * `agent_stats.child_session_id` (`parsers/grok.rs::subagent_stats`). Codex
+ * instead supplies the child's native rollout id as `agent_id` on a card
+ * marked `__codegCodexSubagentLaunch`; the direct conversation loader resolves
+ * that id to the child's rollout.
  *
- * The agent type is pinned to grok because those two are the only producers,
- * and a grok parent's child is itself a grok session — the card has no
- * conversation-level agent type of its own to read. If another agent ever
- * populates `child_session_id`, this is the line to revisit.
+ * `agent_stats.child_session_id` is currently Grok-only. Codex's launch marker
+ * is intentionally required before treating `agent_id` as a session id: other
+ * hosts can use an `agent_id` argument for unrelated tool payloads.
  */
 function parseChildSessionId(
   meta: Record<string, unknown> | null | undefined,
-  statsChildSessionId: string | null | undefined
+  statsChildSessionId: string | null | undefined,
+  codexNativeAgentId: string | null
 ): { sessionId: string; agentType: AgentType } | null {
   const raw = meta?.grokSubagentSession
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -182,6 +227,9 @@ function parseChildSessionId(
     if (typeof live === "string" && live.length > 0) {
       return { sessionId: live, agentType: "grok" }
     }
+  }
+  if (codexNativeAgentId) {
+    return { sessionId: codexNativeAgentId, agentType: "codex" }
   }
   return statsChildSessionId && statsChildSessionId.length > 0
     ? { sessionId: statsChildSessionId, agentType: "grok" }
@@ -193,6 +241,8 @@ function parseChildSessionId(
 export const AgentToolCallPart = memo(function AgentToolCallPart({
   part,
   renderToolCall,
+  display = "card",
+  alignTimelineToParent = false,
 }: {
   part: Extract<AdaptedContentPart, { type: "tool-call" }>
   /** Render a single tool-call part — injected by the parent to avoid
@@ -201,10 +251,18 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     part: Extract<AdaptedContentPart, { type: "tool-call" }>,
     key: string
   ) => ReactNode
+  /**
+   * Activity nodes use the flat timeline display; the Agent dialog renders
+   * the same detail directly, without nesting another disclosure in it.
+   */
+  display?: "card" | "inline" | "dialog"
+  /** Move an inline Agent's expanded transcript back to its parent rail. */
+  alignTimelineToParent?: boolean
 }) {
   const t = useTranslations("Folder.chat.contentParts")
   const tTool = useTranslations("Folder.chat.tool")
   const tBg = useTranslations("Folder.chat.backgroundTasks")
+  const ancestorSessionIds = useSubagentTranscriptAncestry()
 
   const isRunning =
     part.state === "input-available" || part.state === "input-streaming"
@@ -247,6 +305,10 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   const transcriptTail = useMemo(
     () => (part.agentTranscript ?? []).slice(-AGENT_TRANSCRIPT_RENDER_TAIL),
     [part.agentTranscript]
+  )
+  const transcriptActivityItems = useMemo(
+    () => liveTranscriptActivityItems(transcriptTail),
+    [transcriptTail]
   )
 
   const subagentType = useMemo(
@@ -357,15 +419,31 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     [part.meta]
   )
 
-  // The child's own session, when it has one (grok). Available live — from the
-  // spawn notification's meta — as well as in history, so a blocking child can
-  // be watched while it works instead of only after it reports back.
+  // The child's own session, when it has one. Grok supplies its id through the
+  // spawn metadata/stats; Codex native team-of-agents supplies it through the
+  // launch card's `agent_id`. Both routes render inline while the child writes
+  // its independent transcript.
   const childSession = useMemo(
-    () => parseChildSessionId(part.meta, agentStats?.child_session_id),
-    [part.meta, agentStats?.child_session_id]
+    () =>
+      parseChildSessionId(
+        part.meta,
+        agentStats?.child_session_id,
+        isLaunchOnly ? agentId : null
+      ),
+    [part.meta, agentStats?.child_session_id, isLaunchOnly, agentId]
   )
-  const viewerHost = useSessionViewerHost()
-  const [sessionOpen, setSessionOpen] = useState(false)
+  const childTranscriptLive =
+    isRunning || isLiveBackgroundLaunch || isLaunchOnly
+  const hasLiveInlineTranscript =
+    isRunning && transcriptActivityItems.length > 0
+  const timelinePresentation =
+    display === "inline" || childSession != null || hasLiveInlineTranscript
+  const autoOpenTimeline =
+    isLaunchOnly ||
+    (childSession != null && childTranscriptLive) ||
+    hasLiveInlineTranscript
+  const isRecursiveTranscriptReference =
+    isLaunchOnly && agentId != null && ancestorSessionIds.has(agentId)
   const grokProgressLine = useMemo(() => {
     if (!grokProgress) return null
     const pieces: string[] = []
@@ -400,14 +478,52 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     return null
   }, [agentStats, taskOutcome])
 
-  return (
-    <AgentCapsule
-      title={title}
-      isRunning={isRunning || isLiveBackgroundLaunch || outcomeBackground}
-      isError={isError || backgroundFailed || outcomeError != null}
-      rightSuffix={durationSuffix}
-      idBadge={agentId ? shortAgentId(agentId) : null}
-      statusLabel={statusLabel}
+  const showRunningIndicator =
+    (isRunning && !part.output) || isLiveBackgroundLaunch || outcomeBackground
+  const showLaunchOnlyNote = isLaunchOnly && !isRunning && !childSession
+  const showGrokProgress =
+    (isRunning || isLiveBackgroundLaunch) && grokProgressLine != null
+  const showErrorOutput = isError && Boolean(part.errorText)
+  const showOutcomeError = outcomeError != null && !isError
+  const showBackgroundLifecycle =
+    backgroundLifecycle != null &&
+    !isError &&
+    (Boolean(backgroundLifecycle.summary) ||
+      Boolean(backgroundLifecycle.result) ||
+      !backgroundSettled)
+  const showFinalOutput =
+    Boolean(part.output) &&
+    !isError &&
+    !taskOutcome &&
+    !backgroundLifecycle &&
+    !isLiveBackgroundLaunch
+  const hasAgentDetail =
+    Boolean(model) ||
+    Boolean(prompt) ||
+    adaptedToolCalls.length > 0 ||
+    hasLiveInlineTranscript ||
+    showRunningIndicator ||
+    showLaunchOnlyNote ||
+    showGrokProgress ||
+    childSession != null ||
+    showErrorOutput ||
+    showOutcomeError ||
+    showBackgroundLifecycle ||
+    showFinalOutput
+
+  // A Codex child rollout can start with a copied parent launch card pointing
+  // straight back to this same rollout. Do not turn that copied prefix into an
+  // endless nested transcript. The shared content renderer applies the same
+  // guard before it creates an activity row; this protects direct card use too.
+  if (isRecursiveTranscriptReference) return null
+
+  const agentDetail = (
+    <div
+      className={cn(
+        "min-w-0",
+        display === "dialog" ? "space-y-3" : "space-y-2"
+      )}
+      data-agent-detail-presentation={display}
     >
       {/* Model summary */}
       {model && (
@@ -452,43 +568,19 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         </div>
       )}
 
-      {/* Live subagent transcript (claude-agent-acp ≥0.63) — streaming
-          text/thinking attributed to this Agent call. LIVE-only by
-          construction: the store stops attaching it at settle and promotion
-          never carries it, so this section disappears when the real result
-          takes over below. Render is tail-bounded; the data is not. */}
-      {isRunning && transcriptTail.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-            {t("agentLiveTranscript")}
-          </div>
-          {transcriptTail.map((entry, i) =>
-            entry.type === "thinking" ? (
-              entry.text.trim() ? (
-                <div
-                  key={i}
-                  className="whitespace-pre-wrap text-xs italic text-muted-foreground/80"
-                >
-                  {entry.text}
-                </div>
-              ) : null
-            ) : (
-              <div
-                key={i}
-                className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside"
-              >
-                <MessageResponse>{entry.text}</MessageResponse>
-              </div>
-            )
-          )}
-        </div>
+      {/* Forwarded live child chunks use the same thought/message rows as the
+          parent activity stream. They are not a second "Live activity" card. */}
+      {hasLiveInlineTranscript && (
+        <AssistantActivityRows
+          items={transcriptActivityItems}
+          renderItem={() => null}
+          className={alignTimelineToParent ? "pl-0 pr-2" : undefined}
+        />
       )}
 
       {/* Running indicator (in-turn streaming, a live background launch whose
           ack just replaced the stream, or a cursor background-task envelope) */}
-      {((isRunning && !part.output) ||
-        isLiveBackgroundLaunch ||
-        outcomeBackground) && (
+      {showRunningIndicator && (
         <div className="flex items-center gap-2">
           <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
           <Shimmer className="text-sm" duration={1} shineColor="var(--primary)">
@@ -502,7 +594,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
       {/* codex native sub-agent: the card is the LAUNCH, not the run. Shown
           once it settles, where "completed" would otherwise read as "the
           sub-agent finished". */}
-      {isLaunchOnly && !isRunning && (
+      {showLaunchOnlyNote && (
         <div className="text-xs text-muted-foreground">
           {t("agentCodexLaunchOnly")}
         </div>
@@ -510,58 +602,24 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
 
       {/* Grok live sub-agent ticker (`subagent_progress`) — only while the
           child is still running; the settled card renders stats/result. */}
-      {(isRunning || isLiveBackgroundLaunch) && grokProgressLine && (
+      {showGrokProgress && (
         <div className="text-xs text-muted-foreground">{grokProgressLine}</div>
       )}
 
-      {/* The child ran as a session of its own (grok): offer to open its
-          transcript. Shown while it runs too — grok forwards nothing of the
-          child over ACP, so this is the only way to watch it work. */}
+      {/* Grok and Codex native teams forward none of the child's messages over
+          the parent ACP stream. Read the independent transcript as nested
+          activity rows instead of moving it to a side drawer. */}
       {childSession && (
-        <>
-          <button
-            type="button"
-            onClick={() =>
-              // Preferred: the transcript-level host, which survives this card
-              // scrolling out of the virtual list. Falls back to owning the
-              // drawer here when there is no host (this part also renders
-              // inside the grok child transcript, which is not virtualized).
-              viewerHost
-                ? viewerHost.open({
-                    kind: "agentSession",
-                    sessionId: childSession.sessionId,
-                    agentType: childSession.agentType,
-                    subagentType,
-                    description,
-                    // Keep re-reading the child's transcript from disk while
-                    // its launch call is unsettled or the background child is
-                    // still out. A snapshot once handed over — see the note on
-                    // `AgentSessionRequest.live`.
-                    live: isRunning || isLiveBackgroundLaunch,
-                  })
-                : setSessionOpen(true)
-            }
-            className="flex w-fit items-center gap-1.5 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
-          >
-            <MessagesSquare aria-hidden className="size-3.5 shrink-0" />
-            {t("agentSessionAction")}
-          </button>
-          {viewerHost == null && sessionOpen && (
-            <SubagentSessionDialog
-              open={sessionOpen}
-              onOpenChange={setSessionOpen}
-              sessionId={childSession.sessionId}
-              agentType={childSession.agentType}
-              subagentType={subagentType}
-              description={description}
-              live={isRunning || isLiveBackgroundLaunch}
-            />
-          )}
-        </>
+        <SubagentSessionTranscript
+          sessionId={childSession.sessionId}
+          agentType={childSession.agentType}
+          live={childTranscriptLive}
+          alignToParentRail={alignTimelineToParent}
+        />
       )}
 
       {/* Error output */}
-      {isError && part.errorText && (
+      {showErrorOutput && part.errorText && (
         <div className="rounded-md bg-destructive/10 p-3">
           <pre className="whitespace-pre-wrap break-words text-xs text-destructive">
             {part.errorText}
@@ -571,7 +629,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
 
       {/* Cursor task failure envelope ({error}) — the wire marks the call
           "completed", so this renders where the error styling belongs. */}
-      {outcomeError && !isError && (
+      {showOutcomeError && outcomeError && (
         <div className="rounded-md bg-destructive/10 p-3">
           <pre className="whitespace-pre-wrap break-words text-xs text-destructive">
             {outcomeError}
@@ -582,7 +640,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
       {/* Background lifecycle: settled summary + folded result markdown, or a
           neutral "result pending" line for an unsettled launch. Never dumps
           the marker/ack text. */}
-      {backgroundLifecycle && !isError && (
+      {showBackgroundLifecycle && backgroundLifecycle && (
         <div className="space-y-2">
           {backgroundLifecycle.summary && (
             <div className="text-xs text-muted-foreground">
@@ -604,15 +662,41 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
 
       {/* Final output. A folded task-outcome envelope renders via the
           capsule chrome above (duration suffix / error box), never as body. */}
-      {part.output &&
-        !isError &&
-        !taskOutcome &&
-        !backgroundLifecycle &&
-        !isLiveBackgroundLaunch && (
-          <div className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
-            <MessageResponse>{part.output}</MessageResponse>
-          </div>
-        )}
+      {showFinalOutput && part.output && (
+        <div className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
+          <MessageResponse>{part.output}</MessageResponse>
+        </div>
+      )}
+    </div>
+  )
+
+  if (display === "dialog") {
+    return <div className="min-w-0">{agentDetail}</div>
+  }
+
+  return (
+    <AgentCapsule
+      title={title}
+      isRunning={isRunning || isLiveBackgroundLaunch || outcomeBackground}
+      isError={isError || backgroundFailed || outcomeError != null}
+      rightSuffix={durationSuffix}
+      idBadge={agentId ? shortAgentId(agentId) : null}
+      statusLabel={statusLabel}
+      presentation={timelinePresentation ? "timeline" : "card"}
+      hasBody={hasAgentDetail}
+      timelineBodyClassName={
+        timelinePresentation && alignTimelineToParent
+          ? "-ms-[34px] w-[calc(100%+34px)]"
+          : undefined
+      }
+      // Codex reports a native spawn as completed as soon as the child has
+      // launched, while that child can still be producing its own transcript.
+      // Open when live activity arrives, including a Grok session id that is
+      // delivered after the Agent card first mounted. User disclosure choices
+      // still take precedence once they click the pill.
+      autoOpen={autoOpenTimeline}
+    >
+      {agentDetail}
     </AgentCapsule>
   )
 })

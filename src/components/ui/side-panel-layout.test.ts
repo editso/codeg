@@ -20,7 +20,6 @@ const SIDE_PANELS = [
   "src/components/tasks/task-detail-sheet.tsx",
   "src/components/tasks/task-transcript-dialog.tsx",
   "src/components/message/sub-agent-session-dialog.tsx",
-  "src/components/message/subagent-session-dialog.tsx",
   "src/components/forge/forge-issue-detail-sheet.tsx",
 ]
 

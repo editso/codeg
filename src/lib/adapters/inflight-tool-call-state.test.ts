@@ -91,7 +91,7 @@ describe("unmatched persisted tool call + inProgressToolCallIds", () => {
 describe("a MATCHED placeholder result (the grok shape)", () => {
   // The grok parser pairs every call with a placeholder `ToolResult` and
   // backfills it later, so an unfinished call arrives MATCHED — the unmatched
-  // branch never sees it. `SubagentSessionDialog` polls a RUNNING child's file
+  // branch never sees it. `SubagentSessionTranscript` polls a RUNNING child's file
   // and passes the set it derives from the parser's own per-call status.
   const placeholderPair = (id: string): ContentBlock[] => [
     {
