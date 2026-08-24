@@ -1,4 +1,4 @@
-import { type ReactElement } from "react"
+import { type ReactElement, type ReactNode } from "react"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { StickToBottom } from "use-stick-to-bottom"
@@ -6,7 +6,12 @@ import { describe, expect, it, vi } from "vitest"
 
 import { AgentToolCallPart } from "./agent-tool-call"
 import { ContentPartsRenderer } from "./content-parts-renderer"
-import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import {
+  adaptMessageTurn,
+  type AdaptedContentPart,
+} from "@/lib/adapters/ai-elements-adapter"
+import { buildStreamingTurnsFromLiveMessage } from "@/contexts/conversation-runtime-context"
+import type { LiveMessage } from "@/contexts/acp-connections-context"
 import enMessages from "@/i18n/messages/en.json"
 
 type ToolCallPart = Extract<AdaptedContentPart, { type: "tool-call" }>
@@ -30,6 +35,12 @@ vi.mock("./subagent-session-transcript", () => ({
       data-session-id={sessionId}
       data-parent-rail={String(Boolean(alignToParentRail))}
     />
+  ),
+}))
+
+vi.mock("@/components/ai-elements/link-safety", () => ({
+  FilePathLink: ({ children }: { children: ReactNode }) => (
+    <span>{children}</span>
   ),
 }))
 
@@ -441,6 +452,115 @@ describe("AgentToolCallPart grok live progress", () => {
     expect(
       screen.queryByText(/Subagent started in background/)
     ).not.toBeInTheDocument()
+  })
+})
+
+describe("AgentToolCallPart live child edits", () => {
+  it("renders the complete live old/new payload as a compact diff", () => {
+    const oldSource = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const sourceLine${index} = ${index}`
+    ).join("\n")
+    const newSource = oldSource.replace(
+      "export const sourceLine4200 = 4200",
+      "export const sourceLine4200 = 4201"
+    )
+    const editInput = JSON.stringify({
+      file_path:
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+      // Match the live payload that exposed the bug: the huge new side occurs
+      // before old_string, so a 500-character preview can never form a diff.
+      new_string: newSource,
+      old_string: oldSource,
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-edit",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "edit the renderer",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-edit",
+            title: "Edit content-parts-renderer.tsx",
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: editInput,
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        // The parent remains active after the child Edit has completed.
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    expect(parentPart).toBeDefined()
+    expect(parentPart?.agentStats?.tool_calls?.[0]?.input_preview).toBe(
+      editInput
+    )
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: /content-parts-renderer\.tsx/ })
+    )
+
+    expect(
+      screen.getByText("export const sourceLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const sourceLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"new_string"')
+    expect(document.body.textContent).not.toContain('"old_string"')
   })
 })
 

@@ -846,6 +846,90 @@ function resolveLiveToolInput(
   return info.raw_input
 }
 
+const AGENT_TOOL_INPUT_PREVIEW_CHARS = 500
+const agentToolInputPreviewCache = new WeakMap<
+  ToolCallInfo,
+  { toolName: string; rawInput: string | null; preview: string | null }
+>()
+
+function hasStringField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean {
+  return keys.some((key) => typeof value[key] === "string")
+}
+
+/**
+ * A child Edit is rendered from `AgentExecutionStats` while its parent Agent is
+ * still running. Most child inputs are intentionally summaries, but an Edit
+ * carrying both replacement sides is render data rather than prose: the UI
+ * needs the complete old/new pair to produce its compact unified diff.
+ *
+ * Keep this predicate deliberately narrow. Large writes without an old side,
+ * shell inputs, and arbitrary JSON continue to use the bounded preview.
+ */
+function hasCompleteAgentEditInput(rawInput: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawInput)
+  } catch {
+    return false
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false
+  }
+
+  const input = parsed as Record<string, unknown>
+  const oldKeys = ["old_string", "oldString", "old_text", "oldText"]
+  const newKeys = ["new_string", "newString", "new_text", "newText"]
+  if (hasStringField(input, oldKeys) && hasStringField(input, newKeys)) {
+    return true
+  }
+
+  const changes = input.changes
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+    return false
+  }
+
+  return Object.values(changes).some((change) => {
+    if (!change || typeof change !== "object" || Array.isArray(change)) {
+      return false
+    }
+    const fields = change as Record<string, unknown>
+    return (
+      (hasStringField(fields, oldKeys) && hasStringField(fields, newKeys)) ||
+      hasStringField(fields, ["diff", "patch", "unified_diff", "unifiedDiff"])
+    )
+  })
+}
+
+function agentToolInputPreview(
+  toolName: string,
+  info: ToolCallInfo
+): string | null {
+  const rawInput = info.raw_input
+  const cached = agentToolInputPreviewCache.get(info)
+  if (cached && cached.toolName === toolName && cached.rawInput === rawInput) {
+    return cached.preview
+  }
+
+  let preview: string | null
+  if (!rawInput) return null
+  if (rawInput.length <= AGENT_TOOL_INPUT_PREVIEW_CHARS) {
+    preview = rawInput
+  } else if (
+    (toolName === "edit" || toolName === "apply_patch") &&
+    hasCompleteAgentEditInput(rawInput)
+  ) {
+    preview = rawInput
+  } else {
+    preview = rawInput.substring(0, AGENT_TOOL_INPUT_PREVIEW_CHARS)
+  }
+
+  agentToolInputPreviewCache.set(info, { toolName, rawInput, preview })
+  return preview
+}
+
 export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage,
@@ -1208,7 +1292,7 @@ export function buildStreamingTurnsFromLiveMessage(
                       : ci.content
                   return {
                     tool_name: cn,
-                    input_preview: ci.raw_input?.substring(0, 500) ?? null,
+                    input_preview: agentToolInputPreview(cn, ci),
                     output_preview: cFinal
                       ? (cOutput?.substring(0, 500) ?? null)
                       : null,
