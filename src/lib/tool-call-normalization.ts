@@ -313,7 +313,12 @@ function inferFromInput(
   const normalizedKind = normalizeToolName(kind ?? "")
   const normalizedTitle = normalizeToolName(title ?? "")
 
-  if (rawInput.includes("*** Begin Patch")) {
+  // A file being edited may itself contain an `apply_patch` example (tests,
+  // documentation, or code that generates patches). Matching that marker
+  // anywhere in a serialized `{ old_string, new_string }` envelope turns a
+  // normal Edit into ApplyPatch. A raw patch starts with its marker; JSON
+  // envelopes are inspected structurally below after parsing.
+  if (rawInput.trim().startsWith("*** Begin Patch")) {
     return "apply_patch"
   }
 
@@ -333,6 +338,23 @@ function inferFromInput(
 
   const parsed = tryParseInputObject(rawInput)
   if (!parsed) return null
+
+  const patch =
+    parsed.patch ?? parsed.diff ?? parsed.unified_diff ?? parsed.unifiedDiff
+  if (
+    typeof patch === "string" &&
+    patch.trim().startsWith("*** Begin Patch")
+  ) {
+    return "apply_patch"
+  }
+
+  const patchCommand = parsed.command ?? parsed.cmd ?? parsed.script
+  if (
+    typeof patchCommand === "string" &&
+    patchCommand.includes("*** Begin Patch")
+  ) {
+    return "apply_patch"
+  }
 
   // Cursor live MCP calls (`mcpToolCall`): rawInput carries the provider and
   // tool identity. Resolve to `<provider>__<tool>` — the same shape the

@@ -581,15 +581,6 @@ function extractEditLineChangeStats(
   if (!input || input.trim().length === 0) return null
 
   const parsed = tryParseJson(input)
-  const patchInput = extractApplyPatchTextFromUnknownInput(input, parsed)
-  if (patchInput) {
-    const patchStats = parseApplyPatchInput(patchInput)
-    const stats = {
-      additions: patchStats.additions,
-      deletions: patchStats.deletions,
-    }
-    if (hasLineChanges(stats)) return stats
-  }
 
   if (parsed) {
     const changesPayload = extractEditChangesPayload(parsed)
@@ -639,7 +630,17 @@ function extractEditLineChangeStats(
     }
   }
 
-  if (looksLikeDiffPayload(input)) {
+  const patchInput = extractApplyPatchTextFromUnknownInput(input, parsed)
+  if (patchInput) {
+    const patchStats = parseApplyPatchInput(patchInput)
+    const stats = {
+      additions: patchStats.additions,
+      deletions: patchStats.deletions,
+    }
+    if (hasLineChanges(stats)) return stats
+  }
+
+  if (!parsed && looksLikeDiffPayload(input)) {
     const stats = countUnifiedDiffLineChanges(unescapeInlineEscapes(input))
     if (hasLineChanges(stats)) return stats
   }
@@ -658,17 +659,37 @@ function extractApplyPatchTextFromUnknownInput(
   input: string,
   parsed: Record<string, unknown> | null
 ): string | null {
-  const candidates: string[] = [input]
+  // Do not scan the serialized outer JSON envelope. `old_string` and
+  // `new_string` contain source text, and source may legitimately include an
+  // apply_patch example. Only a raw patch, an explicit patch field, or a
+  // command field is allowed to supply a patch here.
+  const candidates: Array<{ value: string; allowEmbeddedPatch: boolean }> = []
+  const directInput = input.trim()
+  if (directInput.startsWith("*** Begin Patch")) {
+    candidates.push({ value: directInput, allowEmbeddedPatch: false })
+  }
+
+  const patchFromFields = parsed
+    ? firstStringField(parsed, ["patch", "diff", "unified_diff", "unifiedDiff"])
+    : null
+  if (patchFromFields) {
+    candidates.push({ value: patchFromFields, allowEmbeddedPatch: true })
+  }
+
   const parsedCommand = parsed ? commandFromUnknownValue(parsed) : null
-  if (parsedCommand) candidates.push(parsedCommand)
+  if (parsedCommand) {
+    candidates.push({ value: parsedCommand, allowEmbeddedPatch: true })
+  }
 
   const fallbackCommand = extractCommandFromUnknownInput(input)
-  if (fallbackCommand) candidates.push(fallbackCommand)
+  if (fallbackCommand) {
+    candidates.push({ value: fallbackCommand, allowEmbeddedPatch: true })
+  }
 
   const seen = new Set<string>()
 
-  for (const rawCandidate of candidates) {
-    const candidate = rawCandidate.trim()
+  for (const { value, allowEmbeddedPatch } of candidates) {
+    const candidate = value.trim()
     if (!candidate || seen.has(candidate)) continue
     seen.add(candidate)
 
@@ -677,7 +698,10 @@ function extractApplyPatchTextFromUnknownInput(
     if (unescaped !== candidate) variants.push(unescaped)
 
     for (const variant of variants) {
-      if (!variant.includes("*** Begin Patch")) continue
+      const markerIndex = variant.indexOf("*** Begin Patch")
+      if (markerIndex < 0 || (!allowEmbeddedPatch && markerIndex !== 0)) {
+        continue
+      }
 
       const block = variant.match(
         /(\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch(?:\n|$))/m
@@ -700,6 +724,11 @@ function parseApplyPatchFilesFromUnknownInput(
     const fromPatchText = parseApplyPatchInput(patchText)
     if (fromPatchText.files.length > 0) return fromPatchText.files
   }
+
+  // A parsed JSON envelope can contain an apply_patch example in the source
+  // text being edited. Never unescape and line-parse the whole envelope: only
+  // an actual raw patch reaches this fallback.
+  if (parsed) return []
 
   const direct = parseApplyPatchInput(input)
   if (direct.files.length > 0) return direct.files
