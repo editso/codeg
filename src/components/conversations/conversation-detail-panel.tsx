@@ -24,10 +24,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import {
-  useAcpActions,
-  useAcpEvent,
-} from "@/contexts/acp-connections-context"
+import { useAcpActions, useAcpEvent } from "@/contexts/acp-connections-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -60,6 +57,7 @@ import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
 import { GroupSplitHandle } from "@/components/conversations/group-split-handle"
+import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { TabBar } from "@/components/tabs/tab-bar"
 import { TabDragGhost } from "@/components/tabs/tab-drag-ghost"
@@ -791,9 +789,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const connIsForOtherAgent =
     conn.agentType != null && conn.agentType !== selectedAgent
   const effectiveModes = connIsForOtherAgent ? null : conn.modes
-  const effectiveConfigOptions = connIsForOtherAgent
-    ? null
-    : conn.configOptions
+  const effectiveConfigOptions = connIsForOtherAgent ? null : conn.configOptions
   // The live connection is ready for THIS tab only when it's connected AND its
   // cwd matches the tab's intended working dir. A just-retargeted chat draft (or
   // any mid-reconnect) can briefly read a stale "connected" for the PREVIOUS cwd;
@@ -2767,7 +2763,14 @@ export function ConversationDetailPanel() {
         {(isSplit || canTileG) && active && (
           <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
-        {view}
+        {/* A backgrounded tab is kept mounted and merely hidden (its session is
+            still live), but a "查看会话" drawer opened from it portals to the
+            body — so without this it went on painting over whichever tab the
+            user switched to. The flag is additive, so a visible tab inside a
+            covered workspace stays hidden. */}
+        <OverlayHostHiddenProvider hidden={!canTileG && !visible}>
+          {view}
+        </OverlayHostHiddenProvider>
       </div>
     )
   }

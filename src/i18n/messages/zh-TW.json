@@ -181,6 +181,7 @@
       "chooseImage": "選擇圖片",
       "replaceImage": "更換圖片",
       "removeImage": "移除",
+      "formatHint": "支援 PNG、JPEG、WebP、GIF；動圖會自動播放。",
       "fillMode": "填滿方式",
       "fillModes": {
         "cover": "覆蓋",
@@ -194,6 +195,7 @@
       "panelOpacity": "面板不透明度",
       "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
       "errorTooLarge": "圖片太大（最大 16 MB）。",
+      "errorUnsupportedFormat": "不支援的圖片格式，請選擇 PNG、JPEG、WebP 或 GIF。",
       "errorUploadFailed": "設定背景圖片失敗。"
     }
   },
@@ -818,6 +820,33 @@
       "advancedHint": "完整的 settings.json，儲存時會按原文寫入——這也是唯一能刪除某個鍵的入口。",
       "saveRawConfig": "儲存檔案"
     },
+    "antigravity": {
+      "configDescription": "Antigravity 必须先选定认证方式才能开始会话。所选方式会写入 $GEMINI_HOME/antigravity-acp/settings.json 的 auth.type —— 这是 ACP 服务端唯一读取的位置，不写就每次新建会话都会报 “Authentication required”。模型与会话模式不在这里：Antigravity 通过 ACP 上报它们，由输入框的选择器按会话管理。",
+      "methodLabel": "认证方式",
+      "methods": {
+        "oauth-personal": "使用 Google 账号登录",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API Key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "你的 Google 账号，任意 Antigravity 套餐（含免费版）均可。首次新建会话会自动打开浏览器完成登录，之后令牌会被缓存复用。",
+        "oauth-business": "你的 Gemini Enterprise 账号。需要填 GCP 项目与区域，首次新建会话会打开浏览器。",
+        "gemini-api-key": "Gemini Developer API 的密钥，以 GEMINI_API_KEY 传给智能体。",
+        "agent-platform": "即原 Vertex AI。可用 API Key，或用项目 + 区域配合应用默认凭据（gcloud auth application-default login）。"
+      },
+      "geminiApiKeyLabel": "Gemini API Key",
+      "googleApiKeyLabel": "Google API Key",
+      "googleApiKeyHint": "可选。填了就单独使用它，下面的项目与区域会被忽略；留空则改用应用默认凭据认证。",
+      "gcpProjectLabel": "GCP 项目",
+      "gcpLocationLabel": "GCP 区域",
+      "missingGeminiApiKey": "请填写 Gemini API Key，或改用其他认证方式 —— 否则会话无法启动。",
+      "missingAgentPlatformConfig": "请填写 API Key，或同时填写项目与区域 —— 二者缺一不可，否则会话无法启动。",
+      "missingEnterpriseConfig": "Gemini Enterprise 需要同时填写项目与区域。",
+      "settingsFileHint": "auth.type 会保存到该文件；你自己写在里面的其他键会原样保留。",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "保存"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 設定",
       "configDescription": "端點與金鑰是 deepseek-acp 啟動時讀取的環境變數。模型與推理等級是工作階段層級的選擇器，在輸入框裡切換。",
@@ -1267,7 +1296,10 @@
       "piBinaryUninstallFailed": "pi 解除安裝失敗",
       "savePiTrustFailed": "儲存工作區信任失敗",
       "qoderSaved": "Qoder 設定已儲存",
-      "saveQoderConfigFailed": "儲存 Qoder 設定失敗"
+      "saveQoderConfigFailed": "儲存 Qoder 設定失敗",
+      "antigravitySaved": "已保存 Antigravity 配置",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "保存 Antigravity 配置失败"
     },
     "version": {
       "statusLabel": "版本狀態",
@@ -1620,9 +1652,11 @@
       "openFolder": "開啟資料夾",
       "searchPlaceholder": "搜尋對話...",
       "viewOptions": "顯示選項",
+      "listOptions": "會話列表",
       "showCompleted": "顯示已完成對話",
       "showWorktrees": "顯示工作樹資料夾",
       "showRecent": "顯示「最近」分組",
+      "navigationItems": "選單導覽項目",
       "moreOptions": "更多選項",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按建立時間排序",
@@ -2665,6 +2699,8 @@
           "nextRetryIn": "{seconds} 秒後重試",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
         },
         "configOptionAdjusted": "{agent} 把{option}設成了 {actual}，而不是 {requested}"
@@ -4593,6 +4629,7 @@
     "actionEdit": "編輯",
     "actionDelete": "刪除",
     "actionRetryCleanup": "重試清理",
+    "actionDeleteWorktree": "刪除 worktree",
     "actionMerge": "合併",
     "actionUnqueueMerge": "取消排隊",
     "actionEditQueuedMerge": "修改排隊的合併",
@@ -4686,6 +4723,8 @@
     "strategySquashHint": "任務的所有修改壓縮成一筆提交記錄併入主分支，歷史更簡潔。",
     "strategyMerge": "保留完整提交歷史",
     "strategyMergeHint": "保留任務過程中的每一筆提交，另加一筆合併記錄，每一步都可追溯。",
+    "mergeInstructions": "補充說明（可選）",
+    "mergeInstructionsPlaceholder": "例如：衝突時以本分支為準",
     "mergeDeleteWorktree": "合併後刪除 worktree",
     "mergeSubmit": "合併",
     "mergeSubmitQueue": "加入合併佇列",
@@ -4767,6 +4806,8 @@
     "deleteConfirmTitle": "刪除任務？",
     "deleteConfirmBody": "「{title}」將從看板移除。進行中的執行會先被取消。",
     "deleteWithWorktree": "同時刪除其 worktree",
+    "deleteWorktreeConfirmTitle": "刪除 worktree？",
+    "deleteWorktreeConfirmBody": "worktree 目錄及其工作分支將被徹底刪除。任務仍留在看板上，其會話會移到專案資料夾下。",
     "eventCreated": "已建立",
     "eventStatusChanged": "狀態變更",
     "eventConfigEffective": "啟動配置",
@@ -5133,6 +5174,10 @@
     "incompleteResults": "搜尋逾時，本頁可能有遺漏。",
     "reachableCap": "只能翻閱前 {count} 筆，其餘的請縮小篩選範圍後查看。",
     "openRepo": "開啟儲存庫",
+    "openItem": "在瀏覽器中開啟",
+    "detailDescription": "該項目的描述，以及可以對它執行的操作。",
+    "detailUpdated": "更新於 {time}",
+    "detailNoBody": "沒有描述",
     "stateFilter": "狀態",
     "emptyPage": "本頁沒有內容",
     "dialogDescription": "將在 {repo} 對應的資料夾建立一個待辦任務——智慧體在獨立工作樹裡工作，你驗收後才落地。",

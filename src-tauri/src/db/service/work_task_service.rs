@@ -1485,6 +1485,27 @@ pub async fn fail(
     Ok(true)
 }
 
+/// Cancel the active generation when its agent reports a cancelled turn.
+///
+/// Unlike [`cancel`], this is an engine-owned transition: a delayed event must
+/// not overwrite a generation that has already settled for review (or a newer
+/// generation of the same task).
+pub async fn cancel_running_generation(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+        Some(run_seq),
+        "engine",
+        None,
+    )
+    .await
+}
+
 /// running/awaiting_input → review for the given generation. Captures the
 /// agent's summary and the diff-stat snapshot; also writes a `diff_stat` event
 /// when stats are present.
@@ -2287,9 +2308,40 @@ pub async fn cancel(
     id: i32,
     reason: Option<&str>,
 ) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[
+            WorkTaskStatus::Todo,
+            WorkTaskStatus::Queued,
+            WorkTaskStatus::Preparing,
+            WorkTaskStatus::Running,
+            WorkTaskStatus::AwaitingInput,
+            WorkTaskStatus::Review,
+            WorkTaskStatus::Failed,
+        ],
+        None,
+        "user",
+        reason,
+    )
+    .await
+}
+
+/// The single conditional UPDATE behind both cancels: `expected` (and, for an
+/// engine-owned transition, `run_seq`) is the CAS; `actor` / `reason` is the
+/// audit trail. One write, so the columns a cancel has to clear can never drift
+/// between the user's stop button and the engine's own.
+async fn cancel_inner(
+    conn: &DatabaseConnection,
+    id: i32,
+    expected: &[WorkTaskStatus],
+    run_seq: Option<i32>,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<bool, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
-    let res = work_task::Entity::update_many()
+    let mut update = work_task::Entity::update_many()
         .col_expr(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Canceled)),
@@ -2300,7 +2352,9 @@ pub async fn cancel(
         .col_expr(work_task::Column::PendingMerge, Expr::value(None::<String>))
         // Same reasoning for a planned start: stopping a task drops its plan,
         // so a requeue days later cannot resurrect a time nobody remembers
-        // setting and launch an agent unattended.
+        // setting and launch an agent unattended. (A running row carries no
+        // plan — every claim consumes it — so this only bites the user path,
+        // but the clear belongs to "canceled", not to one caller.)
         .col_expr(
             work_task::Column::ScheduledAt,
             Expr::value(None::<chrono::DateTime<Utc>>),
@@ -2308,18 +2362,12 @@ pub async fn cancel(
         .col_expr(work_task::Column::FinishedAt, Expr::value(Some(now)))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
-        .filter(work_task::Column::Status.is_in([
-            WorkTaskStatus::Todo,
-            WorkTaskStatus::Queued,
-            WorkTaskStatus::Preparing,
-            WorkTaskStatus::Running,
-            WorkTaskStatus::AwaitingInput,
-            WorkTaskStatus::Review,
-            WorkTaskStatus::Failed,
-        ]))
-        .filter(work_task::Column::DeletedAt.is_null())
-        .exec(&txn)
-        .await?;
+        .filter(work_task::Column::Status.is_in(expected.iter().copied()))
+        .filter(work_task::Column::DeletedAt.is_null());
+    if let Some(run_seq) = run_seq {
+        update = update.filter(work_task::Column::RunSeq.eq(run_seq));
+    }
+    let res = update.exec(&txn).await?;
     if res.rows_affected != 1 {
         txn.rollback().await?;
         return Ok(false);
@@ -2328,7 +2376,7 @@ pub async fn cancel(
         .map(str::trim)
         .filter(|r| !r.is_empty())
         .map(|r| serde_json::json!({ "reason": r }));
-    status_changed_event(&txn, id, "user", None, WorkTaskStatus::Canceled, extra).await?;
+    status_changed_event(&txn, id, actor, None, WorkTaskStatus::Canceled, extra).await?;
     txn.commit().await?;
     Ok(true)
 }
@@ -3489,6 +3537,68 @@ mod tests {
         assert!(get(&db.conn, t.id).await.unwrap().last_error.is_none());
     }
 
+    /// The parked column is the ONLY carrier of the user's extra merge
+    /// instructions between the dialog and the pump's later dispatch — a drop
+    /// anywhere along park → column → parse → wire loses what they asked for
+    /// with no trace on the card or the timeline.
+    #[tokio::test]
+    async fn a_queued_merge_carries_the_users_extra_instructions() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-merge-extra").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let seq = to_review(&db, t.id).await;
+
+        let intent = WorkTaskQueuedMerge {
+            message: None,
+            delete_worktree: true,
+            instructions: Some("prefer ours on conflict".into()),
+            queued_at: Utc::now(),
+        };
+        assert!(queue_merge(&db.conn, t.id, &intent, seq, None).await.unwrap());
+
+        let raw = get_model(&db.conn, t.id)
+            .await
+            .unwrap()
+            .pending_merge
+            .expect("parked");
+        assert_eq!(
+            queued_merge(Some(raw.as_str()))
+                .expect("parses")
+                .instructions
+                .as_deref(),
+            Some("prefer ours on conflict"),
+            "this is what the pump replays into the merge generation"
+        );
+        assert_eq!(
+            get(&db.conn, t.id)
+                .await
+                .unwrap()
+                .merge_queued
+                .expect("on the wire")
+                .instructions
+                .as_deref(),
+            Some("prefer ours on conflict"),
+            "reopening the dialog has to show what is parked"
+        );
+
+        // An intent WITHOUT them serializes exactly as it did before the field
+        // existed. The queue CASes on this column's RAW text, so a key that
+        // appeared out of nowhere would make every merge parked before the
+        // upgrade miss its own claim.
+        let bare = WorkTaskQueuedMerge {
+            instructions: None,
+            ..intent
+        };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("instructions"));
+        // …and the mirror: a row parked before the upgrade still parses.
+        assert!(queued_merge(Some(
+            r#"{"message":null,"delete_worktree":true,"queued_at":"2026-08-01T00:30:00Z"}"#
+        ))
+        .expect("legacy intent parses")
+        .instructions
+        .is_none());
+    }
+
     /// The merge queue's row-level contract: an intent only lands on the exact
     /// review generation the caller validated, it survives on the row until
     /// something spends it, and a dispatch (from the pump or from a click that
@@ -3502,6 +3612,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: Some("feat: land it".into()),
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
         // Not in review yet — nothing to queue on.
@@ -3532,6 +3643,7 @@ mod tests {
         let edited = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: false,
+            instructions: None,
             queued_at: parked.queued_at,
         };
         assert!(queue_merge(&db.conn, t.id, &edited, seq, None).await.unwrap());
@@ -3591,6 +3703,7 @@ mod tests {
         let intent = |secs: i64| WorkTaskQueuedMerge {
             message: Some(format!("feat: land it {secs}")),
             delete_worktree: true,
+            instructions: None,
             queued_at: chrono::DateTime::from_timestamp(1_800_000_000 + secs, 0)
                 .expect("valid instant"),
         };
@@ -3724,6 +3837,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
         assert!(queue_merge(&db.conn, t.id, &intent, seq, None).await.unwrap());
@@ -3799,6 +3913,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
 

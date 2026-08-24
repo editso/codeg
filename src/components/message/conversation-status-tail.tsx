@@ -65,8 +65,14 @@ export function ConversationStatusTail({
       claudeApiRetry.retryDelayMs !== undefined
         ? (claudeApiRetry.retryDelayMs / 1000).toFixed(1)
         : null
+    // Pi reports retry timing/counters but no cause. Preserve the upstream
+    // distinction so our in-thread status tail does not invent Claude's
+    // fallback error for a source that explicitly has none.
     const errorLabel =
-      claudeApiRetry.error ?? tAcp("claudeApiRetry.fallbackError")
+      claudeApiRetry.error ??
+      (claudeApiRetry.reportsError
+        ? tAcp("claudeApiRetry.fallbackError")
+        : null)
     const statusLabel =
       claudeApiRetry.errorStatus !== null &&
       claudeApiRetry.errorStatus !== undefined
@@ -92,15 +98,24 @@ export function ConversationStatusTail({
           })
         : null
 
+    if (errorLabel === null && statusLabel === "") {
+      return delayLabel !== null
+        ? tAcp("claudeApiRetry.lineNoErrorWithDelay", {
+            retry: retryLabel,
+            delay: delayLabel,
+          })
+        : tAcp("claudeApiRetry.lineNoError", { retry: retryLabel })
+    }
+
     return delayLabel !== null
       ? tAcp("claudeApiRetry.lineWithDelay", {
-          error: errorLabel,
+          error: errorLabel ?? "",
           status: statusLabel,
           retry: retryLabel,
           delay: delayLabel,
         })
       : tAcp("claudeApiRetry.line", {
-          error: errorLabel,
+          error: errorLabel ?? "",
           status: statusLabel,
           retry: retryLabel,
         })

@@ -101,6 +101,7 @@ const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "cursor", label: "Cursor" },
   { value: "deepseek", label: "DeepSeek Harness" },
   { value: "qoder", label: "Qoder" },
+  { value: "antigravity", label: "Google Antigravity" },
 ]
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -269,6 +270,7 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
     cursor: appSet.has("cursor"),
     deepseek: appSet.has("deepseek"),
     qoder: appSet.has("qoder"),
+    antigravity: appSet.has("antigravity"),
   }
 }
 

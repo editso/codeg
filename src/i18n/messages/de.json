@@ -181,6 +181,7 @@
       "chooseImage": "Bild auswählen",
       "replaceImage": "Bild ersetzen",
       "removeImage": "Entfernen",
+      "formatHint": "PNG, JPEG, WebP und GIF. Animierte Bilder werden automatisch abgespielt.",
       "fillMode": "Füllmodus",
       "fillModes": {
         "cover": "Füllen",
@@ -194,6 +195,7 @@
       "panelOpacity": "Panel-Deckkraft",
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
+      "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
       "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
     }
   },
@@ -818,6 +820,33 @@
       "advancedHint": "Die vollständige settings.json. Speichern schreibt die Datei wortgetreu — zugleich der einzige Weg, einen Schlüssel zu löschen.",
       "saveRawConfig": "Datei speichern"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "DeepSeek-Harness-Konfiguration",
       "configDescription": "Endpunkt und Schlüssel sind Umgebungsvariablen, die deepseek-acp beim Start liest. Modell und Denkstufe sind Auswahlfelder pro Sitzung — sie werden im Eingabefeld gewählt.",
@@ -1267,7 +1296,10 @@
       "piBinaryUninstallFailed": "pi-Deinstallation fehlgeschlagen",
       "savePiTrustFailed": "Speichern des Arbeitsbereich-Vertrauens fehlgeschlagen",
       "qoderSaved": "Qoder-Konfiguration gespeichert",
-      "saveQoderConfigFailed": "Qoder-Konfiguration konnte nicht gespeichert werden"
+      "saveQoderConfigFailed": "Qoder-Konfiguration konnte nicht gespeichert werden",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "Versionsstatus",
@@ -1620,9 +1652,11 @@
       "openFolder": "Ordner öffnen",
       "searchPlaceholder": "Konversationen suchen...",
       "viewOptions": "Anzeigeoptionen",
+      "listOptions": "Konversationsliste",
       "showCompleted": "Abgeschlossene Konversationen anzeigen",
       "showWorktrees": "Worktree-Ordner anzeigen",
       "showRecent": "Gruppe „Zuletzt“ anzeigen",
+      "navigationItems": "Navigationselemente",
       "moreOptions": "Weitere Optionen",
       "sortBy": "Sortieren nach",
       "sortByCreatedAt": "Erstellungszeit",
@@ -2665,6 +2699,8 @@
           "nextRetryIn": "nächster in {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} hat {option} auf {actual} statt {requested} gesetzt"
@@ -4593,6 +4629,7 @@
     "actionEdit": "Bearbeiten",
     "actionDelete": "Löschen",
     "actionRetryCleanup": "Aufräumen wiederholen",
+    "actionDeleteWorktree": "Worktree löschen",
     "actionMerge": "Mergen",
     "actionUnqueueMerge": "Merge-Warteschlange verlassen",
     "actionEditQueuedMerge": "Wartenden Merge bearbeiten",
@@ -4686,6 +4723,8 @@
     "strategySquashHint": "Alle Änderungen der Aufgabe landen als ein einzelner Eintrag im Verlauf des Hauptbranchs — der Verlauf bleibt übersichtlich.",
     "strategyMerge": "Gesamten Verlauf behalten",
     "strategyMergeHint": "Jeder während der Aufgabe erstellte Commit bleibt erhalten, plus ein Merge-Eintrag — jeder Schritt bleibt nachvollziehbar.",
+    "mergeInstructions": "Zusätzliche Anweisungen (optional)",
+    "mergeInstructionsPlaceholder": "z. B. bei Konflikten diesen Branch bevorzugen",
     "mergeDeleteWorktree": "Worktree nach dem Merge löschen",
     "mergeSubmit": "Mergen",
     "mergeSubmitQueue": "In die Warteschlange",
@@ -4767,6 +4806,8 @@
     "deleteConfirmTitle": "Aufgabe löschen?",
     "deleteConfirmBody": "„{title}“ wird vom Board entfernt. Ein aktiver Lauf wird zuerst abgebrochen.",
     "deleteWithWorktree": "Auch den Worktree löschen",
+    "deleteWorktreeConfirmTitle": "Worktree löschen?",
+    "deleteWorktreeConfirmBody": "Das Worktree-Verzeichnis und sein Arbeits-Branch werden endgültig gelöscht. Die Aufgabe bleibt auf dem Board, ihre Konversation wandert in den Projektordner.",
     "eventCreated": "Erstellt",
     "eventStatusChanged": "Statusänderung",
     "eventConfigEffective": "Startkonfiguration",
@@ -5133,6 +5174,10 @@
     "incompleteResults": "Die Suche hat das Zeitlimit überschritten; auf dieser Seite können Treffer fehlen.",
     "reachableCap": "Nur die ersten {count} Treffer lassen sich durchblättern; grenze die Filter ein, um den Rest zu sehen.",
     "openRepo": "Repository öffnen",
+    "openItem": "Im Browser öffnen",
+    "detailDescription": "Die Beschreibung dieses Eintrags und die verfügbaren Aktionen.",
+    "detailUpdated": "aktualisiert {time}",
+    "detailNoBody": "Keine Beschreibung",
     "stateFilter": "Status",
     "emptyPage": "Auf dieser Seite ist nichts",
     "dialogDescription": "Erstellt eine To-do-Aufgabe im Ordner von {repo} — der Agent arbeitet im eigenen Worktree, du prüfst vor dem Landen.",

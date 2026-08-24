@@ -654,13 +654,35 @@ fn ensure_pushable_branch(branch: &str) -> Result<(), String> {
     crate::commands::folders::ensure_pushable_branch_name(branch).map_err(|e| e.to_string())
 }
 
+/// How a codeg task id is written into text that lands on a forge.
+///
+/// The number is codeg-local: it names a row in this workspace's task list,
+/// not anything in the repository the text is posted to. Both halves of the
+/// form below carry weight — neither is decoration:
+///
+/// - Dropping the `#` is what stops the ISSUE reference. `#27` is a reference
+///   on both GitHub and GitLab; left bare it autolinks to whatever their own
+///   issue, pull request or merge request 27 happens to be, pointing readers
+///   of the thread at an unrelated page that looks authoritative.
+/// - The code span is what stops the COMMIT reference. Every decimal digit is
+///   also a hex digit, so a long enough id is a valid abbreviated sha:
+///   GitHub linkifies a bare `5899977` when some commit in that repository
+///   starts with it. Reference scanners skip code spans, which is what keeps
+///   this safe once ids grow past six digits.
+fn task_ref(task_id: i32) -> String {
+    format!("`{task_id}`")
+}
+
 /// Body of the pull request codeg opens. `Closes #N` is what links it to the
 /// issue: GitHub's native closing keyword beats an API `close` call — it fires
 /// only if the pull request actually merges, and only into the right branch.
+/// That reference is the intended one; the task id beside it is not, hence
+/// [`task_ref`].
 pub fn pull_request_body(issue_url: &str, issue_number: i64, task_id: i32) -> String {
+    let task = task_ref(task_id);
     format!(
         "Closes #{issue_number}\n\n\
-         Prepared by [codeg](https://github.com/xggz/codeg) work task #{task_id} \
+         Prepared by [codeg](https://github.com/xggz/codeg) work task {task} \
          from {issue_url}.\n\n\
          Review the diff before merging — the task ran against issue text \
          written by an external author."
@@ -701,22 +723,28 @@ pub fn writeback_comment_body(
         ),
         None => String::new(),
     };
+    let task = task_ref(task_id);
     match outcome {
         TaskOutcome::Merged { commit, base_branch } => {
             let short: String = commit.chars().take(7).collect();
+            // "merged locally", not "merged": this landed in the triggering
+            // user's own checkout and was never pushed, so to everyone else
+            // reading the thread the branch is untouched and the sha resolves
+            // to nothing. Saying it plainly is the difference between a status
+            // note and a false claim that the work has shipped.
             format!(
-                "codeg work task #{task_id} is done — merged into `{base_branch}` as \
+                "codeg work task {task} is done — merged locally into `{base_branch}` as \
                  `{short}`{numbers}."
             )
         }
         TaskOutcome::Delivered { pr_url } => {
-            format!("codeg work task #{task_id} is done — {pr_url}{numbers}.")
+            format!("codeg work task {task} is done — {pr_url}{numbers}.")
         }
         TaskOutcome::Accepted { nothing_to_land: true } => {
-            format!("codeg work task #{task_id} is done — accepted with nothing to land.")
+            format!("codeg work task {task} is done — accepted with nothing to land.")
         }
         TaskOutcome::Accepted { nothing_to_land: false } => {
-            format!("codeg work task #{task_id} is done — accepted without merging{numbers}.")
+            format!("codeg work task {task} is done — accepted without merging{numbers}.")
         }
     }
 }
@@ -1072,7 +1100,11 @@ mod tests {
     fn body_carries_the_closing_keyword() {
         let body = pull_request_body("https://github.com/acme/app/issues/7", 7, 12);
         assert!(body.starts_with("Closes #7\n"));
-        assert!(body.contains("work task #12"));
+        // The one reference the body is allowed to make is that closing
+        // keyword. The task id sits in a code span so the forge does not
+        // autolink it to its own issue 12.
+        assert!(body.contains("work task `12`"), "{body}");
+        assert!(!body.contains("#12"), "autolinkable task id: {body}");
     }
 
     /// The trigger gate answers one question: when the agent finishes, is
@@ -1173,10 +1205,15 @@ mod tests {
             },
             Some((3, 42, 7)),
         );
-        assert!(merged.contains("work task #12"), "{merged}");
+        // A code-spanned id, never `#12`: the number is codeg's, and both
+        // forges would turn the bare form into a link to their own issue 12.
+        assert!(merged.contains("work task `12`"), "{merged}");
+        assert!(!merged.contains("#12"), "autolinkable task id: {merged}");
         assert!(merged.contains("`abc1234`"), "short sha: {merged}");
         assert!(!merged.contains("def5678"), "full sha leaked: {merged}");
         assert!(merged.contains("`main`") && merged.contains("(3 files, +42/-7)"), "{merged}");
+        // A local merge must not read as "this shipped" to the thread.
+        assert!(merged.contains("merged locally into"), "{merged}");
 
         let delivered = writeback_comment_body(
             12,
@@ -1195,7 +1232,7 @@ mod tests {
         // The third settlement says so rather than staying silent — the
         // setting promises a comment whenever a forge task finishes.
         let empty = writeback_comment_body(12, &TaskOutcome::Accepted { nothing_to_land: true }, None);
-        assert!(empty.contains("work task #12") && empty.contains("nothing to land"));
+        assert!(empty.contains("work task `12`") && empty.contains("nothing to land"));
         // …and an acceptance whose worktree was gone must NOT claim there was
         // nothing to land while printing the counters that say otherwise.
         let gone = writeback_comment_body(

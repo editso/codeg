@@ -181,6 +181,7 @@
       "chooseImage": "이미지 선택",
       "replaceImage": "이미지 변경",
       "removeImage": "제거",
+      "formatHint": "PNG, JPEG, WebP, GIF를 지원합니다. 움직이는 이미지는 자동으로 재생됩니다.",
       "fillMode": "채우기 방식",
       "fillModes": {
         "cover": "채우기",
@@ -194,6 +195,7 @@
       "panelOpacity": "패널 불투명도",
       "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
       "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
+      "errorUnsupportedFormat": "지원하지 않는 이미지 형식입니다. PNG, JPEG, WebP, GIF 중에서 선택하세요.",
       "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
     }
   },
@@ -818,6 +820,33 @@
       "advancedHint": "settings.json 전체입니다. 저장하면 그대로 기록되며, 키를 삭제할 수 있는 유일한 경로이기도 합니다.",
       "saveRawConfig": "파일 저장"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 구성",
       "configDescription": "엔드포인트와 API 키는 deepseek-acp가 시작할 때 읽는 환경 변수입니다. 모델과 추론 강도는 세션별 선택기이므로 입력창에서 바꿉니다.",
@@ -1267,7 +1296,10 @@
       "piBinaryUninstallFailed": "pi 제거 실패",
       "savePiTrustFailed": "작업 공간 신뢰 저장 실패",
       "qoderSaved": "Qoder 설정을 저장했습니다",
-      "saveQoderConfigFailed": "Qoder 설정 저장에 실패했습니다"
+      "saveQoderConfigFailed": "Qoder 설정 저장에 실패했습니다",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "버전 상태",
@@ -1620,9 +1652,11 @@
       "openFolder": "폴더 열기",
       "searchPlaceholder": "대화 검색...",
       "viewOptions": "보기 옵션",
+      "listOptions": "대화 목록",
       "showCompleted": "완료된 대화 표시",
       "showWorktrees": "워크트리 폴더 표시",
       "showRecent": "'최근' 그룹 표시",
+      "navigationItems": "탐색 항목",
       "moreOptions": "더 많은 옵션",
       "sortBy": "정렬 기준",
       "sortByCreatedAt": "생성 시간순",
@@ -2665,6 +2699,8 @@
           "nextRetryIn": "{seconds}초 후 재시도",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent}이(가) {option}을(를) {requested} 대신 {actual}(으)로 설정했습니다"
@@ -4593,6 +4629,7 @@
     "actionEdit": "편집",
     "actionDelete": "삭제",
     "actionRetryCleanup": "정리 다시 시도",
+    "actionDeleteWorktree": "worktree 삭제",
     "actionMerge": "병합",
     "actionUnqueueMerge": "병합 대기 취소",
     "actionEditQueuedMerge": "대기 중인 병합 수정",
@@ -4686,6 +4723,8 @@
     "strategySquashHint": "작업의 모든 변경 사항이 하나의 기록으로 메인 브랜치에 반영되어 히스토리가 깔끔해집니다.",
     "strategyMerge": "전체 히스토리 유지",
     "strategyMergeHint": "작업 중의 모든 커밋을 그대로 유지하고 병합 기록을 하나 추가합니다. 각 단계를 추적할 수 있습니다.",
+    "mergeInstructions": "추가 지시 사항 (선택)",
+    "mergeInstructionsPlaceholder": "예: 충돌 시 이 브랜치를 우선",
     "mergeDeleteWorktree": "병합 후 worktree 삭제",
     "mergeSubmit": "병합",
     "mergeSubmitQueue": "병합 대기열에 추가",
@@ -4767,6 +4806,8 @@
     "deleteConfirmTitle": "작업을 삭제할까요?",
     "deleteConfirmBody": "“{title}”이(가) 보드에서 제거됩니다. 실행 중이면 먼저 취소됩니다.",
     "deleteWithWorktree": "worktree도 함께 삭제",
+    "deleteWorktreeConfirmTitle": "worktree를 삭제할까요?",
+    "deleteWorktreeConfirmBody": "worktree 디렉터리와 작업 브랜치가 완전히 삭제됩니다. 작업은 보드에 그대로 남고, 대화는 프로젝트 폴더로 옮겨집니다.",
     "eventCreated": "생성됨",
     "eventStatusChanged": "상태 변경",
     "eventConfigEffective": "실행 구성",
@@ -5133,6 +5174,10 @@
     "incompleteResults": "검색 시간이 초과되어 이 페이지에 누락이 있을 수 있습니다.",
     "reachableCap": "앞의 {count}개까지만 페이지로 넘길 수 있습니다. 나머지는 필터를 좁혀서 확인하세요.",
     "openRepo": "저장소 열기",
+    "openItem": "브라우저에서 열기",
+    "detailDescription": "이 항목의 설명과 수행할 수 있는 작업.",
+    "detailUpdated": "업데이트 {time}",
+    "detailNoBody": "설명 없음",
     "stateFilter": "상태",
     "emptyPage": "이 페이지에는 항목이 없습니다",
     "dialogDescription": "{repo} 폴더에 할 일 작업을 생성합니다. 에이전트는 독립된 워크트리에서 작업하며, 검토 후에만 반영됩니다.",

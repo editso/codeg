@@ -181,6 +181,7 @@
       "chooseImage": "画像を選択",
       "replaceImage": "画像を変更",
       "removeImage": "削除",
+      "formatHint": "PNG・JPEG・WebP・GIF に対応しています。アニメーション画像は自動で再生されます。",
       "fillMode": "表示方法",
       "fillModes": {
         "cover": "全体を覆う",
@@ -194,6 +195,7 @@
       "panelOpacity": "パネルの不透明度",
       "panelOpacityHint": "サイドバー・パネル・タブバーの不透明度です。低いほど画像が透けて見えます。",
       "errorTooLarge": "画像が大きすぎます（最大 16 MB）。",
+      "errorUnsupportedFormat": "対応していない画像形式です。PNG・JPEG・WebP・GIF から選んでください。",
       "errorUploadFailed": "背景画像の設定に失敗しました。"
     }
   },
@@ -818,6 +820,33 @@
       "advancedHint": "settings.json 全体です。保存するとそのまま書き込まれ、キーを削除できる唯一の手段でもあります。",
       "saveRawConfig": "ファイルを保存"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness の設定",
       "configDescription": "エンドポイントと API キーは deepseek-acp が起動時に読み込む環境変数です。モデルと推論レベルはセッションごとのセレクターなので、入力欄で切り替えます。",
@@ -1267,7 +1296,10 @@
       "piBinaryUninstallFailed": "pi のアンインストールに失敗しました",
       "savePiTrustFailed": "ワークスペースの信頼設定の保存に失敗しました",
       "qoderSaved": "Qoder の設定を保存しました",
-      "saveQoderConfigFailed": "Qoder の設定の保存に失敗しました"
+      "saveQoderConfigFailed": "Qoder の設定の保存に失敗しました",
+      "antigravitySaved": "Antigravity config saved",
+      "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "バージョン状態",
@@ -1620,9 +1652,11 @@
       "openFolder": "フォルダを開く",
       "searchPlaceholder": "会話を検索...",
       "viewOptions": "表示オプション",
+      "listOptions": "会話リスト",
       "showCompleted": "完了した会話を表示",
       "showWorktrees": "ワークツリーフォルダを表示",
       "showRecent": "「最近」グループを表示",
+      "navigationItems": "ナビゲーション項目",
       "moreOptions": "その他のオプション",
       "sortBy": "並び替え",
       "sortByCreatedAt": "作成時刻順",
@@ -2665,6 +2699,8 @@
           "nextRetryIn": "{seconds}秒後に再試行",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}、{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}、{delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} は{option}を {requested} ではなく {actual} にしました"
@@ -4593,6 +4629,7 @@
     "actionEdit": "編集",
     "actionDelete": "削除",
     "actionRetryCleanup": "クリーンアップを再試行",
+    "actionDeleteWorktree": "worktree を削除",
     "actionMerge": "マージ",
     "actionUnqueueMerge": "マージ待ちを取り消す",
     "actionEditQueuedMerge": "待機中のマージを編集",
@@ -4686,6 +4723,8 @@
     "strategySquashHint": "タスクのすべての変更が1件の履歴としてメインブランチに取り込まれ、履歴がすっきりします。",
     "strategyMerge": "履歴をすべて残す",
     "strategyMergeHint": "タスク中の各コミットをそのまま残し、マージの記録を1件追加します。各ステップを追跡できます。",
+    "mergeInstructions": "追加の指示（任意）",
+    "mergeInstructionsPlaceholder": "例: 競合時はこのブランチ側を優先",
     "mergeDeleteWorktree": "マージ後に worktree を削除",
     "mergeSubmit": "マージ",
     "mergeSubmitQueue": "マージ待ちに追加",
@@ -4767,6 +4806,8 @@
     "deleteConfirmTitle": "タスクを削除しますか？",
     "deleteConfirmBody": "「{title}」をボードから削除します。実行中の場合は先にキャンセルされます。",
     "deleteWithWorktree": "worktree も削除する",
+    "deleteWorktreeConfirmTitle": "worktree を削除しますか？",
+    "deleteWorktreeConfirmBody": "worktree のディレクトリと作業ブランチを完全に削除します。タスクはボードに残り、会話はプロジェクトのフォルダへ移動します。",
     "eventCreated": "作成",
     "eventStatusChanged": "ステータス変更",
     "eventConfigEffective": "起動構成",
@@ -5133,6 +5174,10 @@
     "incompleteResults": "検索がタイムアウトしたため、このページには漏れがある可能性があります。",
     "reachableCap": "ページをたどれるのは先頭の {count} 件までです。残りは絞り込んでから確認してください。",
     "openRepo": "リポジトリを開く",
+    "openItem": "ブラウザーで開く",
+    "detailDescription": "この項目の説明と、実行できる操作。",
+    "detailUpdated": "更新 {time}",
+    "detailNoBody": "説明はありません",
     "stateFilter": "状態",
     "emptyPage": "このページには何もありません",
     "dialogDescription": "{repo} のフォルダに ToDo タスクを作成します。エージェントは独立したワークツリーで作業し、レビュー後に反映されます。",

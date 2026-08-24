@@ -503,6 +503,19 @@ mod tauri_app {
                     });
                 }
 
+                // Hand the chat-channel manager to the connection manager
+                // BEFORE the chat background tasks below start accepting
+                // messages: a `/new` that lands first would write its live ACP
+                // title against an `install_chat_channel` that hasn't happened
+                // yet, and skip the topic rename for good (the later
+                // reconciliation passes only sync titles their own conditional
+                // UPDATE wrote, and this one already converged).
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
+                }
+
                 // Start chat channel background tasks
                 {
                     let ccm = app.state::<ChatChannelManager>();
@@ -1269,6 +1282,7 @@ mod tauri_app {
                 acp_commands::acp_update_pi_config,
                 acp_commands::acp_load_pi_config,
                 acp_commands::acp_validate_pi_command,
+                acp_commands::acp_sync_antigravity_settings,
                 acp_commands::acp_pi_project_trust_state,
                 acp_commands::acp_pi_set_project_trust,
                 acp_commands::acp_pi_acknowledge_project_trust,

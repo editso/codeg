@@ -65,6 +65,7 @@ import {
 } from "@/components/shared/folder-select"
 import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 import { OPEN_FORGE_SETTINGS_EVENT } from "@/components/forge/forge-chrome-actions"
+import { ForgeIssueDetailSheet } from "@/components/forge/forge-issue-detail-sheet"
 import { ForgeIssueRowItem } from "@/components/forge/forge-issue-row"
 import { ForgeSettingsDialog } from "@/components/forge/forge-settings-dialog"
 import { ForgeStartDialog } from "@/components/forge/forge-start-dialog"
@@ -323,6 +324,8 @@ export function ForgePage() {
   const [error, setError] = useState<ListFailure | null>(null)
   const [links, setLinks] = useState<Map<string, ForgeTaskLink>>(new Map())
   const [startRow, setStartRow] = useState<ForgeIssueRow | null>(null)
+  /** The item the right-side detail panel is open on, or `null` for closed. */
+  const [detailRow, setDetailRow] = useState<ForgeIssueRow | null>(null)
   /** The panel's preferences, EVERY scope — what a trigger dialog OPENS with,
    *  and nothing else this page reads. Loaded once and replaced in place when
    *  the settings dialog saves; `null` means "not loaded yet, or the read
@@ -334,6 +337,8 @@ export function ForgePage() {
   const [labelOptions, setLabelOptions] = useState<ForgeLabel[]>([])
   const [labelsTruncated, setLabelsTruncated] = useState(false)
   const reqRef = useRef(0)
+  /** Generation counter for the task-link lookup (see `refreshLinks`). */
+  const linksReqRef = useRef(0)
   /** Request generations kept PER TAB. One shared counter would make a probe
    *  for Issues invalidate an in-flight probe for pull requests, so toggling
    *  the switcher during a slow load would throw away each answer as the next
@@ -350,19 +355,26 @@ export function ForgePage() {
   // goes with it: its rows would still be numbered and linked against a
   // repository this page is no longer showing, and a trigger dialog left open
   // over the switch would mint a task for that row's number in the NEW
-  // repository. (`scope` keeps the rows off screen either way; this is what
-  // stops them lingering in memory and the dialog from surviving at all.)
+  // repository. The detail panel goes for the same reason — it carries its own
+  // copy of a row, and its footer offers that same trigger. (`scope` keeps the
+  // rows off screen either way; this is what stops them lingering in memory and
+  // the dialog and panel from surviving at all.)
+  //
+  // The clean-up runs BEFORE the "no folder at all" exit rather than inside the
+  // branch that resolves one, so the two paths cannot drift apart. They did:
+  // losing the last project folder took `effectiveFolderId` to null, which
+  // returned early and left the panel mounted over a page that had gone back to
+  // "pick a folder" — showing an item of a repository no longer on screen, with
+  // a "Start" whose dialog is gated on a folder and so did nothing at all.
   useEffect(() => {
-    if (effectiveFolderId == null) {
-      setRemote(null)
-      return
-    }
-    let cancelled = false
-    setRemoteLoading(true)
     setRemote(null)
     setLoaded(null)
     setCounts({})
     setStartRow(null)
+    setDetailRow(null)
+    if (effectiveFolderId == null) return
+    let cancelled = false
+    setRemoteLoading(true)
     folderForgeRemote(effectiveFolderId)
       .then((r) => {
         if (!cancelled) setRemote(r)
@@ -722,21 +734,82 @@ export function ForgePage() {
           }),
     [remote]
   )
+  /** The latest task that has ever handled a row, if any. Shared by the list
+   *  and the detail panel, so both read the same chip off the same lookup. */
+  const linkFor = useCallback(
+    (row: ForgeIssueRow) => {
+      const key = keyFor(row)
+      return key != null ? (links.get(key) ?? null) : null
+    },
+    [keyFor, links]
+  )
+  /**
+   * The panel's item, re-read from the list on every render.
+   *
+   * The panel is opened with the row that was clicked, and a row is a SNAPSHOT
+   * — reload the list (or turn a filter) and the item's title, state, labels
+   * and body all arrive again in a new object. Matching by identity keeps the
+   * panel on the fresh copy, so a refresh behind it updates what it shows
+   * instead of leaving it frozen at whatever the list said when it opened.
+   *
+   * It falls back to the held snapshot when the item is not in the page any
+   * more — a tab switch, a page turn or a narrowed filter takes the row away
+   * without saying anything about the ITEM, and blanking a panel someone is
+   * reading is the one thing worse than showing a slightly stale copy.
+   */
+  const detail = useMemo(() => {
+    if (detailRow == null) return null
+    return (
+      rows.find(
+        (r) => r.is_pr === detailRow.is_pr && r.number === detailRow.number
+      ) ?? detailRow
+    )
+  }, [rows, detailRow])
+
   const refreshLinks = useCallback(async () => {
-    const keys = rows
+    // Its own generation counter, not `reqRef`: this stream and the list fetch
+    // run on different triggers (a `work-task://changed` event refreshes links
+    // without touching the list), so sharing one would have each cancel the
+    // other's answer.
+    //
+    // The guard is load-bearing rather than hygiene. The answer REPLACES this
+    // map wholesale, and three sources fire it — the deps below, the task
+    // event, and the trigger dialog — so two lookups are routinely in flight
+    // at once. Without a generation the SLOWER one wins whatever order they
+    // were sent in, dropping links that exist; the detail panel reads a
+    // missing link as "no task yet" and offers "Start" for work that is
+    // already running (`forge-issue-detail-sheet.tsx`), which is how a stale
+    // response turns into a duplicate task.
+    const id = ++linksReqRef.current
+    // The panel's item is asked about too, and not only while it is on screen.
+    // It deliberately outlives the row it was opened from (see `detail`), and
+    // the answer REPLACES this map wholesale — so a page turn, a narrowed
+    // filter or a tab switch used to drop that item's task along with its row,
+    // and the panel's footer fell back from a live status chip to "Start",
+    // offering to trigger work that was already running. Reference equality is
+    // the right test: `detail` IS the row object when the list still holds it,
+    // and only a panel outliving its row adds a key here.
+    const wanted =
+      detail == null || rows.includes(detail) ? rows : [...rows, detail]
+    const keys = wanted
       .map((r) => keyFor(r))
       .filter((k): k is string => k != null)
     if (keys.length === 0) {
-      setLinks(new Map())
+      // Claimed the generation above, so this clear is ordered against the
+      // in-flight lookups like any other answer: it lands only while it is
+      // still the newest word, and a lookup sent after it cannot be undone by
+      // it either.
+      if (id === linksReqRef.current) setLinks(new Map())
       return
     }
     try {
       const found = await workTaskLookupBySource(keys)
+      if (id !== linksReqRef.current) return
       setLinks(new Map(found.map((l) => [l.source_key, l])))
     } catch {
       // Chips are best-effort decoration; the list itself stays useful.
     }
-  }, [rows, keyFor])
+  }, [rows, detail, keyFor])
   useEffect(() => {
     void refreshLinks()
   }, [refreshLinks])
@@ -1005,11 +1078,9 @@ export function ForgePage() {
               <ForgeIssueRowItem
                 key={`${row.is_pr ? "pr" : "issue"}-${row.number}`}
                 row={row}
-                link={(() => {
-                  const key = keyFor(row)
-                  return key != null ? (links.get(key) ?? null) : null
-                })()}
+                link={linkFor(row)}
                 compact={isMobile}
+                onOpenDetail={() => setDetailRow(row)}
                 onStart={() => setStartRow(row)}
               />
             ))}
@@ -1036,6 +1107,22 @@ export function ForgePage() {
           <FooterPlaceholder />
         )
       ) : null}
+
+      {/* Before the trigger dialog in the tree, so the dialog's portal lands
+          after the panel's and covers it: "Start" from inside the panel leaves
+          the panel open behind the dialog, and comes back to a footer that now
+          carries the new task's chip. (The drawer survives the dialog on its
+          own — see the Radix-layer shield in `drawer.tsx`.) */}
+      <ForgeIssueDetailSheet
+        row={detail}
+        link={detail != null ? linkFor(detail) : null}
+        onOpenChange={(open) => {
+          if (!open) setDetailRow(null)
+        }}
+        onStart={() => {
+          if (detail != null) setStartRow(detail)
+        }}
+      />
 
       {startRow != null && remote != null && effectiveFolderId != null ? (
         <ForgeStartDialog

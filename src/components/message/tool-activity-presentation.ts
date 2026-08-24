@@ -125,7 +125,18 @@ export function simplifyToolCommand(command: string): string {
 function commandFromInput(input: string | null | undefined): string | null {
   const parsed = asRecord(input)
   const direct = parsed
-    ? findString(parsed, ["command", "cmd", "script", "title"])
+    ? findString(parsed, [
+        "command",
+        "cmd",
+        "script",
+        // Antigravity uses snake_case on the live call and PascalCase in its
+        // stored trajectory / permission envelope. Its display title is also
+        // the command, but the input is the stable source used by our grouped
+        // activity flow.
+        "command_line",
+        "CommandLine",
+        "title",
+      ])
     : null
   if (direct) return simplifyToolCommand(direct)
 
@@ -241,7 +252,9 @@ function contextFromPath(path: string | null): string | null {
   return parts.length > 2 ? parts.slice(0, -2).join("/") : null
 }
 
-function activityTitleFallback(title: string | null | undefined): string | null {
+function activityTitleFallback(
+  title: string | null | undefined
+): string | null {
   const trimmed = title?.trim()
   if (!trimmed) return null
 
@@ -409,7 +422,9 @@ export function describeToolActivity(
       kind: "search",
       subject: query
         ? ellipsis(query, 88)
-        : (scope ? shortPath(scope) : displayTitle),
+        : scope
+          ? shortPath(scope)
+          : displayTitle,
       context: query && scope ? ellipsis(scope, 56) : null,
       command: null,
       paths: [],

@@ -1,4 +1,4 @@
-/** The fourteen agents codeg ships hand-written support for. */
+/** The fifteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -14,6 +14,7 @@ export type BuiltinAgentType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 /**
  * Which agent backs a conversation.
@@ -763,6 +764,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -796,6 +798,7 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1106,6 +1109,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   cursor: "Cursor",
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
+  antigravity: "Google Antigravity",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1123,6 +1127,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   cursor: "bg-zinc-800",
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
+  antigravity: "bg-[#1A73E8]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1714,6 +1719,9 @@ export interface WorkTaskQueuedMerge {
   /** The commit message the user typed; null = the agent writes it. */
   message: string | null
   delete_worktree: boolean
+  /** Extra directions for the merge agent, kept so a merge that waited its turn
+   *  lands under what the user asked for when they queued it. */
+  instructions?: string | null
   /** Place in line (ISO instant) — the order the engine's pump dispatches in. */
   queued_at: string
 }
@@ -2102,6 +2110,13 @@ export type AcpEvent =
       folder_id: number
     }
   | {
+      // Agent published a live ACP session title. The backend writes the
+      // conversation row and broadcasts `conversation://changed`; the
+      // frontend does not apply this event itself.
+      type: "native_session_title"
+      title: string
+    }
+  | {
       type: "conversation_status_changed"
       conversation_id: number
       status: ConversationStatus
@@ -2175,9 +2190,19 @@ export type AcpEvent =
       // `codexErrorInfo` carried one. With AIR advertised, codex 1.2+ replaces
       // this channel with severity-"warning" `session_failure` records, so it
       // now serves only legacy paths.
+      //
+      // pi shares this channel (#525): pi-acp announces `auto_retry_start` as
+      // ordinary prose, so the backend classifies it out of the transcript and
+      // routes it here. pi sends an EMPTY `message` — it forwards no error text,
+      // only the counters below — and the banner renders its own localized line
+      // in that case. All three counters are absent for codex, which reports
+      // none of them.
       type: "turn_retrying"
       message: string
       error_status?: number
+      attempt?: number
+      max_retries?: number
+      retry_delay_ms?: number
     }
   | {
       // JetBrains AIR typed session failure upsert
@@ -2649,6 +2674,17 @@ export interface AcpAgentInfo {
   skills_capable: boolean
   registry_id: string
   registry_version: string | null
+  /**
+   * Whether "install a specific version" can actually fetch that version.
+   *
+   * NOT the same as `registry_version != null`, which is what this page used to
+   * infer it from: a binary agent's custom install substitutes the requested
+   * version into the pinned download URL, and Antigravity's URLs carry a Google
+   * build id rather than its registry version — so the substitution is a no-op
+   * and the install would relabel the same bytes under a version that was never
+   * fetched. The backend answers per-platform.
+   */
+  supports_custom_version: boolean
   name: string
   description: string
   available: boolean
@@ -3301,6 +3337,7 @@ export type McpAppType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 export interface LocalMcpServer {
   id: string
