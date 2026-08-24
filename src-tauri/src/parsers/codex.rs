@@ -2021,6 +2021,13 @@ fn first_rollout_record(path: &Path) -> Option<serde_json::Value> {
 /// model decoration after the fork; those are metadata about the same copied
 /// raw records and must not prevent us from recognizing the parent prefix.
 ///
+/// Do not include `MessageTurn.id`: Codex assigns `turn-{index}` while parsing
+/// one rollout, rather than preserving an id from the record. The parent and
+/// child are parsed independently, so benign grouping differences can shift
+/// those local numbers even when they describe the same copied raw message.
+/// Keeping that derived id in this comparison made the common prefix appear
+/// empty and surfaced the parent's entire history as child activity.
+///
 /// `ContentBlock` has extensible JSON metadata and therefore no direct
 /// `PartialEq`. Its serde representation is the public wire shape, and
 /// `serde_json::Value` compares object fields independent of insertion order.
@@ -2042,7 +2049,6 @@ fn turns_match(left: &MessageTurn, right: &MessageTurn) -> bool {
             })
             .collect::<Vec<_>>();
         serde_json::json!({
-            "id": &turn.id,
             "role": &turn.role,
             "blocks": blocks,
             "timestamp": &turn.timestamp,
@@ -8137,6 +8143,11 @@ mod tests {
             images: Vec::new(),
         });
         let mut child = parent.clone();
+        // `MessageTurn.id` is local parser bookkeeping (`turn-{index}`), not a
+        // native rollout record id. Independent parser grouping can assign
+        // different local ids while copied content remains exactly the same.
+        child.turns[0].id = "turn-1".to_string();
+        child.turns[1].id = "turn-2".to_string();
         child.turns[0].duration_ms = Some(7_000);
         child.turns[0].model = Some("child-derived-model".to_string());
         child.turns[1].usage = Some(TurnUsage {
