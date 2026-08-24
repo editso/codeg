@@ -554,6 +554,8 @@ function ActivityDetailRow({
     duration,
     monospace,
   } = detailPresentation(item)
+  const displaySubject =
+    subject ?? (item.type === "plan" ? t("planMode.planLabel") : null)
 
   const iconClass = failed
     ? "text-destructive/85"
@@ -577,7 +579,7 @@ function ActivityDetailRow({
         className="group/activity-row relative z-10 min-w-0"
       >
         <CollapsibleTrigger
-          aria-label={subject ?? context ?? t("result")}
+          aria-label={displaySubject ?? context ?? t("result")}
           className={cn(
             "inline-flex min-h-7 max-w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] leading-5 outline-none transition-colors hover:bg-muted/45 focus-visible:ring-2 focus-visible:ring-ring/50",
             failed ? "text-destructive" : "text-muted-foreground"
@@ -598,7 +600,7 @@ function ActivityDetailRow({
               <Icon aria-hidden="true" className={cn("size-3.5", iconClass)} />
             )}
           </span>
-          {subject ? (
+          {displaySubject ? (
             <span
               className={cn(
                 "min-w-0 truncate",
@@ -610,7 +612,7 @@ function ActivityDetailRow({
                 monospace && "font-mono text-[12px]"
               )}
             >
-              {subject}
+              {displaySubject}
             </span>
           ) : null}
           {context ? (

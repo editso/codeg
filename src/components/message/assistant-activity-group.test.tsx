@@ -39,6 +39,24 @@ function ordinaryToolItem(): AssistantActivityItem {
   }
 }
 
+function planItem(): AssistantActivityItem {
+  return {
+    id: "plan",
+    type: "plan",
+    part: {
+      type: "plan",
+      entries: [
+        {
+          content: "Verify the fix",
+          status: "in_progress",
+          priority: "medium",
+        },
+      ],
+      isStreaming: false,
+    },
+  }
+}
+
 function renderGroup(items: AssistantActivityItem[]) {
   const renderItem = (
     item: AssistantActivityItem,
@@ -105,5 +123,15 @@ describe("AssistantActivityGroup sub-agent activity", () => {
     expect(
       screen.queryByRole("button", { name: /sub-agent/i })
     ).not.toBeInTheDocument()
+  })
+
+  it("shows the plan name next to the checklist icon", () => {
+    renderGroup([planItem()])
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
+
+    expect(screen.getByRole("button", { name: "Plan" })).toHaveTextContent(
+      "Plan"
+    )
   })
 })

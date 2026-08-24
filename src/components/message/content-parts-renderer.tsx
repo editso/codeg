@@ -3647,7 +3647,14 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
                 const text = formatActivityPreviewText(rawInput)
                 return text ? { text, language: "json" as const } : null
               })()
-      const output = activityToolOutput(part, isCommandSurface)
+      // A successful Edit is already fully represented by the structured diff
+      // above. Providers commonly return an empty `{}` acknowledgement; showing
+      // it as a second "Result" block adds no information. Errors still render,
+      // and output remains available when the input could not form a diff.
+      const output =
+        structuredDiffAvailable && !part.errorText
+          ? null
+          : activityToolOutput(part, isCommandSurface)
       return {
         presentation,
         rawInput,

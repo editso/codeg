@@ -564,6 +564,39 @@ describe("AgentToolCallPart live child edits", () => {
   })
 })
 
+describe("ContentPartsRenderer edit activity output", () => {
+  it("does not show an empty successful result below a rendered diff", () => {
+    const editPart: ToolCallPart = {
+      type: "tool-call",
+      toolCallId: "completed-edit-with-empty-result",
+      toolName: "edit",
+      input: JSON.stringify({
+        file_path: "/workspace/github/codeg/src/example.ts",
+        old_string: "export const value = 1",
+        new_string: "export const value = 2",
+      }),
+      output: "{}",
+      state: "output-available",
+    }
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer parts={[editPart]} role="assistant" />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
+    fireEvent.click(screen.getByRole("button", { name: "src/example.ts" }))
+
+    expect(screen.getByText("export const value = 1")).toBeInTheDocument()
+    expect(screen.getByText("export const value = 2")).toBeInTheDocument()
+    expect(screen.queryByText("Result")).not.toBeInTheDocument()
+    expect(screen.queryByText("{}")).not.toBeInTheDocument()
+  })
+})
+
 describe("AgentToolCallPart inline child session transcript", () => {
   it("uses a flat activity node and returns child rows to the parent rail", () => {
     const { container } = render(
