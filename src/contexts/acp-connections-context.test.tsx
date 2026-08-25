@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { StrictMode, useEffect } from "react"
 import { act, render } from "@testing-library/react"
 import { useTranslations } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -7,6 +7,7 @@ import {
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
+import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
@@ -49,11 +50,22 @@ const h = vi.hoisted(() => {
     pushAlert: vi.fn(),
     sendSystemNotification: vi.fn(async () => undefined),
     toastWarning: vi.fn(),
+    addTask: vi.fn(),
+    updateTask: vi.fn(),
+    removeTask: vi.fn(),
   }
 })
 
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
+}))
+
+vi.mock("@/contexts/task-context", () => ({
+  useTaskContext: () => ({
+    addTask: h.addTask,
+    updateTask: h.updateTask,
+    removeTask: h.removeTask,
+  }),
 }))
 
 vi.mock("@/lib/platform", () => ({
@@ -122,6 +134,17 @@ function Probe() {
     h.actions = actions
     h.store = store
   }, [actions, store])
+  return null
+}
+
+function StrictModeLifecycleProbe() {
+  useConnectionLifecycle({
+    contextKey: TAB,
+    agentType: "claude_code",
+    isActive: true,
+    workingDir: "/tmp/x",
+    sessionId: "sess-1",
+  })
   return null
 }
 
@@ -780,7 +803,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -804,7 +829,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -831,7 +858,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
   })
 
@@ -877,7 +906,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
   })
 
@@ -996,7 +1027,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("respawned-conn")
   })
@@ -1085,7 +1118,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "snapshot-session",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
   })
 
@@ -1125,7 +1160,9 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       "/tmp/x",
       "minted-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
   })
 })
@@ -1182,7 +1219,9 @@ describe("AcpConnectionsProvider disconnect teardown confirmation", () => {
       "/tmp/x",
       "sess-1",
       undefined,
-      {}
+      {},
+      42,
+      undefined
     )
     // ...but the caller must not show an "applied" confirmation for a restart
     // that may have landed right back on the process it meant to replace.
@@ -3335,6 +3374,111 @@ describe("connect() teardown races", () => {
 
     expect(h.acpConnect).not.toHaveBeenCalled()
     expect(h.store!.getConnection(TAB)).toBeUndefined()
+  })
+
+  it("waits for a superseded connection to disconnect before reconnecting", async () => {
+    mountDesktop()
+    await act(async () => {})
+
+    let resolveFirstConnect: (connectionId: string) => void = () => {}
+    h.acpConnect.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveFirstConnect = resolve
+        })
+    )
+
+    let resolveDisconnect: () => void = () => {}
+    h.acpDisconnect.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDisconnect = resolve
+        })
+    )
+
+    let firstConnect: Promise<void> | undefined
+    await act(async () => {
+      firstConnect = h.actions!.connect(
+        TAB,
+        "claude_code",
+        "/tmp/old",
+        "sess-1"
+      )
+      await Promise.resolve()
+    })
+
+    // A working-directory change while the first IPC call is in flight is
+    // queued as the replacement request for this same page.
+    let replacementConnect: Promise<void> | undefined
+    await act(async () => {
+      replacementConnect = h.actions!.connect(
+        TAB,
+        "claude_code",
+        "/tmp/new",
+        "sess-1"
+      )
+      await Promise.resolve()
+    })
+
+    resolveFirstConnect("old-connection")
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The replacement must not reach acp_connect while the old writer is
+    // still being torn down.
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+    expect(h.acpDisconnect).toHaveBeenCalledWith("old-connection")
+
+    resolveDisconnect()
+    await act(async () => {
+      await firstConnect
+      await replacementConnect
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(h.acpConnect).toHaveBeenCalledTimes(2)
+    expect(h.acpConnect).toHaveBeenLastCalledWith(
+      "claude_code",
+      "/tmp/new",
+      "sess-1",
+      undefined,
+      {},
+      undefined,
+      undefined
+    )
+  })
+
+  it("does not restart the connection during StrictMode effect replay", async () => {
+    const view = render(
+      <StrictMode>
+        <AcpConnectionsProvider>
+          <StrictModeLifecycleProbe />
+        </AcpConnectionsProvider>
+      </StrictMode>
+    )
+
+    // Let both the StrictMode replay and the async connect pipeline settle.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+
+    // Remove only the page, keeping the provider mounted so this assertion
+    // covers the lifecycle hook's deferred real-unmount cleanup itself.
+    view.rerender(
+      <StrictMode>
+        <AcpConnectionsProvider>{null}</AcpConnectionsProvider>
+      </StrictMode>
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+    expect(h.acpDisconnect).toHaveBeenCalledTimes(1)
+
+    view.unmount()
   })
 
   it("spares a connection only a transcript viewer references", async () => {

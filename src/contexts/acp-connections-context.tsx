@@ -5270,14 +5270,23 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // still see it to know this call established nothing (see there).
         if (abandonedKeysRef.current.has(contextKey)) {
           if (!reused && !isConnectionReferencedLocally(connectionId)) {
-            acpDisconnectOnce(connectionId).catch(() => {})
+            // Do not let the queued replacement start while this agent is
+            // still tearing down. ACP agents serialize writers per thread;
+            // firing the replacement immediately after scheduling disconnect
+            // creates two overlapping acp_connect calls against the same
+            // session and can surface "already has an active writer".
+            await acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
         }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
           if (!reused && !isConnectionReferencedLocally(connectionId)) {
-            acpDisconnectOnce(connectionId).catch(() => {})
+            // This request was superseded by a newer set of connection
+            // parameters. Wait for the old process to be released before the
+            // finalizer dispatches the newer request (see the same race in the
+            // abandoned branch above).
+            await acpDisconnectOnce(connectionId).catch(() => {})
           }
           return
         }
