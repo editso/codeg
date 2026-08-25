@@ -859,16 +859,36 @@ function hasStringField(
   return keys.some((key) => typeof value[key] === "string")
 }
 
+const AGENT_FILE_MUTATION_TOOL_NAMES = new Set([
+  "edit",
+  "apply_patch",
+  "write",
+  "notebookedit",
+])
+
+function isAgentFileMutationTool(toolName: string): boolean {
+  return AGENT_FILE_MUTATION_TOOL_NAMES.has(toolName.toLowerCase())
+}
+
 /**
- * A child Edit is rendered from `AgentExecutionStats` while its parent Agent is
- * still running. Most child inputs are intentionally summaries, but an Edit
- * carrying both replacement sides is render data rather than prose: the UI
- * needs the complete old/new pair to produce its compact unified diff.
+ * A child file mutation is rendered from `AgentExecutionStats` while its
+ * parent Agent is still running. Most child inputs/results are intentionally
+ * summaries, but a complete mutation payload is render data rather than prose:
+ * the UI needs its full old/new sides (or full new file) to produce the diff or
+ * file card.
  *
- * Keep this predicate deliberately narrow. Large writes without an old side,
- * shell inputs, and arbitrary JSON continue to use the bounded preview.
+ * ACP sends three canonical shapes here:
+ * - edit: `{ file_path, old_string, new_string }`
+ * - multi-file edit: `{ changes: { path: { old_text, new_text } } }`
+ *   (new files inside this form carry a ready-made `diff`)
+ * - new file: `{ file_path, content }`
+ *
+ * Keep the predicate structural. Arbitrary tool JSON and ordinary shell output
+ * continue to use the bounded preview.
  */
-function hasCompleteAgentEditInput(rawInput: string): boolean {
+function hasCompleteAgentFileMutationPayload(rawInput: string): boolean {
+  if (rawInput.includes("*** Begin Patch")) return true
+
   let parsed: unknown
   try {
     parsed = JSON.parse(rawInput)
@@ -882,7 +902,16 @@ function hasCompleteAgentEditInput(rawInput: string): boolean {
   const input = parsed as Record<string, unknown>
   const oldKeys = ["old_string", "oldString", "old_text", "oldText"]
   const newKeys = ["new_string", "newString", "new_text", "newText"]
-  if (hasStringField(input, oldKeys) && hasStringField(input, newKeys)) {
+  if (hasStringField(input, oldKeys) || hasStringField(input, newKeys)) {
+    return true
+  }
+
+  const filePath =
+    input.file_path ?? input.filePath ?? input.path ?? input.notebook_path
+  if (
+    typeof filePath === "string" &&
+    hasStringField(input, ["content", "new_source", "newSource"])
+  ) {
     return true
   }
 
@@ -892,12 +921,14 @@ function hasCompleteAgentEditInput(rawInput: string): boolean {
   }
 
   return Object.values(changes).some((change) => {
+    if (typeof change === "string") return true
     if (!change || typeof change !== "object" || Array.isArray(change)) {
       return false
     }
     const fields = change as Record<string, unknown>
     return (
-      (hasStringField(fields, oldKeys) && hasStringField(fields, newKeys)) ||
+      hasStringField(fields, oldKeys) ||
+      hasStringField(fields, newKeys) ||
       hasStringField(fields, ["diff", "patch", "unified_diff", "unifiedDiff"])
     )
   })
@@ -918,8 +949,8 @@ function agentToolInputPreview(
   if (rawInput.length <= AGENT_TOOL_INPUT_PREVIEW_CHARS) {
     preview = rawInput
   } else if (
-    (toolName === "edit" || toolName === "apply_patch") &&
-    hasCompleteAgentEditInput(rawInput)
+    isAgentFileMutationTool(toolName) &&
+    hasCompleteAgentFileMutationPayload(rawInput)
   ) {
     preview = rawInput
   } else {
@@ -928,6 +959,27 @@ function agentToolInputPreview(
 
   agentToolInputPreviewCache.set(info, { toolName, rawInput, preview })
   return preview
+}
+
+/**
+ * A live child tool can publish its complete file-mutation descriptor as
+ * `raw_output` even when its input only identifies the target. Do not turn that
+ * structured data into invalid JSON with the generic 500-character summary:
+ * the renderers select it as their data source, exactly like the persisted
+ * transcript path.
+ */
+function agentToolOutputPreview(
+  toolName: string,
+  rawOutput: string | null
+): string | null {
+  if (!rawOutput) return null
+  if (
+    isAgentFileMutationTool(toolName) &&
+    hasCompleteAgentFileMutationPayload(rawOutput)
+  ) {
+    return rawOutput
+  }
+  return rawOutput.substring(0, AGENT_TOOL_INPUT_PREVIEW_CHARS)
 }
 
 export function buildStreamingTurnsFromLiveMessage(
@@ -1294,7 +1346,7 @@ export function buildStreamingTurnsFromLiveMessage(
                     tool_name: cn,
                     input_preview: agentToolInputPreview(cn, ci),
                     output_preview: cFinal
-                      ? (cOutput?.substring(0, 500) ?? null)
+                      ? agentToolOutputPreview(cn, cOutput ?? null)
                       : null,
                     is_error: ci.status === "failed",
                   }

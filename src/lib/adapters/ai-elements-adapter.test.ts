@@ -320,6 +320,28 @@ describe("dropEmptyInFlightToolCalls", () => {
     expect(dropEmptyInFlightToolCalls([live])).toEqual([live])
   })
 
+  it("keeps a no-argument read whose title identifies the file", () => {
+    const read = running("read_file", {
+      input: null,
+      state: "output-available",
+      toolStatus: "in_progress",
+      displayTitle: "delegation/spawner.rs",
+    })
+
+    expect(dropEmptyInFlightToolCalls([read])).toEqual([read])
+  })
+
+  it("still drops an empty call whose title only repeats its tool name", () => {
+    const orphan = running("read_file", {
+      input: null,
+      state: "output-available",
+      toolStatus: "in_progress",
+      displayTitle: "read_file",
+    })
+
+    expect(dropEmptyInFlightToolCalls([orphan])).toHaveLength(0)
+  })
+
   it("keeps DB-history parts that carry no forwarded status", () => {
     // Persisted rows have no `toolStatus` (undefined) → treated as settled, so
     // an arg-less-but-completed historical tool is never mistaken for an orphan.

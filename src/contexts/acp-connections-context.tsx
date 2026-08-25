@@ -1113,6 +1113,25 @@ function ensureLiveMessage(prev: LiveMessage | null): LiveMessage {
   }
 }
 
+/**
+ * ACP tool-call updates are partial. A number of providers emit an empty
+ * `raw_input` string on a status-only update after the opening event already
+ * supplied the complete arguments. Treat that exactly like an omitted input:
+ * the empty frame has no descriptor to contribute, and replacing the prior
+ * value would make an in-flight edit fall back to its raw JSON/large-file
+ * preview until the persisted transcript is reloaded after completion.
+ *
+ * A non-empty update still wins. Some providers genuinely stream or correct
+ * tool arguments on a later frame, so this is deliberately not a
+ * first-non-empty-wins rule.
+ */
+function mergeRawToolInput(
+  existing: string | null,
+  incoming: string | null
+): string | null {
+  return incoming?.trim() ? incoming : existing
+}
+
 /** Last time an out-of-turn drop was logged — module-level sampling clock. */
 let lastOutOfTurnDropLogAt = 0
 
@@ -1700,7 +1719,10 @@ function connectionsReducer(
                 kind: action.kind ?? block.info.kind,
                 status: action.status ?? block.info.status,
                 content: action.content ?? block.info.content,
-                raw_input: action.raw_input ?? block.info.raw_input,
+                raw_input: mergeRawToolInput(
+                  block.info.raw_input,
+                  action.raw_input
+                ),
                 raw_output_chunks:
                   action.raw_output !== null
                     ? [action.raw_output]
@@ -1771,7 +1793,10 @@ function connectionsReducer(
               title: action.title ?? existing.title,
               status: action.status ?? existing.status,
               content: action.content ?? existing.content,
-              raw_input: action.raw_input ?? existing.raw_input,
+              raw_input: mergeRawToolInput(
+                existing.raw_input,
+                action.raw_input
+              ),
               locations: action.locations ?? existing.locations,
               meta: action.meta ?? existing.meta,
               images: action.images !== null ? action.images : existing.images,
@@ -1884,7 +1909,10 @@ function connectionsReducer(
               title: action.title ?? block.info.title,
               status: action.status ?? block.info.status,
               content: action.content ?? block.info.content,
-              raw_input: action.raw_input ?? block.info.raw_input,
+              raw_input: mergeRawToolInput(
+                block.info.raw_input,
+                action.raw_input
+              ),
               raw_output_chunks: newChunks,
               locations: action.locations ?? block.info.locations,
               meta: action.meta ?? block.info.meta,

@@ -562,6 +562,847 @@ describe("AgentToolCallPart live child edits", () => {
     expect(document.body.textContent).not.toContain('"new_string"')
     expect(document.body.textContent).not.toContain('"old_string"')
   })
+
+  it("uses a complete large result-side edit while the parent is still live", () => {
+    const oldSource = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const sourceLine${index} = ${index}`
+    ).join("\n")
+    const newSource = oldSource.replace(
+      "export const sourceLine4200 = 4200",
+      "export const sourceLine4200 = 4201"
+    )
+    const editOutput = JSON.stringify({
+      file_path:
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+      new_string: newSource,
+      old_string: oldSource,
+    })
+    const pathOnlyInput = JSON.stringify({
+      file_path:
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-result-edit",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "edit the renderer",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-edit-result",
+            title: "Edit content-parts-renderer.tsx",
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: pathOnlyInput,
+            raw_output_chunks: [editOutput],
+            raw_output_total_bytes: editOutput.length,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    const child = parentPart?.agentStats?.tool_calls?.[0]
+    expect(child?.input_preview).toBe(pathOnlyInput)
+    expect(child?.output_preview).toBe(editOutput)
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: /content-parts-renderer\.tsx/ })
+    )
+
+    expect(
+      screen.getByText("export const sourceLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const sourceLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"new_string"')
+    expect(document.body.textContent).not.toContain('"old_string"')
+  })
+
+  it("renders every file from a large live changes-map edit", () => {
+    const oldFirst = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const firstLine${index} = ${index}`
+    ).join("\n")
+    const newFirst = oldFirst.replace(
+      "export const firstLine4200 = 4200",
+      "export const firstLine4200 = 4201"
+    )
+    const oldSecond = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const secondLine${index} = ${index}`
+    ).join("\n")
+    const newSecond = oldSecond.replace(
+      "export const secondLine4200 = 4200",
+      "export const secondLine4200 = 4201"
+    )
+    // This is the Codex ACP multi-Diff shape from x.json: a map keyed by
+    // absolute file path, not a single root-level old/new pair.
+    const multiEditInput = JSON.stringify({
+      changes: {
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx":
+          {
+            new_text: newFirst,
+            old_text: oldFirst,
+          },
+        "/workspace/github/codeg/src/stores/conversation-runtime-store.ts": {
+          new_text: newSecond,
+          old_text: oldSecond,
+        },
+      },
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-multi-edit",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "edit both render paths",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-multi-edit",
+            title: "Edit two files",
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: multiEditInput,
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    expect(parentPart?.agentStats?.tool_calls?.[0]?.input_preview).toBe(
+      multiEditInput
+    )
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    fireEvent.click(screen.getByRole("button", { name: /Edit \(2 files\)/ }))
+
+    expect(
+      screen.getByText("export const firstLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const firstLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const secondLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const secondLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"changes"')
+  })
+
+  it("uses a complete result-side changes map while the parent remains live", () => {
+    const oldFirst = Array.from(
+      { length: 1_200 },
+      (_, index) => `export const resultFirst${index} = ${index}`
+    ).join("\n")
+    const newFirst = oldFirst.replace(
+      "export const resultFirst1100 = 1100",
+      "export const resultFirst1100 = 1101"
+    )
+    const oldSecond = Array.from(
+      { length: 1_200 },
+      (_, index) => `export const resultSecond${index} = ${index}`
+    ).join("\n")
+    const newSecond = oldSecond.replace(
+      "export const resultSecond1100 = 1100",
+      "export const resultSecond1100 = 1101"
+    )
+    const output = JSON.stringify({
+      changes: {
+        "/workspace/github/codeg/src/result-first.ts": {
+          old_text: oldFirst,
+          new_text: newFirst,
+        },
+        "/workspace/github/codeg/src/result-second.ts": {
+          old_text: oldSecond,
+          new_text: newSecond,
+        },
+      },
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-result-multi-edit",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "edit both result-side files",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-result-multi-edit",
+            title: "Edit result-side files",
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: JSON.stringify({
+              file_path: "/workspace/github/codeg/src/result-first.ts",
+            }),
+            raw_output_chunks: [output],
+            raw_output_total_bytes: output.length,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    const child = parentPart?.agentStats?.tool_calls?.[0]
+    expect(child?.output_preview).toBe(output)
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    // The live input only names the first target, while the complete result
+    // carries the multi-file descriptor. The card title therefore keeps the
+    // known first path; its expanded body must still show both diffs.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Edit src\/result-first\.ts/ })
+    )
+
+    expect(
+      screen.getByText("export const resultFirst1100 = 1100")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const resultFirst1100 = 1101")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const resultSecond1100 = 1100")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const resultSecond1100 = 1101")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"changes"')
+  })
+
+  it("renders a mixed multi-file event with an added-file diff", () => {
+    const addedLines = Array.from(
+      { length: 800 },
+      (_, index) => `export const addedLine${index} = ${index}`
+    )
+    const addedFileDiff = [
+      "--- /dev/null",
+      "+++ b/src/generated/added-file.ts",
+      `@@ -0,0 +1,${addedLines.length} @@`,
+      ...addedLines.map((line) => `+${line}`),
+    ].join("\n")
+    const multiEditInput = JSON.stringify({
+      changes: {
+        "/workspace/github/codeg/src/existing.ts": {
+          old_text: "export const version = 1",
+          new_text: "export const version = 2",
+        },
+        "/workspace/github/codeg/src/generated/added-file.ts": {
+          diff: addedFileDiff,
+        },
+      },
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-mixed-multi-edit",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "edit an existing file and create another",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-mixed-multi-edit",
+            title: "Edit two files",
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: multiEditInput,
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    expect(parentPart?.agentStats?.tool_calls?.[0]?.input_preview).toBe(
+      multiEditInput
+    )
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    fireEvent.click(screen.getByRole("button", { name: /Edit \(2 files\)/ }))
+
+    expect(screen.getByText("export const version = 1")).toBeInTheDocument()
+    expect(screen.getByText("export const version = 2")).toBeInTheDocument()
+    // The diff preview caps an oversized new file until the reader asks for
+    // the rest; this must be a diff-specific disclosure, never Monaco/raw JSON.
+    fireEvent.click(screen.getByRole("button", { name: /Show \d+ more lines/ }))
+    expect(
+      screen.getByText("export const addedLine799 = 799")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"diff"')
+  })
+
+  it("renders a large live new-file write instead of truncating its content", () => {
+    const newFileContent = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const generatedLine${index} = ${index}`
+    ).join("\n")
+    const writeInput = JSON.stringify({
+      file_path: "/workspace/github/codeg/src/generated/new-file.ts",
+      content: newFileContent,
+    })
+    const liveMessage: LiveMessage = {
+      id: "live-parent-agent-write",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "parent-agent",
+            title: "agent",
+            kind: "other",
+            status: "in_progress",
+            content: null,
+            raw_input: JSON.stringify({
+              subagent_type: "worker",
+              description: "create the generated file",
+            }),
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "child-write",
+            title: "Write new-file.ts",
+            // ACP groups writes under the Edit kind; input shape determines the
+            // frontend's canonical `write` route.
+            kind: "edit",
+            status: "completed",
+            content: null,
+            raw_input: writeInput,
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: { claudeCode: { parentToolUseId: "parent-agent" } },
+            images: [],
+          },
+        },
+        { type: "thinking", text: "continue checking the result" },
+      ],
+    }
+
+    const live = buildStreamingTurnsFromLiveMessage(1, liveMessage)
+    const parentMessage = adaptMessageTurn(
+      live.turns[0],
+      { attachedResources: "", toolCallFailed: "Tool call failed" },
+      true,
+      live.inProgressToolCallIds
+    )
+    const parentPart = parentMessage.content.find(
+      (part): part is ToolCallPart =>
+        part.type === "tool-call" && part.toolName === "agent"
+    )
+    const child = parentPart?.agentStats?.tool_calls?.[0]
+    expect(child?.tool_name).toBe("write")
+    expect(child?.input_preview).toBe(writeInput)
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={parentPart as ToolCallPart}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer key={key} parts={[childPart]} role="user" />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Running" }))
+    fireEvent.click(screen.getByRole("button", { name: /new-file\.ts/ }))
+
+    expect(
+      screen.getByText("export const generatedLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"content"')
+  })
+})
+
+describe("inline subagent read activity", () => {
+  it("keeps a settled Agent read call visible without its parameters", () => {
+    const filePath =
+      "/workspace/github/codeg/src-tauri/src/acp/delegation/spawner.rs"
+    const part: ToolCallPart = {
+      ...basePart(
+        JSON.stringify({
+          subagent_type: "worker",
+          description: "inspect the connection spawner",
+        }),
+        "output-available"
+      ),
+      agentStats: {
+        tool_calls: [
+          {
+            tool_name: "read_file",
+            input_preview: JSON.stringify({
+              file_path: filePath,
+              offset: 1,
+              limit: 20,
+            }),
+            output_preview: JSON.stringify({
+              start_line: 1,
+              content: "//! ConnectionSpawner\npub trait ConnectionSpawner {}",
+            }),
+            is_error: false,
+          },
+        ],
+      },
+    }
+
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <AgentToolCallPart
+            part={part}
+            renderToolCall={(childPart, key) => (
+              <ContentPartsRenderer
+                key={key}
+                parts={[childPart]}
+                role="assistant"
+              />
+            )}
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
+    fireEvent.click(screen.getAllByRole("button", { name: "Completed" })[1])
+    fireEvent.click(
+      screen.getByRole("button", { name: /delegation\/spawner\.rs/ })
+    )
+
+    expect(screen.getByText("//! ConnectionSpawner")).toBeInTheDocument()
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument()
+    expect(screen.queryByText(/"offset"/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/"limit"/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/"file_path"/)).not.toBeInTheDocument()
+    expect(container.querySelector("svg.lucide-eye")).not.toBeNull()
+  })
+
+  it("shows the file content without rendering read parameters", () => {
+    const filePath =
+      "/workspace/github/codeg/src-tauri/src/acp/delegation/spawner.rs"
+    const readInput = JSON.stringify({ file_path: filePath })
+    const readOutput = JSON.stringify({
+      start_line: 1,
+      content: "//! ConnectionSpawner\npub trait ConnectionSpawner {}",
+    })
+
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer
+            parts={[
+              {
+                type: "tool-call",
+                toolCallId: "subagent-read-file",
+                toolName: "read_file",
+                input: readInput,
+                output: readOutput,
+                state: "output-available",
+              },
+            ]}
+            role="assistant"
+            inlineActivity
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "delegation/spawner.rs" })
+    )
+    expect(screen.getByText("delegation/spawner.rs")).toBeInTheDocument()
+    expect(screen.getByText("//! ConnectionSpawner")).toBeInTheDocument()
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument()
+    expect(screen.queryByText(/\"file_path\"/)).not.toBeInTheDocument()
+    expect(container.querySelector("svg.lucide-eye")).not.toBeNull()
+  })
+
+  it("keeps the read file row visible when no result was captured", () => {
+    const filePath =
+      "/workspace/github/codeg/src-tauri/src/acp/delegation/spawner.rs"
+
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer
+            parts={[
+              {
+                type: "tool-call",
+                toolCallId: "subagent-read-file-without-output",
+                toolName: "read_file",
+                input: JSON.stringify({ file_path: filePath }),
+                output: null,
+                state: "output-available",
+              },
+            ]}
+            role="assistant"
+            inlineActivity
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    expect(
+      screen.getByRole("button", { name: "delegation/spawner.rs" })
+    ).toBeInTheDocument()
+    expect(container.querySelector("svg.lucide-eye")).not.toBeNull()
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument()
+  })
+})
+
+describe("inline subagent edit activity", () => {
+  it("renders a large complete edit as a diff instead of its JSON envelope", () => {
+    const oldSource = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const sourceLine${index} = ${index}`
+    ).join("\n")
+    const newSource = oldSource.replace(
+      "export const sourceLine4200 = 4200",
+      "export const sourceLine4200 = 4201"
+    )
+    const input = JSON.stringify({
+      file_path:
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+      // The large new side deliberately precedes old_string, matching the
+      // child-session payload that used to fall back to raw JSON.
+      new_string: newSource,
+      old_string: oldSource,
+    })
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer
+            parts={[
+              {
+                type: "tool-call",
+                toolCallId: "inline-large-edit",
+                toolName: "edit",
+                input,
+                output: "{}",
+                state: "output-available",
+              },
+            ]}
+            role="assistant"
+            inlineActivity
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /content-parts-renderer\.tsx/ })
+    )
+
+    expect(
+      screen.getByText("export const sourceLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const sourceLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"new_string"')
+    expect(document.body.textContent).not.toContain('"old_string"')
+  })
+
+  it("uses a large edit descriptor reported on the live result side", () => {
+    const oldSource = Array.from(
+      { length: 4_400 },
+      (_, index) => `export const sourceLine${index} = ${index}`
+    ).join("\n")
+    const newSource = oldSource.replace(
+      "export const sourceLine4200 = 4200",
+      "export const sourceLine4200 = 4201"
+    )
+    const output = JSON.stringify({
+      file_path:
+        "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+      new_string: newSource,
+      old_string: oldSource,
+    })
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer
+            parts={[
+              {
+                type: "tool-call",
+                toolCallId: "inline-large-result-edit",
+                toolName: "edit",
+                input: JSON.stringify({
+                  file_path:
+                    "/workspace/github/codeg/src/components/message/content-parts-renderer.tsx",
+                }),
+                output,
+                state: "output-available",
+              },
+            ]}
+            role="assistant"
+            inlineActivity
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /content-parts-renderer\.tsx/ })
+    )
+
+    expect(
+      screen.getByText("export const sourceLine4200 = 4201")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("export const sourceLine4200 = 4200")
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"new_string"')
+    expect(document.body.textContent).not.toContain('"old_string"')
+  })
+
+  it("uses a complete result-side write descriptor as a file view", () => {
+    const content = Array.from(
+      { length: 800 },
+      (_, index) => `export const resultWriteLine${index} = ${index}`
+    ).join("\n")
+    const filePath = "/workspace/github/codeg/src/generated/result-write.ts"
+    const output = JSON.stringify({ file_path: filePath, content })
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StickToBottom>
+          <ContentPartsRenderer
+            parts={[
+              {
+                type: "tool-call",
+                toolCallId: "inline-large-result-write",
+                toolName: "write",
+                input: JSON.stringify({ file_path: filePath }),
+                output,
+                state: "output-available",
+              },
+            ]}
+            role="assistant"
+            inlineActivity
+          />
+        </StickToBottom>
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /result-write\.ts/ }))
+
+    expect(
+      screen.getByText("export const resultWriteLine799 = 799")
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("large-tool-output")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('"content"')
+  })
 })
 
 describe("ContentPartsRenderer edit activity output", () => {

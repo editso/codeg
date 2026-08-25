@@ -1570,6 +1570,84 @@ describe("AcpConnectionsProvider liveMessage sink (mirror out of React)", () => 
     expect(last.len).toBe(1) // the appended tool_call block
   })
 
+  it("keeps a complete top-level multi-file edit input when a later update sends an empty input", async () => {
+    // Codex ACP emits the complete edit descriptor on the opening tool_call,
+    // then sends status-only tool_call_update frames with raw_input="". The
+    // update must not erase the descriptor: while the turn is live, it is the
+    // only source the activity renderer has for the structured diff.
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0)
+      return 1
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+
+    try {
+      const handlers = await connectOwner()
+      const oldFirst = "old first\n".repeat(2_000)
+      const newFirst = `${oldFirst}new first\n`
+      const oldSecond = "old second\n".repeat(2_000)
+      const newSecond = `${oldSecond}new second\n`
+      const rawInput = JSON.stringify({
+        changes: {
+          "/workspace/github/codeg/src/first.ts": {
+            old_text: oldFirst,
+            new_text: newFirst,
+          },
+          "/workspace/github/codeg/src/second.ts": {
+            old_text: oldSecond,
+            new_text: newSecond,
+          },
+        },
+      })
+
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "status_changed",
+        status: "prompting",
+      })
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: "top-level-multi-edit",
+        title: "Edit 2 files",
+        kind: "edit",
+        status: "pending",
+        content: null,
+        raw_input: rawInput,
+        raw_output: null,
+      })
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "tool_call_update",
+        tool_call_id: "top-level-multi-edit",
+        title: null,
+        status: "in_progress",
+        content: null,
+        raw_input: "",
+        raw_output: null,
+      })
+
+      const liveCall = h
+        .store!.getConnection(TAB)!
+        .liveMessage!.content.find(
+          (block) =>
+            block.type === "tool_call" &&
+            block.info.tool_call_id === "top-level-multi-edit"
+        )
+      expect(
+        liveCall?.type === "tool_call" ? liveCall.info.raw_input : null
+      ).toBe(rawInput)
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
+  })
+
   it("stops firing after the returned unregister runs", async () => {
     const handlers = await connectOwner()
     let count = 0

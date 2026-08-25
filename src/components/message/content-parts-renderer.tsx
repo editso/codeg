@@ -97,6 +97,7 @@ import { LargeToolOutputViewer } from "./large-tool-output-viewer"
 import type { BundledLanguage } from "shiki"
 import {
   FileTextIcon,
+  EyeIcon,
   FilePenLineIcon,
   FilePlusIcon,
   TerminalIcon,
@@ -947,7 +948,7 @@ function getToolIcon(
 ): ReactNode | undefined {
   const name = toolName.toLowerCase()
   if (name === "read" || name === "read file")
-    return <FileTextIcon className={ICON_CLASS} />
+    return <EyeIcon className={ICON_CLASS} />
   if (name === "edit") return <FilePenLineIcon className={ICON_CLASS} />
   if (name === "write" || name === "notebookedit")
     return <FilePlusIcon className={ICON_CLASS} />
@@ -1639,7 +1640,7 @@ function FileToolInput({
         ) : (
           <span className="min-w-0 flex-1" />
         )}
-        {badges.length > 0 && (
+        {!isRead && badges.length > 0 && (
           <span className="ml-auto inline-flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
             {badges.map((b) => (
               <span key={b}>{b}</span>
@@ -1954,6 +1955,96 @@ function isTruncatedInput(input: string): boolean {
   return input.endsWith('..."') || input.endsWith("...")
 }
 
+/**
+ * A path by itself identifies an Edit call but cannot produce a diff. Keep
+ * this stricter than `isCanonicalEditPayload`: callers use it to decide
+ * whether an input/result source may replace the other one.
+ */
+function hasCompleteEditDiffPayload(input: string): boolean {
+  const parsed = aliasToolInputKeys(tryParseJson(input))
+  if (!parsed)
+    return Boolean(extractApplyPatchTextFromUnknownInput(input, null))
+
+  const changes = findObjectFieldDeep(parsed, "changes")
+  const hasCompleteChange = changes
+    ? Object.values(changes).some((change) => {
+        if (typeof change === "string") return true
+        const record = asObjectLike(change)
+        if (!record) return false
+        return (
+          typeof firstStringField(record, EDIT_CHANGE_OLD_KEYS) === "string" ||
+          typeof firstStringField(record, EDIT_CHANGE_NEW_KEYS) === "string" ||
+          typeof firstStringField(record, EDIT_CHANGE_DIFF_KEYS) === "string"
+        )
+      })
+    : false
+
+  if (
+    hasCompleteChange ||
+    typeof parsed.old_string === "string" ||
+    typeof parsed.new_string === "string" ||
+    typeof parsed.old_text === "string" ||
+    typeof parsed.new_text === "string"
+  ) {
+    return true
+  }
+
+  return Boolean(extractApplyPatchTextFromUnknownInput(input, parsed))
+}
+
+function hasCompleteWritePayload(input: string): boolean {
+  const parsed = aliasToolInputKeys(tryParseJson(input))
+  if (!parsed) return false
+
+  const filePath = parsed.file_path ?? parsed.path ?? parsed.notebook_path
+  return (
+    typeof filePath === "string" &&
+    (typeof parsed.content === "string" ||
+      typeof parsed.new_source === "string")
+  )
+}
+
+function isFileMutationToolName(name: string): boolean {
+  return (
+    name === "edit" ||
+    name === "apply_patch" ||
+    name === "write" ||
+    name === "notebookedit"
+  )
+}
+
+function hasCompleteFileMutationPayload(
+  toolName: string,
+  input: string
+): boolean {
+  const name = toolName.toLowerCase()
+  if (name === "edit" || name === "apply_patch") {
+    return hasCompleteEditDiffPayload(input)
+  }
+  if (name === "write" || name === "notebookedit") {
+    return hasCompleteWritePayload(input)
+  }
+  return false
+}
+
+/**
+ * ACP providers are inconsistent about which side of a tool call carries a
+ * complete file-mutation descriptor. History normally puts it in input, but a
+ * live child event can identify only the path in input and publish the full
+ * edit/write JSON as result. Render the actual descriptor in either case,
+ * preferring input when both are complete so the historical shape remains
+ * authoritative.
+ */
+function selectCompleteFileMutationPayload(
+  toolName: string,
+  input: string,
+  output: string | null | undefined
+): string {
+  if (hasCompleteFileMutationPayload(toolName, input)) return input
+  if (output && hasCompleteFileMutationPayload(toolName, output)) return output
+  return input
+}
+
 function StructuredToolInput({
   toolName,
   input,
@@ -1965,15 +2056,25 @@ function StructuredToolInput({
 }) {
   const t = useTranslations("Folder.chat.contentParts")
   const name = toolName.toLowerCase()
+  const mutationInput = useMemo(
+    () =>
+      isFileMutationToolName(name)
+        ? selectCompleteFileMutationPayload(name, input, output)
+        : input,
+    [name, input, output]
+  )
   // Every dedicated card below reads the canonical (snake_case) argument names.
   // The alias pass fills in the ones an agent spelled differently on the live
   // wire — OpenCode's camelCase `filePath`/`oldString`, which its ACP adapter
   // forwards verbatim while the history parser already rewrites them. Doing it
   // once here rather than per card keeps Write/Read/Edit/Grep in agreement.
-  const parsed = useMemo(() => aliasToolInputKeys(tryParseJson(input)), [input])
+  const parsed = useMemo(
+    () => aliasToolInputKeys(tryParseJson(mutationInput)),
+    [mutationInput]
+  )
   const truncated =
     (name === "edit" || name === "write" || name === "apply_patch") &&
-    isTruncatedInput(input)
+    isTruncatedInput(mutationInput)
 
   const truncationBanner = truncated ? (
     <div className="rounded-md bg-yellow-500/10 px-2.5 py-1.5 text-[11px] text-yellow-700 dark:text-yellow-400">
@@ -1988,7 +2089,8 @@ function StructuredToolInput({
 
   if (name === "apply_patch") {
     const patchInput =
-      extractApplyPatchTextFromUnknownInput(input, parsed) ?? input
+      extractApplyPatchTextFromUnknownInput(mutationInput, parsed) ??
+      mutationInput
     return (
       <>
         {truncationBanner}
@@ -2010,21 +2112,12 @@ function StructuredToolInput({
   if (!parsed) {
     return (
       <pre className="whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-        {input}
+        {mutationInput}
       </pre>
     )
   }
 
   if (name === "edit") {
-    const patchInput = extractApplyPatchTextFromUnknownInput(input, parsed)
-    if (patchInput) {
-      return (
-        <>
-          {truncationBanner}
-          <ApplyPatchToolInput input={patchInput} />
-        </>
-      )
-    }
     if (parsed) {
       const changesPayload = extractEditChangesPayload(parsed)
       if (changesPayload.length > 0) {
@@ -2054,7 +2147,19 @@ function StructuredToolInput({
         </>
       )
     }
-    return <GenericToolInput input={input} />
+    const patchInput = extractApplyPatchTextFromUnknownInput(
+      mutationInput,
+      parsed
+    )
+    if (patchInput) {
+      return (
+        <>
+          {truncationBanner}
+          <ApplyPatchToolInput input={patchInput} />
+        </>
+      )
+    }
+    return <GenericToolInput input={mutationInput} />
   }
   if (name === "bash" || name === "exec_command")
     return <BashToolInput input={parsed} />
@@ -3514,29 +3619,42 @@ const ActivityStructuredEditInput = memo(function ActivityStructuredEditInput({
   input: string
 }) {
   const parsed = useMemo(() => aliasToolInputKeys(tryParseJson(input)), [input])
-  const patchInput = useMemo(
-    () => extractApplyPatchTextFromUnknownInput(input, parsed),
-    [input, parsed]
-  )
   const changes = useMemo(
     () => (parsed ? extractEditChangesPayload(parsed) : []),
     [parsed]
   )
 
+  if (changes.length > 0) {
+    return <EditChangesToolInput changes={changes} />
+  }
+  if (parsed && isCanonicalEditPayload(parsed)) {
+    return <EditToolInput input={parsed} />
+  }
+  const patchInput = extractApplyPatchTextFromUnknownInput(input, parsed)
   if (patchInput) {
     return (
       <UnifiedDiffPreview diffText={patchInput} clickableFilePath embedded />
     )
   }
-  if (!parsed) return null
-  if (changes.length > 0) {
-    return <EditChangesToolInput changes={changes} />
-  }
-  if (isCanonicalEditPayload(parsed)) {
-    return <EditToolInput input={parsed} />
-  }
   return null
 })
+
+const ActivityStructuredWriteInput = memo(
+  function ActivityStructuredWriteInput({
+    input,
+    toolName,
+  }: {
+    input: string
+    toolName: string
+  }) {
+    const parsed = useMemo(
+      () => aliasToolInputKeys(tryParseJson(input)),
+      [input]
+    )
+    if (!parsed) return null
+    return <FileToolInput toolName={toolName} input={parsed} />
+  }
+)
 
 const ActivityPreviewCode = memo(function ActivityPreviewCode({
   text,
@@ -3603,12 +3721,16 @@ const ActivityPreviewCode = memo(function ActivityPreviewCode({
 
 function activityToolOutput(
   part: Extract<AdaptedContentPart, { type: "tool-call" }>,
-  command: boolean
+  command: boolean,
+  read: boolean
 ): string | null {
   const source = activityPreviewSource(part.output ?? part.errorText)
   if (!source) return null
 
   const normalized = commandOutputFromJsonString(source) ?? source
+  if (read && !part.errorText) {
+    return parseReadOutput(normalized).content
+  }
   if (!command) return formatActivityPreviewText(normalized)
 
   return stripMarkdownCodeFence(
@@ -3651,44 +3773,67 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
       const isCommandSurface =
         presentation.kind === "command" || presentation.kind === "session"
       const rawInput = activityPreviewSource(part.input) ?? ""
+      const rawOutput = activityPreviewSource(part.output) ?? ""
+      const mutationToolName =
+        presentation.kind === "edit"
+          ? "edit"
+          : presentation.kind === "write"
+            ? "write"
+            : normalizeToolName(part.toolName).toLowerCase()
+      // Tool inputs stream first, while some live providers publish the full
+      // descriptor only in the result. Only choose a source that actually
+      // contains a file mutation: a path-only input must not suppress that
+      // completed result-side edit or write.
+      const mutationPayload = selectCompleteFileMutationPayload(
+        mutationToolName,
+        rawInput,
+        rawOutput
+      )
       const structuredEditInput =
-        Boolean(rawInput) &&
-        (presentation.kind === "edit" || hasActivityEditPayload(rawInput))
-      const structuredDiffAvailable = (() => {
-        if (!structuredEditInput) return false
-        const parsed = aliasToolInputKeys(tryParseJson(rawInput))
-        if (extractApplyPatchTextFromUnknownInput(rawInput, parsed)) {
-          return true
-        }
-        return Boolean(
-          parsed &&
-          (extractEditChangesPayload(parsed).length > 0 ||
-            isCanonicalEditPayload(parsed))
-        )
-      })()
+        presentation.kind === "edit" &&
+        hasCompleteEditDiffPayload(mutationPayload)
+      const structuredWriteInput =
+        presentation.kind === "write" &&
+        hasCompleteWritePayload(mutationPayload)
+      const structuredFileMutationInput =
+        structuredEditInput || structuredWriteInput
+      // Keep an incomplete streaming edit out of the generic JSON surface.
+      // Its structured card will appear when the whole descriptor arrives.
+      const incompleteStreamingEdit =
+        !structuredEditInput &&
+        presentation.kind === "edit" &&
+        hasActivityEditPayload(rawInput)
       const input = script
         ? { text: script.source, language: "javascript" as const }
         : presentation.command
           ? null
-          : structuredEditInput
+          : presentation.kind === "read"
             ? null
-            : (() => {
-                const text = formatActivityPreviewText(rawInput)
-                return text ? { text, language: "json" as const } : null
-              })()
-      // A successful Edit is already fully represented by the structured diff
-      // above. Providers commonly return an empty `{}` acknowledgement; showing
-      // it as a second "Result" block adds no information. Errors still render,
-      // and output remains available when the input could not form a diff.
+            : structuredFileMutationInput || incompleteStreamingEdit
+              ? null
+              : (() => {
+                  const text = formatActivityPreviewText(rawInput)
+                  return text ? { text, language: "json" as const } : null
+                })()
+      // A successful file mutation is already fully represented by the
+      // structured diff/file card above. Providers commonly return an empty `{}`
+      // acknowledgement; showing it as a second "Result" block adds no
+      // information. Errors still render, and output remains available when the
+      // input could not form a complete mutation.
       const output =
-        structuredDiffAvailable && !part.errorText
+        structuredFileMutationInput && !part.errorText
           ? null
-          : activityToolOutput(part, isCommandSurface)
+          : activityToolOutput(
+              part,
+              isCommandSurface,
+              presentation.kind === "read"
+            )
       return {
         presentation,
-        rawInput,
+        mutationPayload,
         structuredEditInput,
-        structuredDiffAvailable,
+        structuredWriteInput,
+        structuredFileMutationInput,
         input,
         output: output
           ? { text: output, language: codeLanguageForOutput(output) }
@@ -3703,13 +3848,22 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
   if (!detail) return null
   const {
     presentation,
-    rawInput,
+    mutationPayload,
     structuredEditInput,
-    structuredDiffAvailable,
+    structuredWriteInput,
+    structuredFileMutationInput,
     input,
     output,
   } = detail
-  if (!presentation.command && !structuredEditInput && !input && !output) {
+  const hasReadTarget =
+    presentation.kind === "read" && presentation.paths.length > 0
+  if (
+    !presentation.command &&
+    !structuredFileMutationInput &&
+    !input &&
+    !output &&
+    !hasReadTarget
+  ) {
     return null
   }
   // A streamed file-write payload often contains the full new file as one JSON
@@ -3727,9 +3881,13 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
 
   return (
     <div className="grid w-full max-w-none gap-2 py-0.5">
-      {presentation.paths[0] && !structuredDiffAvailable ? (
+      {presentation.paths[0] && !structuredFileMutationInput ? (
         <div className="flex min-w-0 items-center gap-1.5 px-1 py-0.5 text-[11px] text-muted-foreground">
-          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+          {presentation.kind === "read" ? (
+            <EyeIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+          ) : (
+            <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+          )}
           <FilePathLink
             filePath={presentation.paths[0]}
             className="min-w-0 truncate font-mono text-muted-foreground hover:text-foreground"
@@ -3750,8 +3908,14 @@ const ActivityToolPreview = memo(function ActivityToolPreview({
           text={`$ ${presentation.command}`}
         />
       ) : null}
-      {structuredEditInput ? (
-        <ActivityStructuredEditInput input={rawInput} />
+      {structuredEditInput && mutationPayload ? (
+        <ActivityStructuredEditInput input={mutationPayload} />
+      ) : null}
+      {structuredWriteInput && mutationPayload ? (
+        <ActivityStructuredWriteInput
+          input={mutationPayload}
+          toolName={part.toolName}
+        />
       ) : null}
       {input && !deferStreamingLargeInput ? (
         <ActivityPreviewCode

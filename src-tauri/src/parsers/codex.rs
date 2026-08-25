@@ -62,26 +62,44 @@ impl CodexParser {
             child.summary.title = Some(title.clone());
         }
 
-        let Some(parent_id) = forked_parent_thread_id(&child_path) else {
-            return Ok(child);
-        };
-        // A malformed self-reference must behave like an unresolvable parent,
-        // not turn a readable child transcript into an empty one.
-        if parent_id == conversation_id {
-            return Ok(child);
-        }
-        // The legacy lookup permits filename substring matches for backwards
-        // compatibility. A child-only crop needs stronger proof: resolving a
-        // short parent id to the child file itself would make every turn look
-        // copied and incorrectly return an empty activity stream.
-        let Some(parent_path) = self.find_conversation_path_by_thread_id(&parent_id) else {
+        let declared_parent_id = forked_parent_thread_id(&child_path);
+        let parent_resolution = declared_parent_id
+            .as_deref()
+            .filter(|parent_id| *parent_id != conversation_id)
+            .and_then(|parent_id| {
+                self.find_conversation_path_by_thread_id(parent_id, &child_path)
+                    .map(|path| (path, parent_id.to_string()))
+            })
+            .or_else(|| {
+                // Older native-team rollouts identify the relationship only
+                // from the parent's sub_agent_activity event. Keep this
+                // fallback scoped to the explicit child transcript endpoint.
+                self.find_parent_path_by_child_activity(conversation_id, &child_path)
+                    .map(|path| {
+                        let parent_id = rollout_thread_identity(&path)
+                            .or_else(|| {
+                                path.file_stem()
+                                    .map(|stem| stem.to_string_lossy().into_owned())
+                            })
+                            .unwrap_or_else(|| conversation_id.to_string());
+                        (path, parent_id)
+                    })
+            });
+        let Some((parent_path, parent_id)) = parent_resolution else {
             return Ok(child);
         };
         let Ok(parent) = self.parse_conversation_detail(&parent_path, &parent_id) else {
             return Ok(child);
         };
 
-        trim_copied_parent_turn_prefix(&mut child, &parent);
+        // The parsed turn representation is intentionally lossy. For example,
+        // response_item messages are promoted only after the whole rollout has
+        // been read, so the still-growing parent can group a copied prefix
+        // differently from the already-forked child. Prefer the raw fork
+        // boundary for those cases, with the parsed-turn LCP as a compatibility
+        // fallback when the rollout shape cannot be recognized.
+        let raw_prefix = copied_parent_record_prefix(&child_path, &parent_path);
+        trim_copied_parent_turn_prefix(&mut child, &parent, raw_prefix.as_ref());
         Ok(child)
     }
 
@@ -94,6 +112,9 @@ impl CodexParser {
             return None;
         }
 
+        let mut reference_filename_fallback = None;
+        let mut reference_fallback = None;
+        let mut filename_fallback = None;
         for entry in WalkDir::new(&self.base_dir)
             .into_iter()
             .filter_map(|entry| entry.ok())
@@ -103,23 +124,45 @@ impl CodexParser {
                 continue;
             }
             let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            if filename.contains(conversation_id) {
+            if rollout_thread_identity(&path).as_deref() == Some(conversation_id) {
+                // Prefer a transcript whose header names the requested thread
+                // over a merely matching filename. This matters when a native
+                // child leaves both `agent-<id>.jsonl` and a
+                // `rollout-...-<id>.jsonl` candidate behind.
                 return Some(path);
+            }
+            if filename.contains(conversation_id) {
+                filename_fallback = filename_fallback.or(Some(path.clone()));
+            }
+            if rollout_thread_reference(&path).as_deref() == Some(conversation_id) {
+                if filename.contains(conversation_id) {
+                    reference_filename_fallback = reference_filename_fallback.or(Some(path));
+                } else {
+                    reference_fallback = reference_fallback.or(Some(path));
+                }
             }
         }
 
-        None
+        reference_filename_fallback
+            .or(reference_fallback)
+            .or(filename_fallback)
     }
 
     /// Resolve a parent only when its opening session header names this exact
     /// thread. Unlike the legacy filename lookup above, this is used solely by
     /// the child-only crop path, where an ambiguous match must safely fall back
     /// to the complete child transcript.
-    fn find_conversation_path_by_thread_id(&self, conversation_id: &str) -> Option<PathBuf> {
+    fn find_conversation_path_by_thread_id(
+        &self,
+        conversation_id: &str,
+        excluded_path: &Path,
+    ) -> Option<PathBuf> {
         if !self.base_dir.exists() {
             return None;
         }
 
+        let mut reference_filename_fallback = None;
+        let mut reference_fallback = None;
         for entry in WalkDir::new(&self.base_dir)
             .into_iter()
             .filter_map(|entry| entry.ok())
@@ -128,12 +171,68 @@ impl CodexParser {
             if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
                 continue;
             }
-            if rollout_thread_id(&path).as_deref() == Some(conversation_id) {
+            if same_path(path.as_path(), excluded_path) {
+                continue;
+            }
+            if rollout_thread_identity(&path).as_deref() == Some(conversation_id) {
                 return Some(path);
+            }
+            if rollout_thread_reference(&path).as_deref() == Some(conversation_id) {
+                // A parent can expose the requested id as `session_id` while
+                // its own `payload.id` uses a per-rollout id. Prefer the
+                // filename that also names the requested thread; otherwise a
+                // sibling child with the same parent reference could win the
+                // fallback and make the fork boundary unverifiable.
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(conversation_id))
+                {
+                    reference_filename_fallback = reference_filename_fallback.or(Some(path));
+                } else {
+                    reference_fallback = reference_fallback.or(Some(path));
+                }
             }
         }
 
-        None
+        reference_filename_fallback.or(reference_fallback)
+    }
+
+    /// Resolve a native-team parent from the parent's activity record when a
+    /// Codex version does not persist `parent_thread_id` on the child header.
+    /// This is deliberately a fallback for the child-only view: ordinary
+    /// conversation lookup must continue to work from the child file alone.
+    fn find_parent_path_by_child_activity(
+        &self,
+        child_id: &str,
+        excluded_path: &Path,
+    ) -> Option<PathBuf> {
+        if !self.base_dir.exists() {
+            return None;
+        }
+
+        let mut forked_parent_fallback = None;
+        for entry in WalkDir::new(&self.base_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            let path = entry.path().to_path_buf();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
+                || same_path(&path, excluded_path)
+                || !rollout_mentions_child_activity(&path, child_id)
+            {
+                continue;
+            }
+
+            // Prefer a normal parent rollout over a sibling fork that copied
+            // the same activity event into its own body. If the parent itself
+            // is a fork, retain it as a safe fallback.
+            if forked_parent_thread_id(&path).is_none() {
+                return Some(path);
+            }
+            forked_parent_fallback = forked_parent_fallback.or(Some(path));
+        }
+
+        forked_parent_fallback
     }
 
     /// Load Codex's append-only session title index. The transcript remains the
@@ -1954,15 +2053,33 @@ fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) 
 /// not a reliable boundary either — a parent that already collected an earlier
 /// sibling's reply carries one inside the forked prefix too.
 ///
-/// So a forked thread yields no stats at all rather than wrong ones. The capsule
-/// still names the sub-agent and badges its thread id (both come from the
-/// PARENT's rollout); only the nested tool-call list is absent. The legacy
-/// `agent-<id>.jsonl` shape has no such prefix and is unaffected.
+/// The stats path resolves the parent and skips exactly that copied raw prefix,
+/// so the capsule keeps the child's own tool calls without crediting the
+/// PARENT's work. If the parent or the boundary cannot be proven, it declines
+/// to synthesize stats. The legacy `agent-<id>.jsonl` shape has no such prefix
+/// and is unaffected.
 fn is_forked_thread_header(value: &serde_json::Value) -> bool {
     value.get("type").and_then(|t| t.as_str()) == Some("session_meta")
-        && value
-            .pointer("/payload/parent_thread_id")
-            .is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+        && fork_parent_field(value).is_some()
+}
+
+fn fork_parent_field(value: &serde_json::Value) -> Option<&str> {
+    let payload = value.get("payload")?.as_object()?;
+    [
+        "parent_thread_id",
+        "parentThreadId",
+        "parent_id",
+        "parentId",
+        "forked_from",
+        "forkedFrom",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        payload
+            .get(key)
+            .and_then(|parent_id| parent_id.as_str())
+            .filter(|parent_id| !parent_id.is_empty())
+    })
 }
 
 /// Return the parent id only when the first parseable record is the fork
@@ -1974,16 +2091,14 @@ fn forked_parent_thread_id(path: &Path) -> Option<String> {
     if !is_forked_thread_header(&value) {
         return None;
     }
-    value
-        .pointer("/payload/parent_thread_id")
-        .and_then(|parent_id| parent_id.as_str())
-        .map(str::to_string)
+    fork_parent_field(&value).map(str::to_string)
 }
 
-/// Id declared by the opening `session_meta` record. Used only for the strict
-/// parent lookup that guards child-prefix trimming; the normal conversation
-/// lookup deliberately retains its historical filename compatibility rules.
-fn rollout_thread_id(path: &Path) -> Option<String> {
+/// Id declared by the opening `session_meta` record. Codex has used both
+/// `payload.id` and `payload.session_id` for this identity across rollout
+/// formats. The first value is preferred because it is the child thread id;
+/// the second is retained as a compatibility identity for parent lookup.
+fn rollout_thread_identity(path: &Path) -> Option<String> {
     let header = first_rollout_record(path)?;
     if header.get("type").and_then(|kind| kind.as_str()) != Some("session_meta") {
         return None;
@@ -1993,6 +2108,34 @@ fn rollout_thread_id(path: &Path) -> Option<String> {
         .and_then(|thread_id| thread_id.as_str())
         .filter(|thread_id| !thread_id.is_empty())
         .map(str::to_string)
+}
+
+fn rollout_thread_reference(path: &Path) -> Option<String> {
+    let header = first_rollout_record(path)?;
+    if header.get("type").and_then(|kind| kind.as_str()) != Some("session_meta") {
+        return None;
+    }
+    header
+        .pointer("/payload/session_id")
+        .or_else(|| header.pointer("/payload/thread_id"))
+        .and_then(|thread_id| thread_id.as_str())
+        .filter(|thread_id| !thread_id.is_empty())
+        .map(str::to_string)
+}
+
+/// WalkDir can produce a path with a different lexical spelling from the path
+/// used by the child lookup (for example when a caller supplied a symlinked
+/// base directory). Never resolve a child to itself as its parent in that
+/// situation: doing so makes the copied-prefix length equal the whole child
+/// body and erases every child tool call.
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// Read the first parseable JSONL record. Codex opens every rollout with its
@@ -2016,69 +2159,215 @@ fn first_rollout_record(path: &Path) -> Option<serde_json::Value> {
     None
 }
 
-/// Compare the stable, user-visible identity of a parsed turn. The child
-/// parser can legitimately derive a different duration, usage aggregate, or
-/// model decoration after the fork; those are metadata about the same copied
-/// raw records and must not prevent us from recognizing the parent prefix.
-///
-/// Do not include `MessageTurn.id`: Codex assigns `turn-{index}` while parsing
-/// one rollout, rather than preserving an id from the record. The parent and
-/// child are parsed independently, so benign grouping differences can shift
-/// those local numbers even when they describe the same copied raw message.
-/// Keeping that derived id in this comparison made the common prefix appear
-/// empty and surfaced the parent's entire history as child activity.
-///
-/// `ContentBlock` has extensible JSON metadata and therefore no direct
-/// `PartialEq`. Its serde representation is the public wire shape, and
-/// `serde_json::Value` compares object fields independent of insertion order.
-/// A `ToolResult`'s `agent_stats` is also derived by reading a sibling rollout
-/// at parse time, not from this turn's raw record. It can change between the
-/// child and parent reads while a team is still running, so exclude just that
-/// derived field while retaining the result's real content and error state.
-fn turns_match(left: &MessageTurn, right: &MessageTurn) -> bool {
-    let fingerprint = |turn: &MessageTurn| {
-        let blocks = turn
-            .blocks
+/// The raw record boundary between a copied parent prefix and a child's own
+/// work. The parsed turn list is not always a stable comparison surface: the
+/// parent may still be growing while the child has already forked, and some
+/// response-item records are promoted or grouped based on the complete file.
+/// The copied records themselves, however, remain an exact prefix of the
+/// child's body for Codex's `fork_turns: "all"` rollout shape.
+#[derive(Debug)]
+struct RawForkPrefix {
+    /// Index in the parent rollout where the copied records begin. Most
+    /// rollouts copy from record zero; fork implementations that omit the
+    /// parent's session header or compacted prefix start later.
+    parent_record_start: usize,
+    copied_records: usize,
+    child_body_records: usize,
+}
+
+fn rollout_records(path: &Path) -> Option<Vec<serde_json::Value>> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str(&line) {
+            records.push(value);
+        }
+    }
+
+    Some(records)
+}
+
+fn rollout_mentions_child_activity(path: &Path, child_id: &str) -> bool {
+    let Some(records) = rollout_records(path) else {
+        return false;
+    };
+
+    records.iter().any(|record| {
+        record.get("type").and_then(|kind| kind.as_str()) == Some("event_msg")
+            && record
+                .pointer("/payload/type")
+                .and_then(|kind| kind.as_str())
+                == Some("sub_agent_activity")
+            && [
+                "/payload/agent_thread_id",
+                "/payload/thread_id",
+                "/payload/child_thread_id",
+                "/payload/child_id",
+                "/payload/agent_id",
+            ]
             .iter()
-            .cloned()
-            .map(|mut block| {
+            .any(|pointer| {
+                record
+                    .pointer(pointer)
+                    .and_then(|value| value.as_str())
+                    == Some(child_id)
+            })
+    })
+}
+
+fn copied_parent_record_prefix(child_path: &Path, parent_path: &Path) -> Option<RawForkPrefix> {
+    let child_records = rollout_records(child_path)?;
+    let parent_records = rollout_records(parent_path)?;
+    // The fork header proves the first child record is the child's own session
+    // header. The records after it are the copied parent body. A few fork
+    // writers omit the parent's opening metadata (or fork from a compacted
+    // suffix), so search for the longest exact child-prefix match at every
+    // parent offset instead of assuming it starts at record zero.
+    let child_body = child_records.get(1..)?;
+    let mut best_start = 0;
+    let mut copied_records = 0;
+    for parent_start in 0..parent_records.len() {
+        let matched = child_body
+            .iter()
+            .zip(parent_records[parent_start..].iter())
+            .take_while(|(child, parent)| child == parent)
+            .count();
+        if matched > copied_records {
+            best_start = parent_start;
+            copied_records = matched;
+        }
+    }
+
+    if copied_records == 0 {
+        return None;
+    }
+
+    Some(RawForkPrefix {
+        parent_record_start: best_start,
+        copied_records,
+        child_body_records: child_body.len(),
+    })
+}
+
+/// Flatten a parsed transcript to the user-visible block sequence. A native
+/// child can append its first tool call to the same assistant turn that ends
+/// the copied parent prefix, so turn-level comparison is too coarse for the
+/// child-only view. Keep the role beside each block: a matching tool result
+/// from another role must never count as copied history.
+fn turn_blocks_fingerprint(
+    turns: &[MessageTurn],
+) -> Vec<(TurnRole, serde_json::Value)> {
+    turns
+        .iter()
+        .flat_map(|turn| {
+            turn.blocks.iter().map(|block| {
+                let mut block = block.clone();
                 if let ContentBlock::ToolResult { agent_stats, .. } = &mut block {
                     *agent_stats = None;
                 }
-                block
+                (turn.role.clone(), serde_json::to_value(block).expect("serializable block"))
             })
-            .collect::<Vec<_>>();
-        serde_json::json!({
-            "role": &turn.role,
-            "blocks": blocks,
-            "timestamp": &turn.timestamp,
         })
-    };
-    fingerprint(left) == fingerprint(right)
+        .collect()
 }
 
-/// Remove the exact common turn prefix of a native Codex child and its parent.
+/// Remove exactly `count` leading blocks from a parsed child transcript while
+/// retaining the turn that contains the first child-owned block. This is the
+/// important distinction from draining whole turns by timestamp: a copied
+/// assistant message and a child tool call can share one parsed turn.
+fn drain_leading_blocks(turns: &mut Vec<MessageTurn>, count: usize) {
+    let mut remaining = count;
+    for turn in turns.iter_mut() {
+        if remaining == 0 {
+            break;
+        }
+        if remaining >= turn.blocks.len() {
+            remaining -= turn.blocks.len();
+            turn.blocks.clear();
+        } else {
+            turn.blocks.drain(..remaining);
+            remaining = 0;
+        }
+    }
+    turns.retain(|turn| !turn.blocks.is_empty());
+}
+
+/// Remove the exact common block prefix of a native Codex child and its parent.
 ///
 /// A parent can keep working after the child is spawned, which is why this is
 /// a longest-common-prefix comparison rather than a count based on the
-/// parent's current length. If the formats do not line up at the first turn,
+/// parent's current length. If the formats do not line up at the first block,
 /// keep the complete child transcript: showing a little extra is safer than
 /// silently erasing an unfamiliar rollout format.
 fn trim_copied_parent_turn_prefix(
     child: &mut ConversationDetail,
     parent: &ConversationDetail,
+    raw_prefix: Option<&RawForkPrefix>,
 ) {
-    let copied_len = child
-        .turns
-        .iter()
-        .zip(&parent.turns)
-        .take_while(|(child_turn, parent_turn)| turns_match(child_turn, parent_turn))
-        .count();
-    if copied_len == 0 {
+    if let Some(raw_prefix) = raw_prefix {
+        if raw_prefix.copied_records == raw_prefix.child_body_records {
+            child.turns.clear();
+        } else {
+            let child_blocks = turn_blocks_fingerprint(&child.turns);
+            let parent_blocks = turn_blocks_fingerprint(&parent.turns);
+            let copied_blocks = if raw_prefix.parent_record_start == 0 {
+                child_blocks
+                    .iter()
+                    .zip(&parent_blocks)
+                    .take_while(|(child_block, parent_block)| child_block == parent_block)
+                    .count()
+            } else {
+                // When the raw match starts in the middle of the parent
+                // rollout, the corresponding visible block also starts after
+                // an unknown number of non-visible records. Try each parent
+                // block boundary and retain the longest proven content prefix.
+                (0..parent_blocks.len())
+                    .map(|start| {
+                        child_blocks
+                            .iter()
+                            .zip(parent_blocks[start..].iter())
+                            .take_while(|(child_block, parent_block)| {
+                                child_block == parent_block
+                            })
+                            .count()
+                    })
+                    .max()
+                    .unwrap_or(0)
+            };
+            if copied_blocks == 0 {
+                // The raw boundary proves that this is a fork, but the parsed
+                // representation is unfamiliar (or still incomplete). Keep
+                // the readable child transcript rather than deleting a turn
+                // based on an unreliable timestamp.
+                return;
+            }
+            drain_leading_blocks(&mut child.turns, copied_blocks);
+        }
+        child.summary.message_count = child.turns.len() as u32;
+        if let Some(first_turn) = child.turns.first() {
+            child.summary.started_at = first_turn.timestamp;
+        }
+        child.session_stats = super::compute_session_stats(&child.turns);
         return;
     }
 
-    child.turns.drain(..copied_len);
+    let child_blocks = turn_blocks_fingerprint(&child.turns);
+    let parent_blocks = turn_blocks_fingerprint(&parent.turns);
+    let copied_blocks = child_blocks
+        .iter()
+        .zip(&parent_blocks)
+        .take_while(|(child_block, parent_block)| child_block == parent_block)
+        .count();
+    if copied_blocks == 0 {
+        return;
+    }
+
+    drain_leading_blocks(&mut child.turns, copied_blocks);
     child.summary.message_count = child.turns.len() as u32;
     if let Some(first_turn) = child.turns.first() {
         child.summary.started_at = first_turn.timestamp;
@@ -2090,43 +2379,58 @@ fn trim_copied_parent_turn_prefix(
 }
 
 fn parse_codex_subagent_stats(
-    session_dir: &std::path::Path,
+    session_root: &std::path::Path,
     agent_id: &str,
 ) -> Option<AgentExecutionStats> {
     if agent_id.len() > 64 || agent_id.contains("..") || agent_id.contains('/') {
         return None;
     }
 
-    // Try exact filename first (e.g., "agent-{agent_id}.jsonl"), then fall
-    // back to files whose stem ends with the agent_id. Collect and sort
-    // candidates to ensure deterministic selection across platforms.
-    let exact_path = session_dir.join(format!("agent-{}.jsonl", agent_id));
-    let session_file = if exact_path.is_file() {
-        exact_path
-    } else {
-        let mut candidates: Vec<_> = fs::read_dir(session_dir)
-            .ok()?
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    return None;
-                }
-                let stem = path.file_stem()?.to_string_lossy().into_owned();
-                // Match only if the stem ends with the agent_id after a separator
-                // (e.g., "session-abc123" matches agent_id "abc123")
-                if stem == agent_id
-                    || stem
-                        .strip_suffix(agent_id)
-                        .is_some_and(|prefix| prefix.ends_with('-') || prefix.ends_with('_'))
-                {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        candidates.sort();
-        candidates.into_iter().next()?
+    // Use the same recursive, header-first resolver as the ordinary Codex
+    // conversation path. The old direct-directory lookup worked for the
+    // first native-team layout, but silently missed a child rollout when its
+    // file lived in a nested/date directory. That made the live stats vanish
+    // exactly at settlement, when the parent was rebuilt from disk.
+    let parser = CodexParser {
+        base_dir: session_root.to_path_buf(),
+    };
+    let session_file = parser.find_conversation_path(agent_id)?;
+
+    // Native Codex team children are full forked rollouts: after their own
+    // session header, the file starts with an exact copy of the parent's raw
+    // records. The live ACP stream only contains the child's calls, but a
+    // settled parse reads this file from disk. Count only records after the
+    // copied prefix so the final Agent card keeps its child tool calls without
+    // crediting the parent with them. If the parent or the raw boundary cannot
+    // be proven, refuse to synthesize stats rather than silently showing the
+    // wrong calls.
+    let records_to_skip = match first_rollout_record(&session_file) {
+        Some(header) if is_forked_thread_header(&header) => {
+            let parent_id = fork_parent_field(&header)?;
+            if parent_id == agent_id {
+                return None;
+            }
+            let parent_path = parser
+                .find_conversation_path_by_thread_id(parent_id, &session_file)
+                .or_else(|| {
+                    parser.find_parent_path_by_child_activity(agent_id, &session_file)
+                })?;
+            let raw_prefix = copied_parent_record_prefix(&session_file, &parent_path)?;
+            1 + raw_prefix.copied_records
+        }
+        _ => {
+            // Older native-team files may not carry a parent id in their own
+            // session header. An activity record in the parent is still an
+            // explicit relationship, so use it when the copied raw prefix can
+            // be proven. If no prefix exists, this is the legacy child-only
+            // file shape and its calls can be counted normally.
+            match parser.find_parent_path_by_child_activity(agent_id, &session_file) {
+                None => 0,
+                Some(parent_path) => copied_parent_record_prefix(&session_file, &parent_path)
+                    .map(|raw_prefix| 1 + raw_prefix.copied_records)
+                    .unwrap_or(0),
+            }
+        }
     };
 
     let file = fs::File::open(&session_file).ok()?;
@@ -2138,7 +2442,7 @@ fn parse_codex_subagent_stats(
     let mut pending_calls: HashMap<String, Vec<AgentToolCall>> = HashMap::new();
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut checked_header = false;
+    let mut record_index = 0usize;
 
     for line in reader.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -2149,14 +2453,10 @@ fn parse_codex_subagent_stats(
             Err(_) => continue,
         };
 
-        // The header decides whether this file can be counted at all — see
-        // `is_forked_thread_header`. Checked on the first record that parses,
-        // and never again.
-        if !checked_header {
-            checked_header = true;
-            if is_forked_thread_header(&value) {
-                return None;
-            }
+        let current_index = record_index;
+        record_index += 1;
+        if current_index < records_to_skip {
+            continue;
         }
 
         if let Some(ts) = parse_codex_timestamp(&value) {
@@ -2427,6 +2727,11 @@ impl CodexParser {
         // Live and reconstructed capsules never double-render (live during
         // streaming, this on reload).
         let mut spawn_agent_call_ids: HashSet<String> = HashSet::new();
+        // Native team rollouts normally correlate `sub_agent_activity` with
+        // the spawn through `event_id`. Keep the task label as a second
+        // correlation key because some Codex versions omit that field while
+        // still writing the child thread id and path.
+        let mut spawn_agent_task_names: HashMap<String, String> = HashMap::new();
         let mut agent_id_to_spawn_call_id: HashMap<String, String> = HashMap::new();
         // Result text used to FILL the execution capsule only as a fallback for
         // agents that were never returned by a wait (keyed by agent_id). Filled
@@ -2593,18 +2898,56 @@ impl CodexParser {
                             // child thread, and it correlates back by carrying
                             // the spawn's own `call_id` as `event_id`.
                             "sub_agent_activity" => {
-                                let call_id = payload
+                                let event_call_id = payload
                                     .get("event_id")
+                                    .or_else(|| payload.get("call_id"))
+                                    .or_else(|| payload.get("tool_call_id"))
                                     .and_then(|v| v.as_str())
-                                    .filter(|id| spawn_agent_call_ids.contains(*id));
+                                    .filter(|id| spawn_agent_call_ids.contains(*id))
+                                    .map(str::to_string);
                                 let thread_id = payload
                                     .get("agent_thread_id")
+                                    .or_else(|| payload.get("thread_id"))
                                     .and_then(|v| v.as_str())
                                     .filter(|id| !id.is_empty());
+                                let activity_name = payload
+                                    .get("agent_path")
+                                    .or_else(|| payload.get("path"))
+                                    .or_else(|| payload.get("agent_name"))
+                                    .and_then(|value| value.as_str())
+                                    .and_then(|path| {
+                                        path.rsplit('/').find(|segment| !segment.is_empty())
+                                    });
+                                let mapped_call_ids: HashSet<String> =
+                                    agent_id_to_spawn_call_id
+                                        .values()
+                                        .cloned()
+                                        .collect();
+                                let call_id = event_call_id
+                                    .or_else(|| {
+                                        activity_name.and_then(|name| {
+                                            spawn_agent_task_names
+                                                .iter()
+                                                .find(|&(call_id, task_name)| {
+                                                    !mapped_call_ids.contains(call_id)
+                                                        && task_name.as_str() == name
+                                                })
+                                                .map(|(call_id, _)| call_id.clone())
+                                        })
+                                    })
+                                    .or_else(|| {
+                                        let mut candidates = spawn_agent_call_ids
+                                            .iter()
+                                            .filter(|call_id| {
+                                                !mapped_call_ids.contains(*call_id)
+                                            });
+                                        let candidate = candidates.next()?.clone();
+                                        (candidates.next().is_none()).then_some(candidate)
+                                    });
                                 if let (Some(call_id), Some(thread_id)) = (call_id, thread_id) {
                                     agent_id_to_spawn_call_id
                                         .entry(thread_id.to_string())
-                                        .or_insert_with(|| call_id.to_string());
+                                        .or_insert(call_id);
                                 }
                             }
                             "task_started" => {
@@ -3147,6 +3490,18 @@ impl CodexParser {
 
                                         if let Some(ref id) = tool_use_id {
                                             spawn_agent_call_ids.insert(id.clone());
+                                            if let Some(task_name) = args
+                                                .as_ref()
+                                                .and_then(|a| {
+                                                    a.get("task_name").or_else(|| a.get("agent_type"))
+                                                })
+                                                .and_then(|value| value.as_str())
+                                                .map(str::trim)
+                                                .filter(|name| !name.is_empty())
+                                            {
+                                                spawn_agent_task_names
+                                                    .insert(id.clone(), task_name.to_string());
+                                            }
                                         }
                                         active_agent_count += 1;
 
@@ -3808,7 +4163,14 @@ impl CodexParser {
                 .map(|(agent_id, call_id)| (call_id.as_str(), agent_id.as_str()))
                 .collect();
 
-            let session_dir = path.parent();
+            // Search from Codex's sessions root, not merely beside the parent
+            // rollout. Native child rollouts normally share the same date
+            // directory, but a child can cross a date boundary and newer Codex
+            // layouts may nest rollouts below additional directories. The normal
+            // conversation resolver already walks this tree recursively; stats
+            // must use the same scope or the child card loses its tool calls only
+            // when the parent session is reloaded after completion.
+            let session_root = &self.base_dir;
             let mut agent_stats_cache: HashMap<String, Option<AgentExecutionStats>> =
                 HashMap::new();
 
@@ -3837,14 +4199,13 @@ impl CodexParser {
                                 if agent_errored.contains(agent_id) {
                                     *is_error = true;
                                 }
-                                if let Some(dir) = session_dir {
-                                    let stats = agent_stats_cache.entry(agent_id.to_string())
-                                        .or_insert_with(|| {
-                                            parse_codex_subagent_stats(dir, agent_id)
-                                        });
-                                    if stats.is_some() {
-                                        *agent_stats = stats.clone();
-                                    }
+                                let stats = agent_stats_cache
+                                    .entry(agent_id.to_string())
+                                    .or_insert_with(|| {
+                                        parse_codex_subagent_stats(session_root, agent_id)
+                                    });
+                                if stats.is_some() {
+                                    *agent_stats = stats.clone();
                                 }
                             }
                         }
@@ -5015,6 +5376,7 @@ mod tests {
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
+    use super::copied_parent_record_prefix;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
     use super::native_team_wait_input;
@@ -5026,6 +5388,7 @@ mod tests {
     use super::COLLAB_OP_KEY;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
+    use super::{trim_copied_parent_turn_prefix, RawForkPrefix};
     use super::AgentParser;
     use super::CodexParser;
     use super::CODEX_SCRIPT_TOOL_NAME;
@@ -7615,6 +7978,134 @@ mod tests {
     }
 
     #[test]
+    fn native_team_activity_without_event_id_keeps_settled_child_stats() {
+        // A few Codex rollout versions omit `event_id` on the activity record.
+        // The child path still carries the task name, so the persisted parser
+        // must correlate the only outstanding spawn instead of losing the
+        // child id (and therefore its read_file stats) on settlement.
+        let child_id = "child-without-event-id";
+        let dir = temp_session_dir("native-team-no-event-id");
+        let parent_dir = dir.join("2026").join("08").join("24");
+        let child_dir = dir.join("2026").join("08").join("25");
+        fs::create_dir_all(&parent_dir).expect("create parent rollout directory");
+        fs::create_dir_all(&child_dir).expect("create child rollout directory");
+
+        fs::write(
+            parent_dir.join("rollout-parent.jsonl"),
+            [
+                rollout_line(
+                    "2026-08-24T23:59:58Z",
+                    "session_meta",
+                    serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-24T23:59:59Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call",
+                        "call_id":"spawn-no-event-id",
+                        "name":"spawn_agent",
+                        "arguments": serde_json::json!({
+                            "task_name":"worker"
+                        }).to_string(),
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-25T00:00:00Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type":"sub_agent_activity",
+                        "agent_thread_id":child_id,
+                        "agent_path":"/root/worker",
+                        "kind":"started",
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-25T00:00:01Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output",
+                        "call_id":"spawn-no-event-id",
+                        "output": serde_json::json!({"task_name":"/root/worker"}).to_string(),
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write parent rollout");
+        fs::write(
+            child_dir.join(format!("rollout-child-{child_id}.jsonl")),
+            [
+                rollout_line(
+                    "2026-08-25T00:00:02Z",
+                    "session_meta",
+                    serde_json::json!({"id":child_id,"cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-25T00:00:03Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call",
+                        "call_id":"child-read",
+                        "name":"read_file",
+                        "arguments": serde_json::json!({
+                            "file_path":"delegation/spawner.rs"
+                        }).to_string(),
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-25T00:00:04Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output",
+                        "call_id":"child-read",
+                        "output":"//! ConnectionSpawner",
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write child rollout");
+
+        let detail = CodexParser::with_base_dir(dir.clone())
+            .get_conversation("parent")
+            .expect("parse parent rollout");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    input_preview,
+                    ..
+                } if id == "spawn-no-event-id" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("spawn input");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("spawn input JSON");
+        assert_eq!(parsed.get("agent_id").and_then(|value| value.as_str()), Some(child_id));
+
+        let stats = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .find_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    agent_stats,
+                    ..
+                } if id == "spawn-no-event-id" => agent_stats.as_ref(),
+                _ => None,
+            })
+            .expect("settled child stats");
+        assert_eq!(stats.tool_calls.len(), 1);
+        assert_eq!(stats.tool_calls[0].tool_name, "read_file");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn legacy_collab_spawn_keeps_its_run_semantics() {
         // The pre-0.147 shape DOES get a wait/close capsule carrying the
         // result, so its capsule really does stand for the run — it must not
@@ -7845,17 +8336,49 @@ mod tests {
     }
 
     #[test]
-    fn forked_child_transcript_yields_no_stats() {
+    fn forked_child_transcript_keeps_only_child_stats() {
         // A codex 0.147 sub-agent thread opens with its own `session_meta`
         // (carrying `parent_thread_id`) and then replays the PARENT's history,
-        // tool calls included. Counting those would credit the child with the
-        // parent's work, so the whole file is refused.
+        // tool calls included. The settled parent card must keep the child's
+        // own calls while excluding that copied prefix.
+        let parent = "parent";
         let child = "01a0098a-7e8a-72d3-b7c0-2df130c84063";
         let dir = temp_session_dir("forked-child");
-        // The lookup matches a rollout whose stem ends with the thread id,
-        // which is exactly how codex names a sub-agent's file.
+        let nested = dir.join("2026").join("08").join("16");
+        fs::create_dir_all(&nested).expect("create nested rollout directory");
         fs::write(
-            dir.join(format!("rollout-2026-08-16T07-47-46-{child}.jsonl")),
+            nested.join(format!("rollout-2026-08-16T07-47-00-{parent}.jsonl")),
+            [
+                rollout_line(
+                    "2026-08-16T07:47:00Z",
+                    "session_meta",
+                    serde_json::json!({"id":parent,"cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:01Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call","call_id":"parents_own","name":"exec_command",
+                        "arguments": serde_json::json!({"cmd":"git status"}).to_string(),
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:02Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output","call_id":"parents_own","output":"clean",
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write parent rollout");
+
+        // The lookup matches a rollout whose stem ends with the thread id,
+        // which is exactly how codex names a sub-agent's file. Its body starts
+        // with the parent's records verbatim, then contains the child call.
+        fs::write(
+            nested.join(format!("rollout-2026-08-16T07-47-46-{child}.jsonl")),
             [
                 rollout_line(
                     "2026-08-16T07:47:46Z",
@@ -7863,26 +8386,57 @@ mod tests {
                     serde_json::json!({"id":child,"parent_thread_id":"parent","cwd":"/tmp/demo"}),
                 ),
                 rollout_line(
-                    "2026-08-16T07:47:46Z",
+                    "2026-08-16T07:47:00Z",
                     "session_meta",
                     serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
                 ),
                 rollout_line(
-                    "2026-08-16T07:47:47Z",
+                    "2026-08-16T07:47:01Z",
                     "response_item",
                     serde_json::json!({
                         "type":"function_call","call_id":"parents_own","name":"exec_command",
                         "arguments": serde_json::json!({"cmd":"git status"}).to_string(),
                     }),
                 ),
+                rollout_line(
+                    "2026-08-16T07:47:02Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output","call_id":"parents_own","output":"clean",
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:47Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call","call_id":"child_read","name":"read_file",
+                        "arguments": serde_json::json!({"file_path":"delegation/spawner.rs"}).to_string(),
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:48Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output","call_id":"child_read",
+                        "output":"//! ConnectionSpawner",
+                    }),
+                ),
             ]
             .join("\n"),
         )
         .expect("write forked child");
-        assert!(
-            parse_codex_subagent_stats(&dir, child).is_none(),
-            "a forked child transcript must contribute no stats"
+        let stats = parse_codex_subagent_stats(&dir, child).expect("child stats");
+        assert_eq!(stats.tool_calls.len(), 1);
+        assert_eq!(stats.tool_calls[0].tool_name, "read_file");
+        assert_eq!(
+            stats.tool_calls[0].input_preview.as_deref(),
+            Some(r#"{"file_path":"delegation/spawner.rs"}"#)
         );
+        assert_eq!(
+            stats.tool_calls[0].output_preview.as_deref(),
+            Some("//! ConnectionSpawner")
+        );
+        assert_eq!(stats.total_tool_use_count, Some(1));
 
         // The legacy shape has no replayed prefix and still resolves.
         fs::write(
@@ -7918,6 +8472,9 @@ mod tests {
         // remove the child's work. The child-only view must stop at the actual
         // longest shared prefix instead.
         let parent_id = "parent-thread";
+        // Some rollout versions carry the parent reference using the root
+        // session id, while `payload.id` remains the individual thread id.
+        let parent_reference = "parent-session";
         let child_id = "child-thread";
         let dir = temp_session_dir("forked-child-detail");
         fs::write(
@@ -7926,7 +8483,11 @@ mod tests {
                 rollout_line(
                     "2026-08-24T00:00:00Z",
                     "session_meta",
-                    serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
+                    serde_json::json!({
+                        "id":parent_id,
+                        "session_id":parent_reference,
+                        "cwd":"/tmp/demo"
+                    }),
                 ),
                 rollout_line(
                     "2026-08-24T00:00:01Z",
@@ -7981,7 +8542,7 @@ mod tests {
                     "session_meta",
                     serde_json::json!({
                         "id":child_id,
-                        "parent_thread_id":parent_id,
+                        "parent_thread_id":parent_reference,
                         "cwd":"/tmp/demo"
                     }),
                 ),
@@ -7990,7 +8551,11 @@ mod tests {
                 rollout_line(
                     "2026-08-24T00:00:00Z",
                     "session_meta",
-                    serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
+                    serde_json::json!({
+                        "id":parent_id,
+                        "session_id":parent_reference,
+                        "cwd":"/tmp/demo"
+                    }),
                 ),
                 rollout_line(
                     "2026-08-24T00:00:01Z",
@@ -8019,6 +8584,32 @@ mod tests {
                         "type":"function_call_output",
                         "call_id":"parent-tool",
                         "output":"clean",
+                    }),
+                ),
+                // The child can begin its first tool call before the parser
+                // sees a separate child user turn. It is therefore grouped
+                // into the same assistant turn as the copied parent result.
+                // A turn-level timestamp crop would delete this read with the
+                // copied parent blocks.
+                rollout_line(
+                    "2026-08-24T00:00:02.300Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call",
+                        "call_id":"child-read",
+                        "name":"read_file",
+                        "arguments": serde_json::json!({
+                            "file_path":"delegation/spawner.rs"
+                        }).to_string(),
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-24T00:00:02.400Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call_output",
+                        "call_id":"child-read",
+                        "output":"1→//! ConnectionSpawner\n2→pub trait ConnectionSpawner {}",
                     }),
                 ),
                 rollout_line(
@@ -8060,12 +8651,21 @@ mod tests {
         let child = parser
             .get_subagent_conversation(child_id)
             .expect("child-only transcript");
-        assert_eq!(child.turns.len(), 2);
-        assert_eq!(child.summary.message_count, 2);
-        assert!(matches!(child.turns[0].role, TurnRole::User));
-        assert!(matches!(child.turns[1].role, TurnRole::Assistant));
+        assert_eq!(child.turns.len(), 3);
+        assert_eq!(child.summary.message_count, 3);
+        assert!(matches!(child.turns[0].role, TurnRole::Assistant));
+        assert!(matches!(child.turns[1].role, TurnRole::User));
+        assert!(matches!(child.turns[2].role, TurnRole::Assistant));
+        assert!(child.turns[0].blocks.iter().any(|block| matches!(
+            block,
+            ContentBlock::ToolUse {
+                tool_use_id: Some(id),
+                tool_name,
+                ..
+            } if id == "child-read" && tool_name == "read_file"
+        )));
         assert_eq!(
-            child.turns[0].timestamp,
+            child.turns[1].timestamp,
             DateTime::parse_from_rfc3339("2026-08-24T00:00:03Z")
                 .expect("timestamp")
                 .with_timezone(&Utc)
@@ -8102,6 +8702,241 @@ mod tests {
                 )),
             "the copied parent tool call must not become child activity"
         );
+
+        // The raw prefix remains authoritative when parsed turns diverge while
+        // the parent is still being appended to. Simulate that parser-level
+        // divergence by changing a copied turn's derived timestamp; the old
+        // parsed-only LCP would keep the entire child transcript here.
+        let parent_path = dir.join(format!("rollout-2026-08-24T00-00-00-{parent_id}.jsonl"));
+        let child_path = dir.join(format!("rollout-2026-08-24T00-00-03-{child_id}.jsonl"));
+        let parent_detail = parser
+            .parse_conversation_detail(&parent_path, parent_id)
+            .expect("parent detail");
+        let mut divergent_child = parser
+            .parse_conversation_detail(&child_path, child_id)
+            .expect("child detail");
+        divergent_child.turns[0].timestamp += Duration::milliseconds(1);
+        let raw_prefix = copied_parent_record_prefix(&child_path, &parent_path);
+        trim_copied_parent_turn_prefix(
+            &mut divergent_child,
+            &parent_detail,
+            raw_prefix.as_ref(),
+        );
+        assert_eq!(
+            divergent_child.turns.len(),
+            3,
+            "raw fork boundary must survive parsed-turn divergence"
+        );
+        assert!(matches!(
+            divergent_child.turns[0].blocks.as_slice(),
+            [
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    tool_name,
+                    ..
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(result_id),
+                    ..
+                }
+            ] if id == "child-read"
+                && result_id == "child-read"
+                && tool_name == "read_file"
+        ));
+
+        // If the raw boundary cannot be mapped to a parsed turn, retain the
+        // readable transcript rather than erasing it on an unfamiliar shape.
+        let mut unmappable_child = parser
+            .parse_conversation_detail(&child_path, child_id)
+            .expect("child detail");
+        let original_turn_count = unmappable_child.turns.len();
+        unmappable_child.turns[0].blocks.insert(
+            0,
+            ContentBlock::Text {
+                text: "unmappable child prefix".to_string(),
+            },
+        );
+        trim_copied_parent_turn_prefix(
+            &mut unmappable_child,
+            &parent_detail,
+            Some(&RawForkPrefix {
+                parent_record_start: 0,
+                copied_records: 7,
+                child_body_records: 9,
+            }),
+        );
+        assert_eq!(unmappable_child.turns.len(), original_turn_count);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn subagent_detail_crops_a_prefix_copied_from_the_middle_of_parent_rollout() {
+        // A fork can be created from a compacted/synchronized parent snapshot
+        // whose copied body does not include the parent's opening session
+        // metadata or older turns. The child-only endpoint must still locate
+        // the copied suffix and not return that parent assistant message.
+        let parent_id = "middle-parent";
+        let child_id = "middle-child";
+        let dir = temp_session_dir("forked-child-middle-prefix");
+
+        fs::write(
+            dir.join(format!("rollout-2026-08-24T01-00-00-{parent_id}.jsonl")),
+            [
+                rollout_line(
+                    "2026-08-24T01:00:00Z",
+                    "session_meta",
+                    serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-24T01:00:01Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type":"user_message",
+                        "message":"Parent history before compaction."
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-24T01:00:02Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type":"agent_message",
+                        "message":"Parent response copied from the synchronized suffix."
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write parent rollout");
+
+        fs::write(
+            dir.join(format!("rollout-2026-08-24T01-00-03-{child_id}.jsonl")),
+            [
+                rollout_line(
+                    "2026-08-24T01:00:03Z",
+                    "session_meta",
+                    serde_json::json!({
+                        "id":child_id,
+                        "parent_thread_id":parent_id,
+                        "cwd":"/tmp/demo"
+                    }),
+                ),
+                // Only the parent's later response was copied into this
+                // synchronized child snapshot; the parent session_meta and
+                // earlier user record are absent from the child body.
+                rollout_line(
+                    "2026-08-24T01:00:02Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type":"agent_message",
+                        "message":"Parent response copied from the synchronized suffix."
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-24T01:00:04Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type":"user_message",
+                        "message":"Child task prompt."
+                    }),
+                ),
+                rollout_line(
+                    "2026-08-24T01:00:05Z",
+                    "event_msg",
+                    serde_json::json!({"type":"agent_message","message":"Child-only answer."}),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write child rollout");
+
+        let child = CodexParser::with_base_dir(dir.clone())
+            .get_subagent_conversation(child_id)
+            .expect("child-only transcript");
+        let text: Vec<&str> = child
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, vec!["Child task prompt.", "Child-only answer."]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn subagent_detail_uses_parent_activity_when_child_header_has_no_parent_id() {
+        // Some native-team versions only persist the relationship in the
+        // parent's sub_agent_activity event. The child-only endpoint must not
+        // fall back to the complete forked file in that format.
+        let parent_id = "activity-parent";
+        let child_id = "activity-child";
+        let dir = temp_session_dir("forked-child-activity-parent");
+        let parent_records = [
+            rollout_line(
+                "2026-08-24T02:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-08-24T02:00:01Z",
+                "event_msg",
+                serde_json::json!({
+                    "type":"sub_agent_activity",
+                    "agent_thread_id":child_id,
+                    "agent_path":"/root/worker"
+                }),
+            ),
+            rollout_line(
+                "2026-08-24T02:00:02Z",
+                "event_msg",
+                serde_json::json!({"type":"agent_message","message":"Parent-only message."}),
+            ),
+        ];
+        fs::write(
+            dir.join(format!("rollout-2026-08-24T02-00-00-{parent_id}.jsonl")),
+            parent_records.join("\n"),
+        )
+        .expect("write parent rollout");
+
+        let mut child_records = vec![rollout_line(
+            "2026-08-24T02:00:03Z",
+            "session_meta",
+            serde_json::json!({"id":child_id,"cwd":"/tmp/demo"}),
+        )];
+        child_records.extend(parent_records);
+        child_records.push(rollout_line(
+            "2026-08-24T02:00:04Z",
+            "event_msg",
+            serde_json::json!({"type":"user_message","message":"Child task."}),
+        ));
+        child_records.push(rollout_line(
+            "2026-08-24T02:00:05Z",
+            "event_msg",
+            serde_json::json!({"type":"agent_message","message":"Child answer."}),
+        ));
+        fs::write(
+            dir.join(format!("rollout-2026-08-24T02-00-03-{child_id}.jsonl")),
+            child_records.join("\n"),
+        )
+        .expect("write child rollout");
+
+        let child = CodexParser::with_base_dir(dir.clone())
+            .get_subagent_conversation(child_id)
+            .expect("child-only transcript");
+        let text: Vec<&str> = child
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, vec!["Child task.", "Child answer."]);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -8200,7 +9035,7 @@ mod tests {
         });
         child.summary.message_count = child.turns.len() as u32;
 
-        trim_copied_parent_turn_prefix(&mut child, &parent);
+        trim_copied_parent_turn_prefix(&mut child, &parent, None);
 
         assert_eq!(child.turns.len(), 1);
         assert_eq!(child.summary.message_count, 1);

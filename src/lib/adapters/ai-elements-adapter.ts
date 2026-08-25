@@ -1276,6 +1276,24 @@ function toolCallHasInput(input: string | null | undefined): boolean {
 }
 
 /**
+ * A live ACP call can have no usable argument preview while its title still
+ * identifies the operation's target (for example Codex's read command carries
+ * the file in `title`/`locations`). Do not confuse that call with the empty
+ * `content_block_start` placeholder that the in-flight cleanup is meant to
+ * remove. A title that merely repeats the normalized tool name is not enough:
+ * that is still the placeholder shape.
+ */
+function hasMeaningfulToolCallTitle(part: AdaptedToolCallPart): boolean {
+  const title = part.displayTitle?.trim()
+  if (!title) return false
+
+  return (
+    normalizeToolName(title).toLowerCase() !==
+    normalizeToolName(part.toolName).toLowerCase()
+  )
+}
+
+/**
  * Drop empty, unsettled generic tool-call parts. claude-agent-acp emits an
  * arg-less initial `tool_call` at `content_block_start` (`rawInput = {}`) and
  * fills the real args on a later same-id `tool_call_update`. When a turn is
@@ -1325,6 +1343,7 @@ export function dropEmptyInFlightToolCalls(
     if (part.state === "output-error" || part.errorText?.trim()) return true
     if (part.output && part.output.trim().length > 0) return true // streaming output → keep
     if (toolCallHasInput(part.input)) return true // has a real command/args → keep
+    if (hasMeaningfulToolCallTitle(part)) return true // title identifies a target → keep
     // Empty args + unsettled + no output/error → orphaned arg-less initial call.
     return false
   })
