@@ -1,5 +1,31 @@
 import { describe, expect, it } from "vitest"
-import { shouldDisconnectOnUnmount } from "@/hooks/use-connection-lifecycle"
+import {
+  shouldConnectOnFocus,
+  shouldDisconnectOnUnmount,
+} from "@/hooks/use-connection-lifecycle"
+
+describe("shouldConnectOnFocus", () => {
+  it("connects an initial or cleanly disconnected composer", () => {
+    expect(shouldConnectOnFocus(null, null)).toBe(true)
+    expect(shouldConnectOnFocus("disconnected", null)).toBe(true)
+  })
+
+  it("never reconnects implicitly after a terminal ACP error", () => {
+    // Terminal backend failures emit Error → StatusChanged(error) →
+    // StatusChanged(disconnected). The retained error must block both states
+    // so programmatic focus cannot make the failure flash away.
+    expect(shouldConnectOnFocus("error", "ACP protocol error")).toBe(false)
+    expect(shouldConnectOnFocus("disconnected", "ACP protocol error")).toBe(
+      false
+    )
+  })
+
+  it("does not connect while an existing connection is active", () => {
+    expect(shouldConnectOnFocus("connecting", null)).toBe(false)
+    expect(shouldConnectOnFocus("connected", null)).toBe(false)
+    expect(shouldConnectOnFocus("prompting", null)).toBe(false)
+  })
+})
 
 // Unmount cleanup (tab closed) must not kill an owner whose agent still has
 // work in flight: disconnecting kills the agent CLI, and any launched

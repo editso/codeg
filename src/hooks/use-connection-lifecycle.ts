@@ -12,6 +12,7 @@ import { updateConversationSessionConfigValue } from "@/lib/api"
 import { TurnBusyError } from "@/lib/turn-busy"
 import {
   type AgentType,
+  type ConnectionStatus,
   type DraftConversationConfig,
   type PromptDraft,
 } from "@/lib/types"
@@ -107,6 +108,23 @@ export function shouldDisconnectOnUnmount(args: {
   if (args.transientUnmount) return false
   if (args.isViewer) return true
   return !isConnectionBusy(args)
+}
+
+/**
+ * Focus is an implicit convenience action, so it may establish an initial
+ * connection or revive a cleanly disconnected one. It must never override a
+ * retained backend error: terminal ACP failures transition through `error`
+ * and then `disconnected`, and React can deliver the focus callback after
+ * either state. In that case reconnecting must stay an explicit user choice
+ * from the connection-status control.
+ *
+ * Exported for tests.
+ */
+export function shouldConnectOnFocus(
+  status: ConnectionStatus | null,
+  error: string | null
+): boolean {
+  return error === null && (status === null || status === "disconnected")
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -418,7 +436,7 @@ export function useConnectionLifecycle({
     // avoid connecting with sessionId=undefined and orphaning context.
     if (!isActive) return
     touchActivity(contextKey)
-    if (!status || status === "disconnected" || status === "error") {
+    if (shouldConnectOnFocus(status, conn.error)) {
       setLastAutoConnectError(null)
       connConnect(
         agentType,
@@ -440,6 +458,7 @@ export function useConnectionLifecycle({
     conversationId,
     draftConfig,
     status,
+    conn.error,
     connConnect,
     contextKey,
     touchActivity,
