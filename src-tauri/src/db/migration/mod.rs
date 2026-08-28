@@ -43,6 +43,7 @@ mod m20260819_000001_work_task_completion_kind;
 mod m20260821_000001_conversation_config;
 mod m20260821_000002_conversation_config_session_selectors;
 mod m20260824_000001_conversation_config_proxy;
+mod m20260825_000001_remote_workspace_connection_headers;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -92,6 +93,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260821_000001_conversation_config::Migration),
             Box::new(m20260821_000002_conversation_config_session_selectors::Migration),
             Box::new(m20260824_000001_conversation_config_proxy::Migration),
+            Box::new(m20260825_000001_remote_workspace_connection_headers::Migration),
         ]
     }
 }

@@ -3,6 +3,7 @@
 import type { UIMessage } from "ai"
 import type {
   ComponentProps,
+  ComponentType,
   HTMLAttributes,
   ReactElement,
   ReactNode,
@@ -38,6 +39,8 @@ import {
 import type { Components } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
 import { maskLiteralSpans } from "./markdown-mask"
+import { mermaidComponents } from "./mermaid-block"
+import { mermaidSourceFromPre } from "./mermaid-view"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
@@ -535,6 +538,21 @@ function CompactMarkdownCodeBlock({
   )
 }
 
+const MermaidPre = mermaidComponents.pre as ComponentType<ComponentProps<"pre">>
+
+/** Keep the project's compact code presentation while allowing upstream's
+ * Mermaid preprocessor to claim Mermaid fences before ordinary code reaches
+ * the compact renderer. */
+function MessageMarkdownPre(props: ComponentProps<"pre">) {
+  if (isValidElement(props.children)) {
+    if (mermaidSourceFromPre(props.children) !== null) {
+      return <MermaidPre {...props} />
+    }
+    return <CompactMarkdownCodeBlock {...props} />
+  }
+  return <>{props.children}</>
+}
+
 function MessageResponseImpl({
   className,
   children,
@@ -574,15 +592,12 @@ function MessageResponseImpl({
       rehypePlugins={rehypePlugins}
       {...props}
       // Merge after spreading props so a caller can still override other
-      // elements, but the link icon + safety routing on `a` always wins.
+      // elements, but the link icon + safety routing on `a` — and the diagram
+      // block on `pre` — always win.
       components={{
         ...props.components,
-        // Streamdown's component map has a string index signature that is
-        // wider than React's precise `pre` DOM props. The renderer receives the
-        // normal pre props at runtime; this mirrors the typed bridge used for
-        // our custom markdown link component.
-        pre: CompactMarkdownCodeBlock as Components["pre"],
         ...markdownLinkComponents,
+        pre: MessageMarkdownPre as Components["pre"],
       }}
     >
       {normalized}

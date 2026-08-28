@@ -721,8 +721,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
-                version: "3.0.57",
-                package: "cline@3.0.57",
+                version: "3.0.60",
+                package: "cline@3.0.60",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -735,39 +735,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.21",
+                version: "1.18.23",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.23/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -828,8 +828,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.137.1",
-                package: "@tencent-ai/codebuddy-code@2.137.1",
+                version: "2.139.0",
+                package: "@tencent-ai/codebuddy-code@2.139.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -1097,13 +1097,30 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `dsh-session-persistence-jsonl`'s `session.jsonl[.zstd]` tree —
             // are unchanged across rc.7 → rc.2, so nothing else moved.
             //
+            // 0.7.0 moves NOTHING on the wire — `protocol/initialize.js`差异
+            // 只有 `AGENT_INFO.version` 一行，`@agentclientprotocol/sdk` 和上面
+            // 那三个被镜像的 `dsh-*` 依赖都停在原版本，所以上述能力断言与
+            // `parsers::deepseek` 都不用动。两处值得知道的行为变化：
+            //
+            // * `session/load` + `session/fork` 的 cwd 校验从裸字符串相等换成
+            //   `sameWorkspace()`（realpath.native，fail-closed）。这是**放宽**：
+            //   codeg 送的工作区路径以前只要拼写与日志里记的不同就被拒——macOS
+            //   的 `/var` → `/private/var`、Windows 8.3 短名——恢复会莫名失败。
+            //   `session/list` 的 cwd 过滤同样改成按目录判定。
+            // * Windows 上模型面向的 shell 工具从 `bash` 换成 `pwsh`
+            //   (`composition/shell.js` 的 `mountNativeShell`)；非 Windows 仍是
+            //   `bash`。`dsh-tool-pwsh` 的 `presentCall` 与 `dsh-tool-bash` 逐字
+            //   同形（前台 `card: "terminal"` + `{title, description, cwd?}`，
+            //   后台才是 `card: "generic"` + 裸字符串 `rawInput`），所以 codeg
+            //   的终端工具卡在两个平台上拿到的形状一致。
+            //
             // Keep `version` and `package` moving together: `version` is what
             // the agents list shows as the upgrade target beside the installed
             // version, so a drift leaves the Upgrade button installing one
             // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.6.0",
-                package: "deepseek-acp@0.6.0",
+                version: "0.7.0",
+                package: "deepseek-acp@0.7.0",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
@@ -1135,8 +1152,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
-                version: "1.1.28",
-                package: "@qoder-ai/qodercli@1.1.28",
+                version: "1.1.31",
+                package: "@qoder-ai/qodercli@1.1.31",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[],
@@ -1502,14 +1519,14 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.57",
-            "cline@3.0.57",
+            "3.0.60",
+            "cline@3.0.60",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.137.1",
-            "@tencent-ai/codebuddy-code@2.137.1",
+            "2.139.0",
+            "@tencent-ai/codebuddy-code@2.139.0",
             Some("22.0.0"),
         );
         // Kimi Code is pinned BELOW `latest` on purpose — 0.37.x breaks MCP
@@ -1537,17 +1554,17 @@ mod tests {
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.6.0",
-            "deepseek-acp@0.6.0",
+            "0.7.0",
+            "deepseek-acp@0.7.0",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.28",
-            "@qoder-ai/qodercli@1.1.28",
+            "1.1.31",
+            "@qoder-ai/qodercli@1.1.31",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.21", "/releases/download/v1.18.21/");
+        assert_binary_version(AgentType::OpenCode, "1.18.23", "/releases/download/v1.18.23/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the

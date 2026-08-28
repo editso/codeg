@@ -59,6 +59,20 @@ It aggregates your sessions from every supported agent CLI into one searchable w
     </td>
     <td>Thanks to OneHop for sponsoring this project! OneHop gives Codeg users one OpenAI-compatible API key for hundreds of leading models, including GPT, Claude, Gemini, DeepSeek, Kimi, and Qwen. Switch models without managing multiple provider accounts or repeatedly changing your code, and pay only for what you use. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Sign up through Codeg</a> to receive $1 in credit, then join the OneHop community and participate in the welcome activity for an additional $5 — up to $6 in test credit in total.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="./docs/images/lq-router.png" alt="LQ router" width="160" /></a><br/>
+      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
+    </td>
+    <td>Thanks to LQ router 中转站 for sponsoring this project! LQ router is an enterprise-grade API aggregation gateway for independent developers and technical teams. It provides access to leading models including GPT, Claude, Grok, and Gemini, is compatible with existing clients and the OpenAI SDK, and uses a dynamic account pool for intelligent routing; one endpoint handles all your model calls. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Sign up through the official website to receive $1 in trial credit</a>.</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://go.apimart.ai/gh-codeg" target="_blank"><img src="./docs/images/apimart-ai.png" alt="APIMart" width="200" /></a><br/>
+      <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
+    </td>
+    <td>Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image & video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-codeg">sign up here</a> to get started.</td>
+  </tr>
 </table>
 
 > Want to become a Codeg sponsor? [Reach out to us by email.](mailto:itpkcn@gmail.com)

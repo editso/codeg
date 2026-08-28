@@ -59,6 +59,20 @@ Reúne las sesiones de todas las CLI de agentes compatibles en un único espacio
     </td>
     <td>¡Gracias a OneHop por patrocinar este proyecto! OneHop ofrece a los usuarios de Codeg una única clave de API compatible con OpenAI para cientos de modelos líderes, incluidos GPT, Claude, Gemini, DeepSeek, Kimi y Qwen. Cambia de modelo sin gestionar varias cuentas de proveedores ni modificar tu código una y otra vez, y paga solo por lo que uses. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Regístrate a través de Codeg</a> para recibir 1 USD de crédito y, además, únete a la comunidad de OneHop y participa en la actividad de bienvenida para obtener 5 USD adicionales, hasta un total de 6 USD en crédito de prueba.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
+      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
+    </td>
+    <td>¡Gracias al servicio de retransmisión LQ router por patrocinar este proyecto! LQ router es una pasarela empresarial de agregación de API para desarrolladores independientes y equipos técnicos. Integra modelos líderes como GPT, Claude, Grok y Gemini, es compatible con clientes existentes y con el SDK de OpenAI, y utiliza un grupo dinámico de cuentas para el enrutamiento inteligente: un único punto de entrada para todas las llamadas a modelos. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Regístrate en el sitio web oficial y recibe 1 USD de crédito de prueba</a>.</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://go.apimart.ai/gh-codeg" target="_blank"><img src="../images/apimart-ai.png" alt="APIMart" width="200" /></a><br/>
+      <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
+    </td>
+    <td>¡Gracias a APIMart por patrocinar este proyecto! APIMart es una plataforma de API de bajo costo para la generación de imágenes y vídeos con IA: GPT-Image-2 desde 0,006 USD por imagen, más de 160 imágenes por dólar. Una única API asíncrona cubre imagen y vídeo: envía una tarea, obtén un ID y recupera los resultados mediante sondeo o callback. Procesa decenas de miles de imágenes por lotes sin que expire el tiempo de espera y cambia de modelo sin modificar el código. Pago por uso y sin cuota mensual: <a href="https://go.apimart.ai/gh-codeg">regístrate aquí</a> para empezar.</td>
+  </tr>
 </table>
 
 > ¿Quieres convertirte en patrocinador de Codeg? [Contáctanos por correo electrónico.](mailto:itpkcn@gmail.com)

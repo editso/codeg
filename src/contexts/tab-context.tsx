@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, type ReactNode } from "react"
+import { useCallback, useEffect, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
@@ -12,6 +13,7 @@ import {
   runCorrectionOnce,
   runRecoveryOnce,
   useTabStore,
+  type OpenedDraftTarget,
   type TabItem,
 } from "@/stores/tab-store"
 import {
@@ -21,7 +23,7 @@ import {
   type TabsChanged,
 } from "@/lib/types"
 
-export type { TabItem }
+export type { OpenedDraftTarget, TabItem }
 export { useTabStore, useTabActions } from "@/stores/tab-store"
 
 interface TabProviderProps {
@@ -40,6 +42,16 @@ interface TabProviderProps {
 export function TabProvider({ children }: TabProviderProps) {
   const t = useTranslations("Folder.tabContext")
   const { activateConversationPane } = useWorkspaceActions()
+  const { disconnect } = useAcpActions()
+  // Tab teardown closes the surface either way, so the store's side effect
+  // stays `Promise<void>` and drops `disconnect`'s teardown-confirmed flag —
+  // that answer only matters to callers that report a restart to the user.
+  const acpDisconnect = useCallback(
+    async (contextKey: string) => {
+      await disconnect(contextKey)
+    },
+    [disconnect]
+  )
   const { sortedTypes: sortedAvailableAgents, fresh: agentsFresh } =
     useSortedAvailableAgents()
 
@@ -55,6 +67,7 @@ export function TabProvider({ children }: TabProviderProps) {
   const rawTabs = useTabStore((s) => s.rawTabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const previewReplacedTabIds = useTabStore((s) => s.previewReplacedTabIds)
+  const draftRetargetRequests = useTabStore((s) => s.draftRetargetRequests)
   const tabsHydrated = useTabStore((s) => s.tabsHydrated)
   const saveReconcileTick = useTabStore((s) => s.saveReconcileTick)
   const reseedTick = useTabStore((s) => s.reseedTick)
@@ -73,8 +86,8 @@ export function TabProvider({ children }: TabProviderProps) {
   useEffect(() => {
     useTabStore
       .getState()
-      .setSideEffects({ activateConversationPane })
-  }, [activateConversationPane])
+      .setSideEffects({ activateConversationPane, acpDisconnect })
+  }, [activateConversationPane, acpDisconnect])
 
   useEffect(() => {
     useTabStore
@@ -92,6 +105,11 @@ export function TabProvider({ children }: TabProviderProps) {
   useEffect(() => {
     useTabStore.getState().consumePreviewReplaced()
   }, [previewReplacedTabIds])
+
+  // Disconnect + retarget each queued draft-retarget request.
+  useEffect(() => {
+    useTabStore.getState().consumeDraftRetargets()
+  }, [draftRetargetRequests])
 
   // Hydrate from persisted opened_tabs on mount.
   useEffect(() => useTabStore.getState().hydrate(), [])
@@ -221,9 +239,13 @@ export interface TabContextValue {
       inheritFromActive?: boolean
       folderDefaultAgent?: TabItem["agentType"] | null
       targetGroup?: string
+      forceAgent?: TabItem["agentType"]
     }
-  ) => void
-  openChatModeTab: (options?: { targetGroup?: string }) => void
+  ) => OpenedDraftTarget
+  openChatModeTab: (options?: {
+    targetGroup?: string
+    forceAgent?: TabItem["agentType"]
+  }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: TabItem["agentType"]) => void
   setDraftAgentFromFallback: (

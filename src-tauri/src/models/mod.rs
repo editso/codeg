@@ -41,7 +41,9 @@ pub use message::{
     TurnRole, TurnUsage, UnifiedMessage,
 };
 pub use quick_message::QuickMessageInfo;
-pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
+pub use remote_workspace_connection::{
+    RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader, ToHeaderMap,
+};
 pub use token_usage::{
     TokenUsageBreakdownItem, TokenUsageBucket, TokenUsageConversationItem, TokenUsageFacets,
     TokenUsageFilter, TokenUsageFolderFacet, TokenUsageHeatCell, TokenUsagePoint,

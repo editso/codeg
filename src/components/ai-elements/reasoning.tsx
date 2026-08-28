@@ -25,6 +25,7 @@ import { Streamdown, defaultRemarkPlugins } from "streamdown"
 
 import { Shimmer } from "./shimmer"
 import { markdownLinkComponents } from "./markdown-link"
+import { mermaidComponents } from "./mermaid-block"
 import { normalizeMathDelimiters } from "./message"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
@@ -236,6 +237,8 @@ const remarkPlugins = [
   remarkTrimCjkAutolinkTail,
 ]
 
+const reasoningComponents = { ...markdownLinkComponents, ...mermaidComponents }
+
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
     const normalized = useMemo(
@@ -258,7 +261,7 @@ export const ReasoningContent = memo(
           remarkPlugins={remarkPlugins}
           {...props}
           // Enforce the link icon + safety override after spreading props.
-          components={markdownLinkComponents}
+          components={reasoningComponents}
         >
           {normalized}
         </Streamdown>

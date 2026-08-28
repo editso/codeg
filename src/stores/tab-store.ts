@@ -35,6 +35,7 @@ import {
   moveMessageInputDraft,
   sweepOrphanDraftKeys,
 } from "@/lib/message-input-draft"
+import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
 import type {
   AgentType,
   ConversationChange,
@@ -104,6 +105,33 @@ export interface TabItemInternal {
 
 export type TabItem = TabItemInternal
 
+interface DraftRetargetRequest {
+  tabId: string
+  expectedAgent: AgentType
+  folderId: number
+  workingDir: string
+  agentType: AgentType
+  provisional: boolean
+}
+
+/**
+ * What a "new conversation" open resolved to: the draft tab that ended up
+ * serving the request — the freshly created one, or the target group's existing
+ * draft it reused — and the identity that tab will be carrying once the open has
+ * fully settled.
+ *
+ * `agentType`/`folderId` are a PROMISE, not necessarily the tab's state right
+ * now: reusing a draft that belongs to another folder or agent retargets it
+ * asynchronously (see `consumeDraftRetargets`), so the tab only takes on this
+ * identity after its stale ACP session has been torn down. Callers that hand
+ * work to the tab must gate on it rather than acting the moment they get the id.
+ */
+export interface OpenedDraftTarget {
+  tabId: string
+  agentType: AgentType
+  folderId: number
+}
+
 /** i18n strings the store needs for seed titles, injected from `TabProvider`
  *  (the store itself is locale-agnostic). Defaults to the raw keys until the
  *  provider's first effect injects the translated values — a one-frame window
@@ -119,6 +147,7 @@ export interface TabStoreState {
   rawTabs: TabItemInternal[]
   activeTabId: string | null
   previewReplacedTabIds: string[]
+  draftRetargetRequests: DraftRetargetRequest[]
   tabsHydrated: boolean
   /**
    * IDEA-style split groups (device-local, like tile mode). `groupLayout` is
@@ -213,9 +242,18 @@ export interface TabStoreState {
       inheritFromActive?: boolean
       folderDefaultAgent?: AgentType | null
       targetGroup?: string
+      /** Pin the draft to this agent, outranking BOTH the folder default and
+       *  the inherit/fallback chain. For callers that must reproduce a specific
+       *  agent (e.g. "ask about this selection" continues the conversation the
+       *  text came from), not merely suggest one. */
+      forceAgent?: AgentType
     }
-  ) => void
-  openChatModeTab: (options?: { targetGroup?: string }) => void
+  ) => OpenedDraftTarget
+  openChatModeTab: (options?: {
+    targetGroup?: string
+    /** See `openNewConversationTab`'s `forceAgent`. */
+    forceAgent?: AgentType
+  }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: AgentType) => void
   setDraftAgentFromFallback: (tabId: string, agentType: AgentType) => void
@@ -256,6 +294,7 @@ export interface TabStoreState {
   correctDraftAgents: () => void
   recoverActiveContext: () => void
   consumePreviewReplaced: () => void
+  consumeDraftRetargets: () => void
   syncActiveFolderId: () => void
   persistLastActiveContext: () => void
 
@@ -263,6 +302,7 @@ export interface TabStoreState {
   setLabels: (labels: TabLabels) => void
   setSideEffects: (deps: {
     activateConversationPane: () => void
+    acpDisconnect: (contextKey: string) => Promise<void>
   }) => void
   setAgentAvailability: (sortedTypes: AgentType[], fresh: boolean) => void
 }
@@ -285,6 +325,7 @@ const TAB_ORIGIN = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 interface TabRuntime {
   labels: TabLabels
   activateConversationPane: () => void
+  acpDisconnect: (contextKey: string) => Promise<void>
   sortedAvailableAgents: AgentType[]
   agentsFresh: boolean
 }
@@ -297,6 +338,7 @@ function defaultRuntime(): TabRuntime {
       untitledConversation: "untitledConversation",
     },
     activateConversationPane: () => {},
+    acpDisconnect: async () => {},
     sortedAvailableAgents: [],
     agentsFresh: false,
   }
@@ -1006,6 +1048,7 @@ function initialTabState() {
     rawTabs: [] as TabItemInternal[],
     activeTabId: null as string | null,
     previewReplacedTabIds: [] as string[],
+    draftRetargetRequests: [] as DraftRetargetRequest[],
     tabsHydrated: false,
     ...readPersistedGroupState(),
     tabDrag: null as TabStoreState["tabDrag"],
@@ -1134,6 +1177,11 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         closingTab.conversationId == null
           ? buildNewConversationDraftStorageKey(closingTab.id)
           : null
+      // An "ask about this selection" prompt parked for this tab has no panel
+      // left to drain it. Drop it rather than leave it in the module buffer for
+      // the rest of the session — the tab id is never reused, so it could only
+      // sit there.
+      discardAskSelectionPrompts(closingTab.id)
 
       let draftKeyHandedOver = false
 
@@ -1558,12 +1606,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       useAppWorkspaceStore.getState().allFolders.find((f) => f.id === folderId)
         ?.kind === "chat"
     ) {
-      get().openChatModeTab(
-        options?.targetGroup != null
+      return get().openChatModeTab({
+        ...(options?.targetGroup != null
           ? { targetGroup: options.targetGroup }
-          : undefined
-      )
-      return
+          : {}),
+        ...(options?.forceAgent != null
+          ? { forceAgent: options.forceAgent }
+          : {}),
+      })
     }
     const prevState = get()
     // In split mode the picker is scoped to the tab/group it renders in, not
@@ -1595,11 +1645,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         inherit = inheritedSource.agentType
       }
     }
-    const { agentType: targetAgent, provisional } = resolveAgentForFolder(
-      folderId,
-      inherit,
-      options?.folderDefaultAgent
-    )
+    // A forced agent short-circuits resolution entirely (it outranks the folder
+    // default, which `inherit` would lose to) and is never provisional — it is
+    // explicit caller intent, not a guess to be corrected once the agent list
+    // goes fresh.
+    const { agentType: targetAgent, provisional } =
+      options?.forceAgent != null
+        ? { agentType: options.forceAgent, provisional: false }
+        : resolveAgentForFolder(folderId, inherit, options?.folderDefaultAgent)
 
     const tabId = makeNewConversationTabId()
     // Per-group draft singleton: reuse the target group's existing draft tab
@@ -1630,7 +1683,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       })
       recomputeTabs()
       runtime.activateConversationPane()
-      return
+      return { tabId, agentType: targetAgent, folderId }
     }
 
     const folderChanged = existingTab.folderId !== folderId
@@ -1641,24 +1694,19 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
     if (folderChanged || agentChanged) {
       set({
-        // Publish the user's latest folder/agent intent synchronously. The
-        // ACP lifecycle owns teardown of the old process and reconnects with
-        // these values; the picker/input must not wait for that async work.
-        rawTabs: prevState.rawTabs.map((tab) =>
-          tab.id === existingTab.id
-            ? {
-                ...tab,
-                folderId,
-                workingDir,
-                agentType: targetAgent,
-                agentTypeProvisional: provisional,
-                isChat: false,
-              }
-            : tab
-        ),
-        activeTabId: existingTab.id,
+        draftRetargetRequests: [
+          ...prevState.draftRetargetRequests,
+          {
+            tabId: existingTab.id,
+            expectedAgent: existingTab.agentType,
+            folderId,
+            workingDir,
+            agentType: targetAgent,
+            provisional,
+          },
+        ],
       })
-      recomputeTabs()
+      focusTab(existingTab.id)
     } else if (workingDirChanged || provisionalChanged) {
       set({
         rawTabs: prevState.rawTabs.map((tab) =>
@@ -1673,6 +1721,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       focusTab(existingTab.id)
     }
     runtime.activateConversationPane()
+    // Every branch above leaves the tab on `targetAgent` in `folderId` — either
+    // already there, or once its queued retarget lands.
+    return { tabId: existingTab.id, agentType: targetAgent, folderId }
   },
 
   openChatModeTab: (options) => {
@@ -1697,11 +1748,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         !inheritedSource.agentTypeProvisional)
         ? inheritedSource.agentType
         : null
-    const { agentType: targetAgent, provisional } = resolveAgentForFolder(
-      0,
-      inherit,
-      null
-    )
+    // Same short-circuit as openNewConversationTab: an explicitly forced agent
+    // is caller intent and skips resolution.
+    const { agentType: targetAgent, provisional } =
+      options?.forceAgent != null
+        ? { agentType: options.forceAgent, provisional: false }
+        : resolveAgentForFolder(0, inherit, null)
 
     // Per-group draft singleton — all draft handling below is scoped to the
     // target group.
@@ -1713,6 +1765,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const existingTab = prevState.rawTabs.find(
       (t) => t.conversationId == null && inTargetGroup(t)
     )
+    const needsDisconnect =
+      existingTab != null && !(existingTab.isChat && existingTab.folderId === 0)
     if (!existingTab) {
       const newTab: TabItemInternal = {
         id: tabId,
@@ -1733,8 +1787,34 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       })
       recomputeTabs()
     } else if (existingTab.isChat && existingTab.folderId === 0) {
-      // Already a chat-mode draft — just focus it.
-      focusTab(existingTab.id)
+      // Already a chat-mode draft. Normally there is nothing to do but focus it
+      // — it keeps whatever agent it was on, because `inherit` is only ever a
+      // suggestion. A FORCED agent is not: the caller needs this draft to run on
+      // that agent (an "ask about this selection" continuing a chat
+      // conversation), so re-point it. No explicit disconnect: the connection
+      // lifecycle is keyed on the agent and tears the old one down itself, the
+      // same way the agent picker's `confirmDraftAgent` relies on.
+      if (
+        options?.forceAgent != null &&
+        (existingTab.agentType !== targetAgent ||
+          (existingTab.agentTypeProvisional ?? false) !== provisional)
+      ) {
+        set({
+          activeTabId: existingTab.id,
+          rawTabs: prevState.rawTabs.map((tab) =>
+            tab.id === existingTab.id
+              ? {
+                  ...tab,
+                  agentType: targetAgent,
+                  agentTypeProvisional: provisional,
+                }
+              : tab
+          ),
+        })
+        recomputeTabs()
+      } else {
+        focusTab(existingTab.id)
+      }
     } else {
       // Existing draft on a real folder: flip it to chat mode SYNCHRONOUSLY
       // (folderId + isChat together), so a send issued before any async teardown
@@ -1756,9 +1836,27 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ),
       })
       recomputeTabs()
+      if (needsDisconnect) {
+        void runtime.acpDisconnect(existingTab.id).catch((err) => {
+          console.error("[TabStore] disconnect chat draft:", err)
+        })
+      }
     }
 
     runtime.activateConversationPane()
+    // A reused chat draft that was NOT force-agented keeps its own agent (the
+    // focus-only branch above), so report that rather than the resolved one.
+    const settledAgent =
+      existingTab && existingTab.isChat && existingTab.folderId === 0
+        ? options?.forceAgent != null
+          ? targetAgent
+          : existingTab.agentType
+        : targetAgent
+    return {
+      tabId: existingTab ? existingTab.id : tabId,
+      agentType: settledAgent,
+      folderId: 0,
+    }
   },
 
   setChatDraftWorkingDir: (tabId, workingDir) => {
@@ -1987,7 +2085,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
               activeItem.agent_type,
               activeItem.conversation_id as number
             )
-            : null
+          : null
         // The user can create and retarget a local draft while the opened-tab
         // snapshot is in flight (especially immediately after a refresh). Keep
         // those live drafts instead of replacing them with the snapshot's
@@ -2000,10 +2098,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // Splice the device-local drafts back in (same frame as the conversation
         // tabs, so the first invariant pass sees complete groups and can't
         // collapse a draft-only one).
-        const {
-          tabs: restoredWithDrafts,
-          groupOf: restoredDraftGroups,
-        } =
+        const { tabs: restoredWithDrafts, groupOf: restoredDraftGroups } =
           mergeRestoredDrafts(restored)
         const liveDraftIds = new Set(liveDrafts.map((tab) => tab.id))
         const restoredGroupAssignments = {
@@ -2012,11 +2107,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         }
         const liveDraftGroups = new Set(
           liveDrafts.map((tab) =>
-            groupOfTab(
-              liveState.groupOf,
-              liveState.groupLayout,
-              tab.id
-            )
+            groupOfTab(liveState.groupOf, liveState.groupLayout, tab.id)
           )
         )
         // A draft opened before hydration and a draft restored from the blob can
@@ -2403,10 +2494,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     if (candidates.length === 0) return
 
     for (const tab of candidates) {
-      const { agentType: newAgent } = resolveAgentForFolder(
-        tab.folderId,
-        null
-      )
+      const { agentType: newAgent } = resolveAgentForFolder(tab.folderId, null)
       const current = get().rawTabs.find((t) => t.id === tab.id)
       if (!current || current.conversationId != null) continue
 
@@ -2414,9 +2502,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         if (!current.agentTypeProvisional) continue
         const prev = get().rawTabs
         const next = prev.map((t) =>
-          t.id === tab.id &&
-          t.conversationId == null &&
-          t.agentTypeProvisional
+          t.id === tab.id && t.conversationId == null && t.agentTypeProvisional
             ? { ...t, agentTypeProvisional: false }
             : t
         )
@@ -2487,6 +2573,56 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     set({ previewReplacedTabIds: prev.slice(consumedIds.length) })
   },
 
+  consumeDraftRetargets: () => {
+    const consumedRequests = get().draftRetargetRequests
+    if (consumedRequests.length === 0) return
+
+    const prev = get().draftRetargetRequests
+    const matchesPrefix = consumedRequests.every(
+      (request, index) => prev[index] === request
+    )
+    if (matchesPrefix) {
+      set({
+        draftRetargetRequests: prev.slice(consumedRequests.length),
+      })
+    }
+
+    for (const request of consumedRequests) {
+      void (async () => {
+        try {
+          await runtime.acpDisconnect(request.tabId)
+        } catch (err) {
+          console.error("[TabStore] disconnect draft tab:", err)
+        }
+
+        const rawTabs = get().rawTabs
+        const target = rawTabs.find((tab) => tab.id === request.tabId)
+        if (!target || target.conversationId != null) return
+        if (
+          target.agentType !== request.expectedAgent &&
+          !target.agentTypeProvisional
+        ) {
+          return
+        }
+        set({
+          rawTabs: rawTabs.map((tab) =>
+            tab.id === request.tabId
+              ? {
+                  ...tab,
+                  folderId: request.folderId,
+                  workingDir: request.workingDir,
+                  agentType: request.agentType,
+                  agentTypeProvisional: request.provisional,
+                  isChat: false,
+                }
+              : tab
+          ),
+        })
+        recomputeTabs()
+      })()
+    }
+  },
+
   syncActiveFolderId: () => {
     const st = get()
     const activeTab = st.rawTabs.find((t) => t.id === st.activeTabId) ?? null
@@ -2517,6 +2653,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   setSideEffects: (deps) => {
     runtime.activateConversationPane = deps.activateConversationPane
+    runtime.acpDisconnect = deps.acpDisconnect
   },
 
   setAgentAvailability: (sortedTypes, fresh) => {

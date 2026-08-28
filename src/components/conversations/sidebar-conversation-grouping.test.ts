@@ -13,6 +13,7 @@ import {
   mergeChildrenById,
   nextHeaderAfter,
   pointerYToTargetIndex,
+  RECENT_PAGE_SIZE,
   reuseSelected,
   reuseSet,
   selectChatConversationsWithReuse,
@@ -1045,6 +1046,69 @@ describe("buildRows — Recent section", () => {
         recentLimit: 2,
       })
       expect(rows.some((r) => r.kind === "recent-more")).toBe(false)
+    })
+
+    describe("resetting", () => {
+      // Enough to page twice over: one full first page, plus a second one.
+      const lots = Array.from({ length: RECENT_PAGE_SIZE + 4 }, (_, i) =>
+        conv(i + 1, 10)
+      )
+      const pagedArgs = {
+        ...baseArgs,
+        byFolder: new Map([[10, lots]]),
+        folderTotalCounts: new Map([[10, lots.length]]),
+        recentConversations: lots,
+        showRecent: true,
+      }
+
+      it("leaves the first page un-resettable", () => {
+        const rows = buildRows({ ...pagedArgs, recentLimit: RECENT_PAGE_SIZE })
+        // Exact equality: nothing to fold back yet, so no `canReset` at all.
+        expect(rows).toContainEqual({ kind: "recent-more", remaining: 4 })
+      })
+
+      it("marks the footer resettable once past the first page", () => {
+        const rows = buildRows({
+          ...pagedArgs,
+          recentLimit: RECENT_PAGE_SIZE + 2,
+        })
+        expect(rows).toContainEqual({
+          kind: "recent-more",
+          remaining: 2,
+          canReset: true,
+        })
+      })
+
+      it("keeps the footer alive after the last page, as a reset-only row", () => {
+        // The regression this guards: retiring the row at `remaining === 0`
+        // took the only way back to a short list away exactly when the list was
+        // longest.
+        const rows = buildRows({
+          ...pagedArgs,
+          recentLimit: RECENT_PAGE_SIZE * 2,
+        })
+        expect(
+          rows.filter((r) => r.kind === "conversation" && r.recent).length
+        ).toBe(lots.length)
+        expect(rows).toContainEqual({
+          kind: "recent-more",
+          remaining: 0,
+          canReset: true,
+        })
+      })
+
+      it("drops the reset once a raised limit outlives the rows it revealed", () => {
+        // Same raised limit, but the conversations are gone: collapsing back
+        // would hide nothing, so the row must not offer it.
+        const rows = buildRows({
+          ...pagedArgs,
+          byFolder: new Map([[10, many]]),
+          folderTotalCounts: new Map([[10, many.length]]),
+          recentConversations: many,
+          recentLimit: RECENT_PAGE_SIZE * 2,
+        })
+        expect(rows.some((r) => r.kind === "recent-more")).toBe(false)
+      })
     })
   })
 })
