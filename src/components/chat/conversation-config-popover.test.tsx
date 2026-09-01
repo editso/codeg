@@ -30,7 +30,7 @@ vi.mock("@/lib/api", () => ({
 }))
 
 vi.mock("@/contexts/acp-connections-context", () => ({
-  useAcpActions: () => ({
+  useOptionalAcpActions: () => ({
     restart: mocks.restart,
     reapplyConfig: mocks.reapplyConfig,
   }),

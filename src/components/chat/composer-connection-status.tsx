@@ -1,11 +1,6 @@
 "use client"
 
-import {
-  useCallback,
-  useEffect,
-  useState,
-  useSyncExternalStore,
-} from "react"
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   HeartHandshake,
@@ -79,13 +74,8 @@ function toDetailStatus(status: string | null): ConnStatusKey | "prompting" {
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="space-y-0.5">
-      <dt className="text-[11px] leading-none text-muted-foreground">
-        {label}
-      </dt>
-      <dd
-        className="font-mono text-[11px] leading-snug break-all"
-        title={value}
-      >
+      <dt className="text-2xs leading-none text-muted-foreground">{label}</dt>
+      <dd className="font-mono text-2xs leading-snug break-all" title={value}>
         {value}
       </dd>
     </div>
@@ -143,7 +133,6 @@ export function ComposerConnectionStatus({
   // only and does not create background requests for every open composer.
   useEffect(() => {
     if (!open) {
-      setProviderName(null)
       return
     }
 
@@ -241,10 +230,15 @@ export function ComposerConnectionStatus({
       .finally(() => setPendingAction(null))
   }, [canRestart, restart, restartDestructive, tabId])
 
+  const handlePopoverOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen)
+    if (!nextOpen) setProviderName(null)
+  }, [])
+
   // The trigger keeps the native `title` (hover tooltip) it had as a plain span,
   // so the detail is still one hover away now that a click opens the popover.
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handlePopoverOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -275,7 +269,7 @@ export function ComposerConnectionStatus({
         </div>
 
         {conn?.error ? (
-          <p className="max-h-24 overflow-auto rounded-md bg-destructive/10 px-2 py-1 text-[11px] leading-snug break-words text-destructive">
+          <p className="max-h-24 overflow-auto rounded-md bg-destructive/10 px-2 py-1 text-2xs leading-snug break-words text-destructive">
             {conn.error}
           </p>
         ) : null}
@@ -299,13 +293,13 @@ export function ComposerConnectionStatus({
         ) : null}
 
         {conn?.isViewer ? (
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-2xs leading-snug text-muted-foreground">
             {t("viewerNote")}
           </p>
         ) : null}
 
         {canReconnect && reconnectDestructive ? (
-          <p className="text-[11px] leading-snug text-amber-600 dark:text-amber-500">
+          <p className="text-2xs leading-snug text-amber-600 dark:text-amber-500">
             {t("reconnectInterrupts")}
           </p>
         ) : null}
@@ -339,7 +333,7 @@ export function ComposerConnectionStatus({
         </Button>
 
         {!canReconnect ? (
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-2xs leading-snug text-muted-foreground">
             {t("reconnectUnavailable")}
           </p>
         ) : null}

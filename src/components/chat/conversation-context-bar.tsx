@@ -569,7 +569,8 @@ const FolderPicker = memo(function FolderPicker({
         )}
       >
         <Folder className="size-3 shrink-0 text-muted-foreground" />
-        <span className="max-w-[140px] truncate">{currentFolderName}</span>
+        <span className="max-w-[8.75rem] truncate">{currentFolderName}</span>
+        <ChevronDown className="size-3 shrink-0 -translate-x-0.5 scale-90 text-muted-foreground/60 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none group-hover/button:translate-x-0 group-hover/button:scale-100 group-hover/button:opacity-100 group-focus-visible/button:translate-x-0 group-focus-visible/button:scale-100 group-focus-visible/button:opacity-100 group-data-[state=open]/button:translate-x-0 group-data-[state=open]/button:scale-100 group-data-[state=open]/button:opacity-100" />
         <ChevronDown className="size-3 shrink-0 -translate-x-0.5 scale-90 text-muted-foreground/60 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none group-hover/button:translate-x-0 group-hover/button:scale-100 group-hover/button:opacity-100 group-focus-visible/button:translate-x-0 group-focus-visible/button:scale-100 group-focus-visible/button:opacity-100 group-data-[state=open]/button:translate-x-0 group-data-[state=open]/button:scale-100 group-data-[state=open]/button:opacity-100" />
       </Button>
     )

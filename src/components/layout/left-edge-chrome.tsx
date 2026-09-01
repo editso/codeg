@@ -1,8 +1,9 @@
 "use client"
 
-import { PanelLeft, PanelLeftOpen } from "lucide-react"
+import { PanelLeft, PanelLeftOpen, Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { isDesktop } from "@/lib/platform"
+import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
@@ -31,6 +32,7 @@ import { RemoteWorkspaceDropdown } from "./remote-workspace-dropdown"
 export function LeftEdgeChrome() {
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const { isOpen, toggle } = useSidebarContext()
+  const { setOpen: setSearchOpen } = useSearchDialog()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
   const { isMac: platformIsMac } = usePlatform()
@@ -78,6 +80,18 @@ export function LeftEdgeChrome() {
           aria-label={tTitleBar(isOpen ? "hideSidebar" : "showSidebar")}
         >
           <SidebarIcon className={railCollapsed ? "h-5 w-5" : "h-3.5 w-3.5"} />
+        </button>
+        <button
+          type="button"
+          className="inline-grid h-6 w-6 shrink-0 place-items-center rounded-4xl text-foreground transition-colors hover:bg-foreground/10 hover:text-foreground/80 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:hover:bg-foreground/10"
+          onClick={() => setSearchOpen(true)}
+          title={tTitleBar("withShortcut", {
+            label: tTitleBar("search"),
+            shortcut: formatShortcutLabel(shortcuts.toggle_search, isMac),
+          })}
+          aria-label={tTitleBar("search")}
+        >
+          <Search aria-hidden="true" className="h-3.5 w-3.5" />
         </button>
         <RemoteWorkspaceDropdown triggerClassName="h-6 w-6 hover:bg-foreground/10 hover:text-foreground/80 dark:hover:bg-foreground/10" />
       </div>

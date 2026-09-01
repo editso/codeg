@@ -341,10 +341,7 @@ function inferFromInput(
 
   const patch =
     parsed.patch ?? parsed.diff ?? parsed.unified_diff ?? parsed.unifiedDiff
-  if (
-    typeof patch === "string" &&
-    patch.trim().startsWith("*** Begin Patch")
-  ) {
+  if (typeof patch === "string" && patch.trim().startsWith("*** Begin Patch")) {
     return "apply_patch"
   }
 

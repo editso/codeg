@@ -31,11 +31,12 @@
  * prose); a blank title falls back to the localized category label.
  */
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
   Ban,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Gauge,
@@ -54,8 +55,11 @@ import type { SessionFailureRecord } from "@/lib/types"
 import {
   activeSessionFailureView,
   knownSessionFailureActions,
+  mostRecentRecoveredWarning,
   type SessionFailureAction,
 } from "@/lib/session-failures"
+
+const RECOVERED_VISIBLE_MS = 10_000
 
 const CATEGORY_ICONS: Record<string, typeof AlertCircle> = {
   connection: WifiOff,
@@ -116,8 +120,9 @@ interface Props {
 export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
   const { errors, warning, hiddenWarnings, warningIds } =
     activeSessionFailureView(failures)
+  const recovered = mostRecentRecoveredWarning(failures)
   const hasActive = errors.length > 0 || warning !== null
-  if (!hasActive) return null
+  if (!hasActive && !recovered) return null
   return (
     <>
       {errors.map((failure) => (
@@ -139,6 +144,13 @@ export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
           onDismiss={onDismiss}
         />
       )}
+      {!hasActive && recovered && (
+        <RecoveredStrip
+          key={`${recovered.id}@${recovered.revision}`}
+          failure={recovered}
+          onDismiss={onDismiss}
+        />
+      )}
     </>
   )
 }
@@ -146,10 +158,7 @@ export function SessionFailureBanner({ failures, onAction, onDismiss }: Props) {
 /** Whether this connection has a failure worth reserving a transcript row for. */
 export function hasVisibleSessionFailure(failures: SessionFailureRecord[]) {
   const { errors, warning } = activeSessionFailureView(failures)
-  return (
-    errors.length > 0 ||
-    warning !== null
-  )
+  return errors.length > 0 || warning !== null
 }
 
 function ActiveFailureStrip({
@@ -197,7 +206,7 @@ function ActiveFailureStrip({
           {title}
         </span>
         {hiddenCount > 0 && (
-          <span className="shrink-0 text-[10px] font-medium opacity-70">
+          <span className="shrink-0 text-3xs font-medium opacity-70">
             {t("moreIncidents", { count: hiddenCount })}
           </span>
         )}
@@ -245,10 +254,56 @@ function ActiveFailureStrip({
         )}
       </div>
       {expanded && details && (
-        <p className="mt-1.5 ps-[22px] text-[11px] whitespace-pre-wrap break-words opacity-80">
+        <p className="mt-1.5 ps-[1.375rem] text-2xs whitespace-pre-wrap break-words opacity-80">
           {details}
         </p>
       )}
+    </div>
+  )
+}
+
+function RecoveredStrip({
+  failure,
+  onDismiss,
+}: {
+  failure: SessionFailureRecord
+  onDismiss?: Props["onDismiss"]
+}) {
+  const t = useTranslations("Folder.chat.sessionFailure")
+  const title =
+    failure.title.trim() ||
+    t(CATEGORY_LABEL_KEYS[knownCategory(failure.category)])
+  // Self-expire. Records are retained forever as revision watermarks, so
+  // nothing else would ever take this line down — it used to sit under the
+  // composer for the rest of the session announcing a hiccup that was over
+  // (field report 2026-08-17). Auto-dismiss WRITES to the store rather than
+  // just hiding locally, so remounting the panel cannot resurrect it.
+  const id = failure.id
+  const dismiss = onDismiss
+  useEffect(() => {
+    if (!dismiss) return
+    const timer = setTimeout(() => dismiss([id]), RECOVERED_VISIBLE_MS)
+    return () => clearTimeout(timer)
+  }, [dismiss, id])
+  return (
+    <div className="border-t border-border/50 bg-muted/30 px-4 py-1.5 text-2xs text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <CheckCircle2 aria-hidden="true" className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">
+          {t("recovered")} · {title}
+        </span>
+        {dismiss && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-5 w-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+            onClick={() => dismiss([id])}
+            aria-label={t("dismiss")}
+          >
+            <X aria-hidden="true" className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
     </div>
   )
 }

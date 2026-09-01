@@ -72,7 +72,10 @@ export function ProjectLocationDialog({
       await onConfirm(folder.id, selected)
       onOpenChange(false)
     } catch (error) {
-      console.error("[ProjectLocationDialog] update project location failed:", error)
+      console.error(
+        "[ProjectLocationDialog] update project location failed:",
+        error
+      )
     } finally {
       setSubmitting(false)
     }

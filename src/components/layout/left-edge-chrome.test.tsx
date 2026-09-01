@@ -59,15 +59,15 @@ describe("LeftEdgeChrome", () => {
     )
   })
 
-  it("no longer carries the remote-workspace picker", () => {
+  it("keeps both search and remote-workspace entry points", () => {
     renderChrome()
-    // It moved to the sidebar list's context menu + the status bar's quick
-    // actions; this always-visible slot went to the far more frequent search.
     expect(
-      screen.queryByRole("button", { name: "Open remote workspace" })
-    ).toBeNull()
-    // Only the two intended controls remain.
-    expect(screen.getAllByRole("button")).toHaveLength(2)
+      screen.getByRole("button", { name: "Open remote workspace" })
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument()
+    // The sidebar toggle, search, and local remote-workspace picker are all
+    // intentionally available from the fixed chrome.
+    expect(screen.getAllByRole("button")).toHaveLength(3)
   })
 
   it("keeps the sidebar toggle", () => {

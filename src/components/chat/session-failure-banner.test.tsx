@@ -204,5 +204,4 @@ describe("SessionFailureBanner", () => {
     ])
     expect(container).toBeEmptyDOMElement()
   })
-
 })

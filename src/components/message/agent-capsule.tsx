@@ -162,7 +162,7 @@ export function AgentCapsule({
   )
   const idBadgeNode =
     idBadge != null ? (
-      <span className="shrink-0 font-mono text-[10px] font-normal text-muted-foreground/70">
+      <span className="shrink-0 font-mono text-3xs font-normal text-muted-foreground/70">
         {idBadge}
       </span>
     ) : null

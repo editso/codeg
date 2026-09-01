@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from "react"
 import { Virtualizer } from "virtua"
-import { useStickToBottomContext } from "use-stick-to-bottom"
 import {
   ChevronRightIcon,
   CodeIcon,
@@ -171,17 +170,15 @@ function disclosureScrollers(
 function usePreserveDisclosureScrollPosition(anchorRef: {
   current: HTMLElement | null
 }) {
-  const { scrollRef, stopScroll } = useStickToBottomContext()
   const frameRef = useRef<number | null>(null)
   const cancelRef = useRef<(() => void) | null>(null)
 
   const preserveDisclosureScrollPosition = useCallback(() => {
     cancelRef.current?.()
-    stopScroll()
 
     const positions: ScrollPosition[] = disclosureScrollers(
       anchorRef.current,
-      scrollRef.current
+      null
     ).map((scroller) => ({ scroller, top: scroller.scrollTop }))
     if (positions.length === 0) return
 
@@ -219,7 +216,7 @@ function usePreserveDisclosureScrollPosition(anchorRef: {
     window.addEventListener("keydown", stop)
     cancelRef.current = stop
     frameRef.current = requestAnimationFrame(restore)
-  }, [anchorRef, scrollRef, stopScroll])
+  }, [anchorRef])
 
   useEffect(
     () => () => {
@@ -852,8 +849,18 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   const active = streaming ?? items.some(isStreaming)
   const [open, setOpen] = useState(() => active)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
-  const previousActiveRef = useRef(active)
-  const userSetOpenRef = useRef(false)
+  const [activeMark, setActiveMark] = useState(active)
+  const [userSetOpen, setUserSetOpen] = useState(false)
+
+  if (activeMark !== active) {
+    setActiveMark(active)
+    if (active) {
+      setUserSetOpen(false)
+      setOpen(true)
+    } else if (!userSetOpen) {
+      setOpen(false)
+    }
+  }
 
   const agentEntries = useMemo<
     AgentActivityDialogEntry<
@@ -876,28 +883,11 @@ export const AssistantActivityGroup = memo(function AssistantActivityGroup({
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       preserveDisclosureScrollPosition()
-      userSetOpenRef.current = true
+      setUserSetOpen(true)
       setOpen(nextOpen)
     },
     [preserveDisclosureScrollPosition]
   )
-
-  // Live activity stays visible while it progresses, then returns to a compact
-  // historical summary after the terminal stream update. A failed tool is a
-  // row-level result, not a failed assistant reply, so it must not pin or tint
-  // the entire activity group.
-  useEffect(() => {
-    const wasActive = previousActiveRef.current
-    previousActiveRef.current = active
-
-    if (!wasActive && active) {
-      // A subsequent run gets a fresh automatic disclosure lifecycle.
-      userSetOpenRef.current = false
-      setOpen(true)
-    } else if (wasActive && !active && !userSetOpenRef.current) {
-      setOpen(false)
-    }
-  }, [active])
 
   const summary = useMemo(() => {
     let thoughts = 0
