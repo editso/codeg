@@ -220,6 +220,23 @@ export function activeSessionFailureView(
   }
 }
 
+/** The most recent warning settled by recovery, excluding user-dismissed rows. */
+export function mostRecentRecoveredWarning(
+  failures: SessionFailureRecord[]
+): SessionFailureRecord | null {
+  for (let index = failures.length - 1; index >= 0; index--) {
+    const failure = failures[index]
+    if (
+      failure.resolved &&
+      !failure.dismissed &&
+      failure.severity === "warning"
+    ) {
+      return failure
+    }
+  }
+  return null
+}
+
 /** Resolved records retained as revision watermarks. */
 export function resolvedSessionFailures(
   failures: SessionFailureRecord[]

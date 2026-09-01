@@ -134,7 +134,9 @@ export const ConversationHeaderFolderPicker = memo(
     const liveConnectionStatus = useOptionalConnectionStatus(tabId)
     const targetGroup = useTabStore((s) => {
       const lookupId = tabId ?? s.activeTabId
-      return lookupId ? groupOfTab(s.groupOf, s.groupLayout, lookupId) : null
+      return lookupId && s.groupOf && s.groupLayout
+        ? groupOfTab(s.groupOf, s.groupLayout, lookupId)
+        : null
     })
 
     const ownTab = useMemo(() => {
@@ -254,9 +256,7 @@ export const ConversationHeaderFolderPicker = memo(
             return
           }
           try {
-            openChatModeTab(
-              targetGroup != null ? { targetGroup } : undefined
-            )
+            openChatModeTab(targetGroup != null ? { targetGroup } : undefined)
             toast.success(t("toasts.switchedToChatMode"))
           } catch (err) {
             console.error(
@@ -414,9 +414,7 @@ export const ConversationFolderBranchPicker = memo(
               return
             }
             try {
-              openChatModeTab(
-                targetGroup != null ? { targetGroup } : undefined
-              )
+              openChatModeTab(targetGroup != null ? { targetGroup } : undefined)
               toast.success(t("toasts.switchedToChatMode"))
             } catch (err) {
               console.error(

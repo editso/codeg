@@ -30,7 +30,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useAcpActions } from "@/contexts/acp-connections-context"
+import { useOptionalAcpActions } from "@/contexts/acp-connections-context"
 import {
   getDraftConversationMcpCatalog,
   getConversationConfig,
@@ -216,7 +216,15 @@ export function ConversationConfigPopover({
   isPrompting = false,
 }: ConversationConfigPopoverProps) {
   const t = useTranslations("Folder.chat.messageInput")
-  const { reapplyConfig, restart } = useAcpActions()
+  const acpActions = useOptionalAcpActions()
+  const reapplyConfig = useMemo(
+    () => acpActions?.reapplyConfig ?? (async () => false),
+    [acpActions?.reapplyConfig]
+  )
+  const restart = useMemo(
+    () => acpActions?.restart ?? (async () => false),
+    [acpActions?.restart]
+  )
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<Panel>("overview")
   const [configView, setConfigView] = useState<ConversationConfigView | null>(

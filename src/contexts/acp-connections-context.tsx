@@ -2778,6 +2778,10 @@ export function useAcpActions(): AcpActionsValue {
   return ctx
 }
 
+export function useOptionalAcpActions(): AcpActionsValue | null {
+  return useContext(AcpActionsContext)
+}
+
 // ── Event subscriber context ──
 //
 // JS-level fanout of `acp://event` envelopes. The provider owns the single
