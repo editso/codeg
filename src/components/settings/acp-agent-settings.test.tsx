@@ -1408,6 +1408,34 @@ describe("patchCodexConfigTomlText — codeg's requires_openai_auth default", ()
   })
 })
 
+// The panel used to ship a Reasoning Effort dropdown, and the writer rewrote
+// `model_reasoning_effort` on EVERY patch with "high" as the parse default. So
+// touching any unrelated control injected a key the user never asked for and
+// silently overrode codex's own per-model default. The control is gone and the
+// key is no longer managed here — it belongs to the raw config.toml editor.
+describe("codex model_reasoning_effort is not managed by the panel", () => {
+  const KEY = "model_reasoning_effort"
+
+  it("does not inject the key when another control moves", () => {
+    for (const patch of [
+      { model: "gpt-5" },
+      { apiBaseUrl: "https://api.example/v1" },
+      { supportsWebsockets: true },
+      { skills: true },
+      { defaultModeRequestUserInput: true },
+      { serviceTierFast: true },
+    ]) {
+      expect(patchCodexConfigTomlText("", patch)).not.toContain(KEY)
+    }
+  })
+
+  it("leaves a hand-written value untouched", () => {
+    const toml = ['model = "gpt-5"', `${KEY} = "low"`].join("\n")
+    const result = patchCodexConfigTomlText(toml, { supportsWebsockets: true })
+    expect(result).toContain(`${KEY} = "low"`)
+  })
+})
+
 describe("codex [features].default_mode_request_user_input toggle", () => {
   const KEY = "default_mode_request_user_input"
 

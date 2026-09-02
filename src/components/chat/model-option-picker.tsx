@@ -11,6 +11,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ModelOptionList } from "@/components/chat/model-option-list"
+import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import type { ModelOptionGroup } from "@/lib/model-config-groups"
 import type { SessionConfigOptionInfo } from "@/lib/types"
@@ -58,27 +59,36 @@ export function ModelOptionPicker({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
-          title={option.name}
-          aria-label={
-            currentLabel ? `${option.name}: ${currentLabel}` : option.name
-          }
-          className="min-w-0 gap-0.5 px-1 text-muted-foreground"
-        >
-          <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown
-            className={cn(
-              "shrink-0 -translate-x-0.5 scale-90 text-muted-foreground opacity-0 transition-[width,height,opacity,transform] duration-150 ease-out motion-reduce:transition-none group-hover/button:translate-x-0 group-hover/button:scale-100 group-hover/button:opacity-100 group-focus-visible/button:translate-x-0 group-focus-visible/button:scale-100 group-focus-visible/button:opacity-100 group-data-[state=open]/button:translate-x-0 group-data-[state=open]/button:scale-100 group-data-[state=open]/button:opacity-100",
-              collapseChevronWhenIdle
-                ? "size-0 group-hover/button:size-3 group-focus-visible/button:size-3 group-data-[state=open]/button:size-3"
-                : "size-3"
-            )}
-          />
-        </Button>
-      </PopoverTrigger>
+      {/* `suppressed` while the panel is open: a Popover is non-modal, so the
+          trigger still takes hover underneath it and the hint would otherwise
+          surface from behind the list. */}
+      <SelectorTooltip
+        label={option.name}
+        description={option.description}
+        suppressed={open}
+      >
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            title={option.name}
+            aria-label={
+              currentLabel ? `${option.name}: ${currentLabel}` : option.name
+            }
+            className="min-w-0 gap-0.5 px-1 text-muted-foreground"
+          >
+            <span className="max-w-[10rem] truncate">{currentLabel}</span>
+            <ChevronDown
+              className={cn(
+                "shrink-0 -translate-x-0.5 scale-90 text-muted-foreground opacity-0 transition-[width,height,opacity,transform] duration-150 ease-out motion-reduce:transition-none group-hover/button:translate-x-0 group-hover/button:scale-100 group-hover/button:opacity-100 group-focus-visible/button:translate-x-0 group-focus-visible/button:scale-100 group-focus-visible/button:opacity-100 group-data-[state=open]/button:translate-x-0 group-data-[state=open]/button:scale-100 group-data-[state=open]/button:opacity-100",
+                collapseChevronWhenIdle
+                  ? "size-0 group-hover/button:size-3 group-focus-visible/button:size-3 group-data-[state=open]/button:size-3"
+                  : "size-3"
+              )}
+            />
+          </Button>
+        </PopoverTrigger>
+      </SelectorTooltip>
       <PopoverContent
         ref={contentRef}
         side="top"

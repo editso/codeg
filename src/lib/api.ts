@@ -94,9 +94,16 @@ import type {
   CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
+  FolderGroupDetail,
+  SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasMutation,
+  CanvasNode,
+  CanvasNodeKind,
+  CanvasNodeMovePayload,
+  CanvasSnapshot,
   CreateChatConversationResult,
   CreateChatDirResult,
   WorktreeResolution,
@@ -2095,8 +2102,46 @@ export async function removeFolderFromWorkspace(
   return getTransport().call("remove_folder_from_workspace", { folderId })
 }
 
-export async function reorderFolders(ids: number[]): Promise<void> {
-  return getTransport().call("reorder_folders", { ids })
+export async function listFolderGroups(): Promise<FolderGroupDetail[]> {
+  return getTransport().call("list_folder_groups", {})
+}
+
+export async function createFolderGroup(
+  name: string,
+  color?: FolderThemeColor
+): Promise<FolderGroupDetail> {
+  return getTransport().call("create_folder_group", { name, color })
+}
+
+/** Patch a group's name and/or color. An omitted field is left alone, so the
+ *  rename dialog and the color picker never clobber each other. */
+export async function updateFolderGroup(
+  groupId: number,
+  patch: { name?: string; color?: FolderThemeColor }
+): Promise<FolderGroupDetail> {
+  return getTransport().call("update_folder_group", { groupId, ...patch })
+}
+
+/** Delete a group. Member folders are NOT removed from the workspace — they
+ *  return to the top level. */
+export async function deleteFolderGroup(groupId: number): Promise<void> {
+  return getTransport().call("delete_folder_group", { groupId })
+}
+
+/** Persist the whole sidebar layout after a drag. See {@link SidebarLayoutEntry}. */
+export async function applySidebarLayout(
+  entries: SidebarLayoutEntry[]
+): Promise<void> {
+  return getTransport().call("apply_sidebar_layout", { entries })
+}
+
+/** Move one folder into (`groupId`) or out of (`null`) a group, appending it to
+ *  the target container. The context-menu path, which has no drop position. */
+export async function setFolderGroup(
+  folderId: number,
+  groupId: number | null
+): Promise<void> {
+  return getTransport().call("set_folder_group", { folderId, groupId })
 }
 
 export async function updateFolderColor(
@@ -2823,6 +2868,149 @@ export async function removeFolderLink(
   return getTransport().call("remove_folder_link", { linkId, deleteLink })
 }
 
+// ─── Conversation canvas ───
+
+/** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
+ *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
+ *  conversation → conversationId; custom starts empty; note uses content. */
+export interface CreateCanvasNodeInput {
+  kind: CanvasNodeKind
+  folderId?: number
+  folderGroupId?: number
+  agentType?: string
+  conversationId?: number
+  title?: string
+  content?: string
+  color?: string
+  /** Pinned grid axes (regions only); omitted / 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Field-by-field patch: absent = untouched, empty string clears a nullable
+ *  text field. `memberAdd` / `memberRemove` are atomic server-side list ops
+ *  (custom regions only). */
+export interface CanvasNodePatchInput {
+  title?: string
+  content?: string
+  color?: string
+  collapsed?: boolean
+  /** Pinned grid axes; regions only (a non-region patch is rejected). 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  memberAdd?: number
+  memberRemove?: number
+}
+
+/** Input for `canvasGroupIntoRegion` — every "collect these conversations"
+ *  gesture: box-select → new region, a pinned card dragged into a custom
+ *  region, and two cards dropped onto each other. */
+export interface GroupIntoRegionInput {
+  /** Existing custom region to merge into. Omit to create a new one from the
+   *  geometry below (which is then ignored — the frame is already placed). */
+  targetRegionId?: number
+  title?: string
+  color?: string
+  /** Conversations to seed the region with; duplicates collapse server-side. */
+  memberIds: number[]
+  /** Pinned cards the selection swallowed, deleted in the same transaction.
+   *  Ids that aren't pinned cards are ignored, not rejected. */
+  consumeNodeIds: number[]
+  gridColumns?: number
+  gridRows?: number
+  /** Where a NEW region goes — all four together, or none at all when merging
+   *  into an existing frame. A half-specified frame is rejected rather than
+   *  silently placed. */
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
+/** What the gesture actually committed — the region plus the pins that were
+ *  really deleted (raced ids dropped), mirroring the `grouped` event payload. */
+export interface GroupIntoRegionResult {
+  node: CanvasNode
+  deletedIds: number[]
+}
+
+/** The full canvas node set plus the revision it was read at. */
+export async function canvasListNodes(): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", {})
+}
+
+export async function canvasCreateNode(
+  input: CreateCanvasNodeInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_create_node", { input })
+}
+
+/** "Collect these conversations into a region": the region write, its member
+ *  list and the deletion of the pinned cards it absorbed, as ONE transaction and
+ *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
+ *  dozen events for one gesture and make every intermediate state observable. */
+export async function canvasGroupIntoRegion(
+  input: GroupIntoRegionInput
+): Promise<CanvasMutation<GroupIntoRegionResult>> {
+  return getTransport().call("canvas_group_into_region", { input })
+}
+
+export async function canvasUpdateNode(
+  nodeId: number,
+  patch: CanvasNodePatchInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_update_node", { nodeId, patch })
+}
+
+/** Batch position write (drag drop, auto-arrange): one revision bump, one
+ *  event, however many nodes moved. The value echoes the moves as actually
+ *  written — clamped, deleted-node ghosts dropped — apply THAT optimistically,
+ *  not the request. */
+export async function canvasMoveNodes(
+  moves: CanvasNodeMovePayload[]
+): Promise<CanvasMutation<CanvasNodeMovePayload[]>> {
+  return getTransport().call("canvas_move_nodes", { moves })
+}
+
+/** Drag a member card out of a region onto open canvas. Custom regions MOVE
+ *  the membership (stale retries reject as not_found); folder/agent regions
+ *  COPY. One transaction, one event either way. */
+export async function canvasDetachMember(
+  regionId: number,
+  conversationId: number,
+  x: number,
+  y: number
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_detach_member", {
+    regionId,
+    conversationId,
+    x,
+    y,
+  })
+}
+
+export async function canvasDeleteNode(
+  nodeId: number
+): Promise<CanvasMutation<null>> {
+  return getTransport().call("canvas_delete_node", { nodeId })
+}
+
+/** Delete a whole multi-selection in one transaction and one `pruned` event.
+ *  The value is the ids ACTUALLY deleted (ghosts dropped) — apply that. */
+export async function canvasDeleteNodes(
+  nodeIds: number[]
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_nodes", { nodeIds })
+}
+
 export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
 }
@@ -3447,12 +3635,22 @@ export async function workTaskReturn(
  * Stop a task. `reason` (optional) is the user's own note about why — it lands
  * on the `canceled` entry of the progress timeline and is never replayed into
  * a later run's prompt (a requeue carries its own note for that).
+ *
+ * `deleteWorktree` takes the checkout along once the stop lands — best-effort,
+ * so a removal that fails leaves a retryable `cleanup_state` on the card and
+ * the task is canceled either way. It also deletes the work branch, which is
+ * why the dialog leaves the box unchecked by default.
  */
 export async function workTaskCancel(
   id: number,
-  reason?: string | null
+  reason?: string | null,
+  deleteWorktree = false
 ): Promise<void> {
-  return getTransport().call("work_task_cancel", { id, reason: reason ?? null })
+  return getTransport().call("work_task_cancel", {
+    id,
+    reason: reason ?? null,
+    deleteWorktree,
+  })
 }
 
 /** Dispatch the agent-driven merge (`message: null` = the agent writes the

@@ -2653,6 +2653,13 @@ export interface AcpActionsValue {
   touchActivity(contextKey: string): void
   registerOpenTabKeys(keys: Set<string>): void
   /**
+   * Same promise as `registerOpenTabKeys`, for surfaces that aren't tabs: while
+   * a key is registered, the idle sweep won't reclaim its connection and the
+   * backend keepalive keeps touching it. `source` namespaces the set so
+   * registrars don't overwrite each other; an empty set unregisters.
+   */
+  registerLiveSurfaceKeys(source: string, keys: Set<string>): void
+  /**
    * Register a sink that mirrors this contextKey's `liveMessage` into the
    * conversation-runtime store from `dispatch` (outside React), replacing the
    * panel's per-token mirror effect. Returns an unregister fn (idempotent —
@@ -2971,6 +2978,23 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   // Open tab keys — updated by child TabProvider via registerOpenTabKeys
   const openTabKeysRef = useRef(new Set<string>())
+  // Live surfaces that are NOT tabs, by source. Tabs were the only place a
+  // conversation could be live when `openTabKeysRef` was written; the canvas
+  // put expanded conversation cards on a board instead, and a surface the idle
+  // sweep can't see gets its agent disconnected out from under the user after
+  // CONNECTION_IDLE_TIMEOUT_MS while the card is still on screen. Keyed by
+  // source so two registrars never clobber each other's set.
+  const extraLiveKeysRef = useRef(new Map<string, Set<string>>())
+
+  /** Every contextKey a visible surface is currently holding open. */
+  const heldOpenKeys = useCallback((): Set<string> => {
+    if (extraLiveKeysRef.current.size === 0) return openTabKeysRef.current
+    const all = new Set(openTabKeysRef.current)
+    for (const keys of extraLiveKeysRef.current.values()) {
+      for (const key of keys) all.add(key)
+    }
+    return all
+  }, [])
 
   // Guard against concurrent connect() calls
   const connectingKeysRef = useRef(new Set<string>())
@@ -3277,6 +3301,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const registerOpenTabKeys = useCallback((keys: Set<string>) => {
     openTabKeysRef.current = keys
   }, [])
+
+  const registerLiveSurfaceKeys = useCallback(
+    (source: string, keys: Set<string>) => {
+      if (keys.size === 0) extraLiveKeysRef.current.delete(source)
+      else extraLiveKeysRef.current.set(source, keys)
+    },
+    []
+  )
 
   const registerLiveMessageSink = useCallback(
     (contextKey: string, sink: LiveMessageSink) => {
@@ -4691,7 +4723,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const timer = setInterval(() => {
       const currentActiveKey = storeRef.current.activeKey
-      const currentOpenTabKeys = openTabKeysRef.current
+      const currentOpenTabKeys = heldOpenKeys()
       const seen = new Set<string>()
       const toTouch: { contextKey: string; connectionId: string }[] = []
       const consider = (contextKey: string) => {
@@ -4716,7 +4748,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     }, CONNECTION_KEEPALIVE_INTERVAL_MS)
 
     return () => clearInterval(timer)
-  }, [isConnectionLiveOnBackend, markConnectionGone])
+  }, [heldOpenKeys, isConnectionLiveOnBackend, markConnectionGone])
 
   // ── Idle sweep timer ──
   // Complements the backend keepalive: this sweep targets connections
@@ -4733,7 +4765,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const now = Date.now()
       const currentActiveKey = storeRef.current.activeKey
 
-      const currentOpenTabKeys = openTabKeysRef.current
+      const currentOpenTabKeys = heldOpenKeys()
       const toDisconnect: { contextKey: string; connectionId: string }[] = []
       for (const [contextKey, conn] of storeRef.current.connections) {
         if (contextKey === currentActiveKey) continue
@@ -4785,6 +4817,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     captureIdentityBeforeRemoval,
     acpDisconnectOnce,
     dispatch,
+    heldOpenKeys,
     releaseConnectionRoute,
     teardownAttachSubscription,
   ])
@@ -4832,10 +4865,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     }
   }, [acpDisconnectOnce])
 
-  // True when this client already OWNS the given backend connection — i.e.
-  // holds an entry whose teardown `acpDisconnect`s the agent. Guards the
-  // discovery gate from demoting an owner to a viewer on a re-render: a viewer
-  // never `acpDisconnect`s, so a mis-tagged owner would leak its agent process.
+  // The contextKey of the local entry that OWNS the given backend connection —
+  // i.e. the one whose teardown `acpDisconnect`s the agent — or null when this
+  // client doesn't own it.
   //
   // Non-owning entries (viewers, delegation children — the work-task transcript
   // dialog attaches the task's OWN connection that way) are deliberately NOT
@@ -4847,13 +4879,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   //
   // NOT the predicate for "may I tear this connection down?" — see
   // `isConnectionReferencedLocally`.
-  const isConnectionOwnedLocally = useCallback((connectionId: string) => {
-    for (const conn of storeRef.current.connections.values()) {
+  const localOwnerKeyOf = useCallback((connectionId: string) => {
+    for (const [key, conn] of storeRef.current.connections) {
       if (conn.connectionId !== connectionId) continue
       if (conn.isViewer || conn.isDelegationChild) continue
-      return true
+      return key
     }
-    return false
+    return null
   }, [])
 
   // True when ANY local surface references the connection — owner, viewer,
@@ -5274,10 +5306,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           ) {
             return
           }
-          if (
-            discovered &&
-            !isConnectionOwnedLocally(discovered.connection_id)
-          ) {
+          // Attach as a viewer unless WE are the owner. The question is
+          // deliberately "owned by this contextKey", not "owned locally at
+          // all": the guard exists to stop a surface demoting ITSELF to a
+          // viewer of its own connection on a re-render (nobody would
+          // `acpDisconnect` it, leaking the agent process). A DIFFERENT local
+          // surface — a canvas detail card for a conversation already open in
+          // a workspace tab — must take the viewer path for the same reason a
+          // second browser client does: falling through to `acpConnect` would
+          // spawn a second agent CLI on the same session.
+          const localOwnerKey = discovered
+            ? localOwnerKeyOf(discovered.connection_id)
+            : null
+          if (discovered && localOwnerKey !== contextKey) {
             const attached = await connectAsViewer(
               contextKey,
               discovered.connection_id,
@@ -5588,8 +5629,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       consumeBufferedEvents,
       dispatch,
       isConnectionLiveOnBackend,
-      isConnectionOwnedLocally,
       isConnectionReferencedLocally,
+      localOwnerKeyOf,
       markConnectionGone,
       releaseConnectionRoute,
       resolveConnectBlockState,
@@ -6325,6 +6366,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
+      registerLiveSurfaceKeys,
       registerLiveMessageSink,
       clearAcpLoadError,
       attachDelegationChild,
@@ -6352,6 +6394,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
+      registerLiveSurfaceKeys,
       registerLiveMessageSink,
       clearAcpLoadError,
       attachDelegationChild,

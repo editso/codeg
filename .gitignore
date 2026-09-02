@@ -61,3 +61,4 @@ tools/.dev-build-output/
 tools/.dev-node_modules/
 tools/.dev-next/
 tools/.dev-public-vs/
+/rust_out

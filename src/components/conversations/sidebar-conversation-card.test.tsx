@@ -544,6 +544,7 @@ describe("SidebarConversationCard hover details bubble", () => {
           parent_id: null,
           kind: "regular",
           alias: null,
+          group_id: null,
         },
       ],
     })

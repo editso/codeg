@@ -6,8 +6,10 @@ import {
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import {
   describeStdinChars,
+  extractAnnouncedSessionId,
   isShellSessionToolName,
   parseShellSessionInput,
+  WAIT_TOOL_NAME,
 } from "@/lib/shell-session-tool"
 
 export type ToolActivityKind =
@@ -295,7 +297,10 @@ function genericSubject(input: string | null): string | null {
  * hosts (Codex, Claude Code, Cline, and OpenCode).
  */
 export function describeToolActivity(
-  part: Pick<AdaptedToolCallPart, "toolName" | "input" | "displayTitle">
+  part: Pick<
+    AdaptedToolCallPart,
+    "toolName" | "input" | "displayTitle" | "output" | "errorText"
+  >
 ): ToolActivityPresentation {
   const name = normalizeToolName(part.toolName).toLowerCase()
   const parsed = asRecord(part.input)
@@ -323,12 +328,21 @@ export function describeToolActivity(
 
   if (name === "bash" || name === "exec_command") {
     const description = parsed ? findString(parsed, ["description"]) : null
+    const announcedSessionId =
+      name === "exec_command"
+        ? extractAnnouncedSessionId(part.output ?? part.errorText)
+        : null
     return {
       kind: "command",
       subject: command
         ? ellipsis(command.split("\n")[0] ?? command, 88)
         : (description ?? displayTitle),
-      context: command && description ? ellipsis(description, 64) : null,
+      context:
+        announcedSessionId && command
+          ? `Session ${announcedSessionId}`
+          : command && description
+            ? ellipsis(description, 64)
+            : null,
       command,
       paths: [],
       monospace: Boolean(command),
@@ -344,10 +358,15 @@ export function describeToolActivity(
       ? ellipsis(sessionCommand.split("\n")[0] ?? "", 88)
       : null
     const isStdin = Boolean(session?.chars)
+    const verb =
+      name === WAIT_TOOL_NAME && session?.terminate ? "Terminate" : "Wait"
     const subject = isStdin
-      ? describeStdinChars(session?.chars ?? "")
-      : (commandSubject ??
-        (session?.sessionId ? `#${session.sessionId}` : displayTitle))
+      ? `Stdin ${describeStdinChars(session?.chars ?? "")}`
+      : commandSubject
+        ? `${verb} ${commandSubject}`
+        : session?.sessionId
+          ? `${verb} cell ${session.sessionId}`
+          : displayTitle
     return {
       kind: "session",
       subject,

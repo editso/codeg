@@ -640,8 +640,10 @@ function ActivityDetailRow({
 
 function ActivityMessageRow({
   item,
+  streaming = false,
 }: {
   item: Extract<AssistantActivityItem, { type: "message" }>
+  streaming?: boolean
 }) {
   return (
     <div className="relative z-10 flex min-w-0 gap-2 px-1.5 py-1 text-[13px] leading-5 text-muted-foreground/85">
@@ -651,7 +653,11 @@ function ActivityMessageRow({
       >
         <span className="size-1.5 rounded-full bg-muted-foreground/55" />
       </span>
-      <MessageResponse className="codeg-activity-reasoning min-w-0 flex-1">
+      <MessageResponse
+        className="codeg-activity-reasoning min-w-0 flex-1"
+        mode={streaming ? "streaming" : "static"}
+        parseIncompleteMarkdown={streaming}
+      >
         {item.text}
       </MessageResponse>
     </div>
@@ -661,17 +667,21 @@ function ActivityMessageRow({
 function ActivityRow({
   item,
   renderItem,
+  streaming = false,
   onOpenAgent,
 }: {
   item: AssistantActivityItem
   renderItem: ActivityItemRenderer
+  streaming?: boolean
   onOpenAgent?: (
     item: Extract<AssistantActivityItem, { type: "tool-call" }>,
     trigger: HTMLButtonElement
   ) => void
 }) {
   if (item.type === "reasoning") return <ActivityReasoningRow item={item} />
-  if (item.type === "message") return <ActivityMessageRow item={item} />
+  if (item.type === "message") {
+    return <ActivityMessageRow item={item} streaming={streaming} />
+  }
   if (item.type === "context-compaction") {
     return <ActivityContextCompactionRow item={item} renderItem={renderItem} />
   }
@@ -756,9 +766,11 @@ export const AssistantActivityRows = memo(function AssistantActivityRows({
   items,
   renderItem,
   className,
+  streaming = false,
   onOpenAgent,
 }: Pick<AssistantActivityGroupProps, "items" | "renderItem"> & {
   className?: string
+  streaming?: boolean
   onOpenAgent?: (
     item: Extract<AssistantActivityItem, { type: "tool-call" }>,
     trigger: HTMLButtonElement
@@ -771,6 +783,7 @@ export const AssistantActivityRows = memo(function AssistantActivityRows({
           key={item.id}
           item={item}
           renderItem={renderItem}
+          streaming={streaming}
           onOpenAgent={onOpenAgent}
         />
       ))}
@@ -814,6 +827,7 @@ function ActivityItemList({
               <ActivityRow
                 item={item}
                 renderItem={renderItem}
+                streaming={streaming}
                 onOpenAgent={onOpenAgent}
               />
             </div>
@@ -823,6 +837,7 @@ function ActivityItemList({
         <AssistantActivityRows
           items={items}
           renderItem={renderItem}
+          streaming={streaming}
           onOpenAgent={onOpenAgent}
         />
       )}

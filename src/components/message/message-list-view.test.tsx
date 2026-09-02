@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   advanceReplyFold,
+  extractDelegationSources,
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   type MergedAssistantRunCache,
@@ -9,6 +10,7 @@ import {
   type ResolvedMessageGroup,
   type ThreadRenderItem,
 } from "./message-list-view"
+import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 import type { MessageTurn } from "@/lib/types"
 
 function turn(id: string): MessageTurn {
@@ -495,5 +497,113 @@ describe("mergeConsecutiveAssistantTurns merged-run cache", () => {
     expect(out1).toHaveLength(1)
     expect(out2[0]).not.toBe(out1[0])
     expect(out2[0]).toEqual(out1[0])
+  })
+})
+
+describe("extractDelegationSources", () => {
+  function toolCall(
+    toolCallId: string,
+    toolName: string,
+    input?: string | null
+  ): AdaptedContentPart {
+    return {
+      type: "tool-call",
+      toolCallId,
+      toolName,
+      input: input ?? null,
+      state: "output-available",
+      output: null,
+    }
+  }
+
+  it("collects a delegate_to_agent call keyed by its own tool_use_id", () => {
+    const sources = extractDelegationSources([
+      toolCall(
+        "tu-1",
+        "mcp__codeg-mcp__delegate_to_agent",
+        '{"agent_type":"codex"}'
+      ),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({
+      parentToolUseId: "tu-1",
+      input: '{"agent_type":"codex"}',
+    })
+    expect(sources[0].taskIdHint).toBeUndefined()
+  })
+
+  // The overlay lists the sub-agents of the LAST reply. A reply that RESUMED
+  // one contains no `delegate_to_agent` call at all (the original is in an
+  // earlier turn), so without this arm a resumed sub-agent would be missing
+  // from the overlay for its whole second run.
+  it("collects a resume_delegation call keyed by the task id in its arguments", () => {
+    const sources = extractDelegationSources([
+      toolCall("tu-resume", "resume_delegation", '{"task_id":"task-abc"}'),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({
+      parentToolUseId: "tu-resume",
+      taskIdHint: "task-abc",
+      // Not the `{task_id, reason}` arguments — `parseInput` would only warn.
+      input: null,
+    })
+  })
+
+  it("skips a resume whose task id is unreadable, and de-dupes repeats", () => {
+    const sources = extractDelegationSources([
+      toolCall("tu-a", "resume_delegation", "{}"),
+      toolCall(
+        "tu-b",
+        "mcp__codeg-mcp__resume_delegation",
+        '{"task_id":"t-1"}'
+      ),
+      toolCall("tu-c", "resume_delegation", '{"task_id":"t-1"}'),
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({ parentToolUseId: "tu-b" })
+  })
+
+  it("finds delegations nested inside tool-groups and goal-runs", () => {
+    const sources = extractDelegationSources([
+      {
+        type: "tool-group",
+        items: [
+          toolCall("tu-resume", "resume_delegation", '{"task_id":"t-1"}'),
+        ],
+      } as AdaptedContentPart,
+    ])
+    expect(sources).toHaveLength(1)
+    expect(sources[0].taskIdHint).toBe("t-1")
+  })
+
+  it("ignores unrelated tool calls", () => {
+    expect(
+      extractDelegationSources([
+        toolCall("tu-1", "bash", '{"command":"ls"}'),
+        toolCall("tu-2", "get_delegation_status", '{"task_ids":["t-1"]}'),
+      ])
+    ).toEqual([])
+  })
+
+  // A refusal reports the task's REAL status plus its agent and child, so it
+  // reads like a successful resume to everything but `error_code`. Listing it
+  // would put a sub-agent in the overlay that this reply never revived.
+  it("skips a refused resume", () => {
+    const refused: AdaptedContentPart = {
+      type: "tool-call",
+      toolCallId: "tu-resume",
+      toolName: "resume_delegation",
+      input: '{"task_id":"t-1"}',
+      state: "output-available",
+      output: JSON.stringify({
+        task_id: "t-1",
+        status: "completed",
+        error_code: "not_resumable",
+        agent_type: "codex",
+        child_conversation_id: 9,
+        message: "Not resumed: the task already completed.",
+      }),
+    }
+    expect(extractDelegationSources([refused])).toEqual([])
   })
 })

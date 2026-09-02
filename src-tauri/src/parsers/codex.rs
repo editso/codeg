@@ -8,6 +8,9 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use walkdir::WalkDir;
 
+use crate::acp::agent_mentions::{
+    contains_only_internal_agent_routes, strip_internal_agent_routes,
+};
 use crate::models::*;
 use crate::parsers::codex_code_mode::{
     extract_chunk_ids, extract_shell_session_ids, is_code_mode_call, parse_code_mode_script,
@@ -314,6 +317,12 @@ impl CodexParser {
         let mut first_goal_ordinal: Option<u64> = None;
         let mut title_source_ordinal: Option<u64> = None;
         let mut title_from_thread_name = false;
+        // Cross-channel dedup, mirroring the detail parser's
+        // `should_skip_duplicate_user_message`: codex writes the same prompt
+        // through BOTH `event_msg` and `response_item`, so counting each one
+        // would put the sidebar's message count one ahead of the turns the
+        // opened conversation actually renders.
+        let mut recent_user_records: Vec<(DateTime<Utc>, UserTurnFingerprint)> = Vec::new();
 
         for line in reader.lines() {
             let line = match line {
@@ -331,14 +340,8 @@ impl CodexParser {
 
             let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-            let record_ordinal = promotion.note_record(
-                msg_type,
-                value
-                    .get("payload")
-                    .and_then(|p| p.get("type"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or(""),
-            );
+            let record_ordinal =
+                promotion.note_record(msg_type, promotion_payload_type(msg_type, &value));
 
             if let Some(ts_str) = value.get("timestamp").and_then(|t| t.as_str()) {
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
@@ -394,13 +397,29 @@ impl CodexParser {
                             payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         match payload_type {
                             "user_message" => {
+                                let raw_text = payload
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("");
+                                let visible_text = strip_internal_agent_routes(raw_text);
+                                let has_images = payload
+                                    .get("images")
+                                    .and_then(|v| v.as_array())
+                                    .is_some_and(|images| !images.is_empty());
+                                if contains_only_internal_agent_routes(raw_text) && !has_images {
+                                    continue;
+                                }
+                                if skip_duplicate_user_record(
+                                    &mut recent_user_records,
+                                    UserTurnFingerprint::from_event_message(payload),
+                                    parse_codex_timestamp(&value).unwrap_or_else(Utc::now),
+                                ) {
+                                    continue;
+                                }
                                 message_count += 1;
                                 has_real_user = true;
                                 if title.is_none() {
-                                    title = payload
-                                        .get("message")
-                                        .and_then(|m| m.as_str())
-                                        .and_then(|text| extract_codex_title_candidate(text, true));
+                                    title = extract_codex_title_candidate(&visible_text, true);
                                     if title.is_some() {
                                         title_source_ordinal = Some(record_ordinal);
                                     }
@@ -481,6 +500,18 @@ impl CodexParser {
                             // detail parser uses, so the two stay in exact sync on
                             // both the count and the pure-`/goal` fallback.
                             if role == "user" && response_item_user_has_image(payload) {
+                                // Same dedup the detail parser applies before
+                                // pushing this turn — without it a prompt codex
+                                // wrote to BOTH channels counts twice here and
+                                // once there.
+                                if skip_duplicate_user_record(
+                                    &mut recent_user_records,
+                                    UserTurnFingerprint::from_response_item(payload),
+                                    parse_codex_timestamp(&value).unwrap_or_else(Utc::now),
+                                ) {
+                                    continue;
+                                }
+                                message_count += 1;
                                 has_real_user = true;
                                 if title.is_none() {
                                     title = extract_codex_text_content(payload)
@@ -2877,14 +2908,8 @@ impl CodexParser {
             // Fed EVERY record, before the parser's own handling: segment
             // boundaries, canonical-channel coverage and compaction adjacency
             // are all positional properties of the raw stream.
-            let record_ordinal = promotion.note_record(
-                msg_type,
-                value
-                    .get("payload")
-                    .and_then(|p| p.get("type"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or(""),
-            );
+            let record_ordinal =
+                promotion.note_record(msg_type, promotion_payload_type(msg_type, &value));
 
             if let Some(ts_str) = value.get("timestamp").and_then(|t| t.as_str()) {
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
@@ -3031,6 +3056,12 @@ impl CodexParser {
                                     .unwrap_or("")
                                     .to_string();
                                 let normalized = strip_blocked_resource_mentions(&text);
+                                if title.is_none() {
+                                    title = extract_codex_title_candidate(&normalized, true);
+                                    if title.is_some() {
+                                        title_source_ordinal = Some(record_ordinal);
+                                    }
+                                }
                                 let mut blocks: Vec<ContentBlock> = Vec::new();
                                 if !normalized.is_empty() {
                                     blocks.push(ContentBlock::Text { text: normalized });
@@ -3055,17 +3086,14 @@ impl CodexParser {
                                     }
                                 }
 
+                                if blocks.is_empty() && contains_only_internal_agent_routes(&text) {
+                                    continue;
+                                }
+
                                 if blocks.is_empty() {
                                     blocks.push(ContentBlock::Text {
                                         text: "Attached resources".to_string(),
                                     });
-                                }
-
-                                if title.is_none() {
-                                    title = extract_codex_title_candidate(&text, true);
-                                    if title.is_some() {
-                                        title_source_ordinal = Some(record_ordinal);
-                                    }
                                 }
 
                                 if should_skip_duplicate_user_message(&messages, &blocks, timestamp)
@@ -4979,6 +5007,134 @@ fn should_skip_duplicate_user_message(
     false
 }
 
+/// Content identity of a user turn, in the exact terms the DETAIL parser
+/// compares (`blocks_equal` over the blocks it would build for that record).
+///
+/// The summary parser must apply the same cross-channel dedup as
+/// [`should_skip_duplicate_user_message`] — codex writes the same prompt
+/// through both `event_msg` and `response_item` — but it is the LIGHTWEIGHT
+/// pass and must not materialize blocks (or decode images) to do it. This is
+/// the cheap stand-in: same text normalization, same image-parse predicate,
+/// same ordering, no allocation of the block vector itself.
+#[derive(Debug, PartialEq, Eq)]
+struct UserTurnFingerprint {
+    text: Option<String>,
+    images: Vec<(String, String)>,
+}
+
+impl UserTurnFingerprint {
+    /// Mirrors the detail parser's `event_msg`/`user_message` arm.
+    fn from_event_message(payload: &serde_json::Value) -> Self {
+        let text = strip_blocked_resource_mentions(
+            payload.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+        );
+        let images = payload
+            .get("images")
+            .and_then(|v| v.as_array())
+            .map(|images| {
+                images
+                    .iter()
+                    .filter_map(|image| image.as_str())
+                    .filter_map(parse_data_uri_image)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self::new(text, images)
+    }
+
+    /// Mirrors [`extract_response_item_user_image_blocks`].
+    fn from_response_item(payload: &serde_json::Value) -> Self {
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut images = Vec::new();
+        if let Some(content) = payload.get("content").and_then(|c| c.as_array()) {
+            for item in content {
+                match item.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "input_text" => {
+                        let Some(text) = item.get("text").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        if text.is_empty() || text.trim() == "<image>" {
+                            continue;
+                        }
+                        text_parts.push(text.to_string());
+                    }
+                    "input_image" => {
+                        if let Some(image) = parse_input_image_data_uri(item) {
+                            images.push(image);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Self::new(
+            strip_blocked_resource_mentions(&text_parts.join("\n")),
+            images,
+        )
+    }
+
+    fn new(text: String, images: Vec<(String, String)>) -> Self {
+        // The detail parser substitutes this placeholder when a user record
+        // would otherwise carry nothing, so two such records compare equal
+        // there and must compare equal here too.
+        let text = if text.is_empty() {
+            images.is_empty().then(|| "Attached resources".to_string())
+        } else {
+            Some(text)
+        };
+        Self { text, images }
+    }
+}
+
+/// Summary-side mirror of [`should_skip_duplicate_user_message`]: same 120s
+/// window, same reverse scan, same content equality. Prunes as it goes so the
+/// list stays bounded by the window rather than by the transcript length.
+fn skip_duplicate_user_record(
+    recent: &mut Vec<(DateTime<Utc>, UserTurnFingerprint)>,
+    fingerprint: UserTurnFingerprint,
+    timestamp: DateTime<Utc>,
+) -> bool {
+    const DUP_WINDOW_MS: i64 = 120_000;
+    while let Some((first, _)) = recent.first() {
+        if (timestamp - *first).num_milliseconds().abs() > DUP_WINDOW_MS {
+            recent.remove(0);
+        } else {
+            break;
+        }
+    }
+    if recent.iter().any(|(_, seen)| *seen == fingerprint) {
+        return true;
+    }
+    recent.push((timestamp, fingerprint));
+    false
+}
+
+/// Route-only ACP blocks are transport metadata, not canonical user coverage.
+/// Some codex-acp versions persist each text block as its own `user_message`;
+/// letting that record mark coverage would suppress a later visible
+/// `response_item` fallback in the same turn segment.
+fn promotion_payload_type<'a>(msg_type: &str, value: &'a serde_json::Value) -> &'a str {
+    let payload = value.get("payload");
+    let payload_type = payload
+        .and_then(|payload| payload.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if msg_type == "event_msg" && payload_type == "user_message" {
+        let route_only = payload
+            .and_then(|payload| payload.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(contains_only_internal_agent_routes);
+        let has_images = payload
+            .and_then(|payload| payload.get("images"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|images| !images.is_empty());
+        if route_only && !has_images {
+            return "";
+        }
+    }
+    payload_type
+}
+
 /// Canonical-channel coverage for one turn segment.
 #[derive(Debug, Default, Clone, Copy)]
 struct SegmentCoverage {
@@ -5343,7 +5499,8 @@ fn strip_blocked_resource_mentions(input: &str) -> String {
     let blocked_re = Regex::new(r"@([^\s@]+)\s*\[blocked[^\]]*\]").expect("valid blocked regex");
     let image_tag_re = Regex::new(r"(?i)</?image\s*/?>").expect("valid image tag regex");
     let collapsed_ws_re = Regex::new(r"[ \t]{2,}").expect("valid whitespace regex");
-    let text = blocked_re.replace_all(input, "").to_string();
+    let visible = strip_internal_agent_routes(input);
+    let text = blocked_re.replace_all(&visible, "").to_string();
     let text = image_tag_re.replace_all(&text, "").to_string();
     let text = collapsed_ws_re.replace_all(&text, " ").to_string();
     text.trim().to_string()
@@ -5832,6 +5989,236 @@ mod tests {
         let input = "这个图片里面是什么\n</image>\n<image>\n";
         let got = strip_blocked_resource_mentions(input);
         assert_eq!(got, "这个图片里面是什么");
+    }
+
+    #[test]
+    fn internal_agent_routes_never_surface_in_codex_history() {
+        use crate::acp::agent_mentions::append_agent_routes;
+        use crate::acp::types::PromptInputBlock;
+
+        let conversation_id = "agent-route-history";
+        let (_temp_dir, parser, _index_path) = write_index_title_fixture(conversation_id);
+        let rollout_path = parser
+            .base_dir
+            .join("2026")
+            .join("08")
+            .join("15")
+            .join(format!(
+                "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+            ));
+        let visible = "Ask [@Antigravity](codeg://agent/antigravity) to review";
+        let mut prompt = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        append_agent_routes(&mut prompt, true);
+        let routing = match &prompt[1] {
+            PromptInputBlock::Text { text } => text,
+            _ => unreachable!(),
+        };
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": conversation_id, "cwd": "/tmp/Temp"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": format!("{visible}\n{routing}")
+                }
+            })
+            .to_string(),
+            // Some adapter versions can persist separate ACP text blocks as
+            // separate records. A route-only record must not become a phantom
+            // "Attached resources" turn.
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01.100Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": routing}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Done"}
+            })
+            .to_string(),
+        ];
+        fs::write(&rollout_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let summary = parser
+            .list_conversations()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == conversation_id)
+            .unwrap();
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(summary.title.as_deref(), Some("Ask @Antigravity to review"));
+
+        let detail = parser.get_conversation(conversation_id).unwrap();
+        assert_eq!(detail.turns.len(), 2);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == visible
+        ));
+    }
+
+    #[test]
+    fn route_only_event_does_not_suppress_visible_response_item_fallback() {
+        use crate::acp::agent_mentions::append_agent_routes;
+        use crate::acp::types::PromptInputBlock;
+
+        let conversation_id = "agent-route-promotion";
+        let (_temp_dir, parser, _index_path) = write_index_title_fixture(conversation_id);
+        let rollout_path = parser
+            .base_dir
+            .join("2026")
+            .join("08")
+            .join("15")
+            .join(format!(
+                "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+            ));
+        let visible = "Ask [@Codex](codeg://agent/codex) to inspect this";
+        let mut prompt = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        append_agent_routes(&mut prompt, true);
+        let routing = match &prompt[1] {
+            PromptInputBlock::Text { text } => text,
+            _ => unreachable!(),
+        };
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": conversation_id, "cwd": "/tmp/Temp"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": routing}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01.100Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": visible}]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Done"}
+            })
+            .to_string(),
+        ];
+        fs::write(&rollout_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let summary = parser
+            .list_conversations()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == conversation_id)
+            .unwrap();
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(summary.title.as_deref(), Some("Ask @Codex to inspect this"));
+
+        let detail = parser.get_conversation(conversation_id).unwrap();
+        assert_eq!(detail.turns.len(), 2);
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == visible
+        ));
+    }
+
+    #[test]
+    fn user_authored_agent_route_envelope_survives_summary_and_detail() {
+        let conversation_id = "user-agent-route-envelope";
+        let (_temp_dir, parser, _index_path) = write_index_title_fixture(conversation_id);
+        let rollout_path = parser
+            .base_dir
+            .join("2026")
+            .join("08")
+            .join("15")
+            .join(format!(
+                "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+            ));
+        let visible = "Explain \u{001e}<codeg_internal_agent_routes version=\"2\">user text</codeg_internal_agent_routes>\u{001e}";
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": conversation_id, "cwd": "/tmp/Temp"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": visible}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Done"}
+            })
+            .to_string(),
+        ];
+        fs::write(&rollout_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let summary = parser
+            .list_conversations()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == conversation_id)
+            .unwrap();
+        assert_eq!(summary.message_count, 2);
+        assert!(summary
+            .title
+            .as_deref()
+            .is_some_and(|title| title.contains("codeg_internal_agent_routes")));
+
+        let detail = parser.get_conversation(conversation_id).unwrap();
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == visible
+        ));
+    }
+
+    #[test]
+    fn internal_routes_are_removed_from_image_response_item_text() {
+        use crate::acp::agent_mentions::append_agent_routes;
+        use crate::acp::types::PromptInputBlock;
+
+        let visible = "Review this image [@Codex](codeg://agent/codex)";
+        let mut prompt = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        append_agent_routes(&mut prompt, true);
+        let routing = match &prompt[1] {
+            PromptInputBlock::Text { text } => text,
+            _ => unreachable!(),
+        };
+        let payload = serde_json::json!({
+            "content": [
+                {"type": "input_text", "text": format!("{visible}\n{routing}")},
+                {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+            ]
+        });
+
+        let blocks = extract_response_item_user_image_blocks(&payload).unwrap();
+        assert!(matches!(
+            blocks.as_slice(),
+            [ContentBlock::Text { text }, ContentBlock::Image { .. }] if text == visible
+        ));
     }
 
     #[test]
@@ -6929,9 +7316,9 @@ mod tests {
             .expect("parse summary ok")
             .expect("summary present");
 
-        // Summary: agent_message (+1) + synthetic /goal opener (+1); title from the
-        // objective (the image-only user contributes no title).
-        assert_eq!(summary.message_count, 2);
+        // Summary: image user (+1) + agent_message (+1) + synthetic /goal opener
+        // (+1); title still comes from the objective.
+        assert_eq!(summary.message_count, 3);
         assert_eq!(summary.title.as_deref(), Some("Do the thing"));
 
         // Detail parity: title = objective, the leading "/goal …" opener precedes
@@ -6951,6 +7338,75 @@ mod tests {
             _ => None,
         });
         assert_eq!(opener_text, Some("/goal Do the thing"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_image_prompt_written_to_both_channels_counts_once() {
+        // codex writes the same prompt through `event_msg.user_message` AND
+        // `response_item`. The detail parser drops the second copy
+        // (`should_skip_duplicate_user_message`); the summary must too, or the
+        // sidebar count runs one ahead of the turns the conversation renders.
+        // No pre-existing fixture used the event channel's `images` array, so
+        // this shape was entirely untested.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf =
+            env::temp_dir().join(format!("codeg-codex-sumimg-bothchan-{nanos}.jsonl"));
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-both\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"look at this\",\"images\":[\"data:image/png;base64,AAAA\"]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01.100Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"look at this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,AAAA\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ok\"}}\n"
+        );
+        fs::write(&path, content).expect("write test jsonl");
+
+        let parser = CodexParser::new();
+        let summary = parser
+            .parse_jsonl_summary(&path)
+            .expect("parse summary ok")
+            .expect("summary present");
+        let detail = parser
+            .parse_conversation_detail(&path, "si-both")
+            .expect("parse detail ok");
+
+        assert_eq!(detail.turns.len(), 2, "one user turn + one agent turn");
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(summary.message_count, detail.summary.message_count);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_response_item_count_matches_detail_without_canonical_user_event() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf =
+            env::temp_dir().join(format!("codeg-codex-sumimg-parity-{nanos}.jsonl"));
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-parity\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"inspect this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,AAAA\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ok\"}}\n"
+        );
+        fs::write(&path, content).expect("write test jsonl");
+
+        let parser = CodexParser::new();
+        let summary = parser
+            .parse_jsonl_summary(&path)
+            .expect("parse summary ok")
+            .expect("summary present");
+        let detail = parser
+            .parse_conversation_detail(&path, "si-parity")
+            .expect("parse detail ok");
+
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(detail.turns.len(), 2);
+        assert_eq!(summary.message_count, detail.summary.message_count);
 
         let _ = fs::remove_file(path);
     }

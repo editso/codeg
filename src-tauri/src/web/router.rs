@@ -227,7 +227,30 @@ pub fn build_router(
             "/remove_folder_from_workspace",
             post(handlers::folders::remove_folder_from_workspace),
         )
-        .route("/reorder_folders", post(handlers::folders::reorder_folders))
+        .route(
+            "/list_folder_groups",
+            post(handlers::folders::list_folder_groups),
+        )
+        .route(
+            "/create_folder_group",
+            post(handlers::folders::create_folder_group),
+        )
+        .route(
+            "/update_folder_group",
+            post(handlers::folders::update_folder_group),
+        )
+        .route(
+            "/delete_folder_group",
+            post(handlers::folders::delete_folder_group),
+        )
+        .route(
+            "/apply_sidebar_layout",
+            post(handlers::folders::apply_sidebar_layout),
+        )
+        .route(
+            "/set_folder_group",
+            post(handlers::folders::set_folder_group),
+        )
         .route(
             "/update_folder_color",
             post(handlers::folders::update_folder_color),
@@ -267,6 +290,39 @@ pub fn build_router(
         .route(
             "/remove_folder_link",
             post(handlers::folder_links::remove_folder_link),
+        )
+        // ─── Canvas ───
+        .route(
+            "/canvas_list_nodes",
+            post(handlers::canvas::canvas_list_nodes),
+        )
+        .route(
+            "/canvas_create_node",
+            post(handlers::canvas::canvas_create_node),
+        )
+        .route(
+            "/canvas_group_into_region",
+            post(handlers::canvas::canvas_group_into_region),
+        )
+        .route(
+            "/canvas_update_node",
+            post(handlers::canvas::canvas_update_node),
+        )
+        .route(
+            "/canvas_move_nodes",
+            post(handlers::canvas::canvas_move_nodes),
+        )
+        .route(
+            "/canvas_detach_member",
+            post(handlers::canvas::canvas_detach_member),
+        )
+        .route(
+            "/canvas_delete_node",
+            post(handlers::canvas::canvas_delete_node),
+        )
+        .route(
+            "/canvas_delete_nodes",
+            post(handlers::canvas::canvas_delete_nodes),
         )
         .route(
             "/add_folder_to_history",

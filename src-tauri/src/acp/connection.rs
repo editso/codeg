@@ -30,6 +30,7 @@ use sacp::{
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
@@ -109,6 +110,28 @@ fn merge_agent_env_with_proxy_env(
     prepend_officecli_path(&mut merged);
 
     merged.into_iter().collect()
+}
+
+/// Whether a Cursor launch gets the root `--force` (Run Everything) flag, from
+/// the panel's `CURSOR_FORCE` knob.
+///
+/// The knob is TRI-state on purpose. It used to be written as "1" for on and
+/// *deleted* for off, which made "the user chose Ask" indistinguishable from
+/// "never configured" — and since the panel rendered the missing key as Run
+/// Everything while this function rendered it as Ask, the switch showed one
+/// thing and the session did another. Off is now written as an explicit "0",
+/// and both sides read the same rule: unset means Ask.
+///
+/// Unset resolving to Ask (not Run Everything) is deliberate. It is what every
+/// Cursor session has actually been doing all along, so no existing install
+/// silently loses its confirmation prompts; `--force` also turns cursor's own
+/// sandbox off (`approvalMode: unrestricted` → `insecure_none`), which is not
+/// something to switch on for someone who never asked.
+pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    value == "1" || value.eq_ignore_ascii_case("true")
 }
 
 /// Cursor subscription-mode launch policy. When the user picked the official
@@ -1729,12 +1752,9 @@ async fn build_agent(
                 // apply, and an org policy can downgrade it to rule-based
                 // approval). Sourced from the panel's permission-mode
                 // control (env_json key CURSOR_FORCE — codeg-side knob; the
-                // CLI reads no such env var).
-                if runtime_env
-                    .get("CURSOR_FORCE")
-                    .map(|v| v.trim())
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                {
+                // CLI reads no such env var). Unset means Ask; see
+                // `cursor_force_enabled`.
+                if cursor_force_enabled(runtime_env.get("CURSOR_FORCE").map(String::as_str)) {
                     cmd_args.insert(0, "--force".to_string());
                 }
             }
@@ -3159,9 +3179,14 @@ async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &Event
     emit_with_state(state, emitter, AcpEvent::SelectorsReady).await;
 }
 
+/// The conventional id of a model selector. ACP reserves none — `category:
+/// "model"` is the spec-level signal — but every agent codeg drives spells the
+/// id this way, and the frontend's `isModelConfigOption` accepts either.
+const MODEL_CONFIG_OPTION_ID: &str = "model";
+
 /// Synthesized config-option id for Grok's model picker (drives the composer's
 /// grouped model selector via the frontend's `isModelConfigOption`).
-const GROK_MODEL_OPTION_ID: &str = "model";
+const GROK_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
 
 /// Synthesized config-option id for Grok's per-session reasoning-effort selector.
 /// Grok ships effort choices in `x.ai/sessionConfig` under `category:"mode"`
@@ -4068,6 +4093,19 @@ fn claude_raw_sdk_session_meta(
 ///   `claude_chunk_parent_tool_use_id`). The adapter checks strictly
 ///   `=== true`, and a pre-0.63 binary ignores the unknown key, so this is
 ///   inert everywhere it isn't understood.
+/// - Any agent that launches `cursor-agent … acp` (the built-in Cursor entry
+///   and custom agents wrapping the same binary — see
+///   `registry::uses_cursor_acp_backend`): `_meta["parameterizedModelPicker"]
+///   = true`. cursor-agent's ACP layer reads exactly this key
+///   (`clientSupportsParameterizedModelPicker`, strictly `=== true`) to pick
+///   between its two model-picker shapes. Without it the `model` select is the
+///   EXPLODED variant list — one row per model×parameter combination, valued
+///   by the variant string — and `set_config_option` accepts no other id. With
+///   it the picker splits into a `model` select over model names plus one
+///   option per model parameter (`fast`, thinking level), which is the only
+///   way Composer's Fast switch is reachable. A build that predates the key
+///   ignores it and stays on variants, so this is inert where it isn't
+///   understood.
 fn build_client_capabilities(
     agent_type: AgentType,
     host_tools: HostToolsPolicy,
@@ -4147,6 +4185,16 @@ fn build_client_capabilities(
             serde_json::json!({
                 "air": { "version": 1, "capabilities": ["sessionFailure"] }
             }),
+        );
+    }
+    // Cursor ACP gates Composer 2.5's `fast` parameter behind this client
+    // capability. Without it the agent advertises only the default variant
+    // (Fast); with it the model picker splits into separate `model` and
+    // `fast` config options that `session/set_config_option` can set.
+    if registry::uses_cursor_acp_backend(agent_type) {
+        meta.insert(
+            "parameterizedModelPicker".to_string(),
+            serde_json::Value::Bool(true),
         );
     }
     if !meta.is_empty() {
@@ -4605,6 +4653,8 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
 struct CompanionInjection {
     token: String,
     feedback_available: bool,
+    /// Whether the `delegate_to_agent` tool group was exposed this launch.
+    delegation_enabled: bool,
 }
 
 async fn inject_codeg_mcp(
@@ -4615,6 +4665,30 @@ async fn inject_codeg_mcp(
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
 ) -> Option<CompanionInjection> {
+    inject_codeg_mcp_with_binary_locator(
+        servers,
+        injection,
+        parent_connection_id,
+        working_dir,
+        tasks_enabled,
+        host_tools,
+        locate_codeg_mcp_binary,
+    )
+    .await
+}
+
+async fn inject_codeg_mcp_with_binary_locator<F>(
+    servers: &mut Vec<McpServer>,
+    injection: &DelegationInjection,
+    parent_connection_id: &str,
+    working_dir: &Path,
+    tasks_enabled: bool,
+    host_tools: HostToolsPolicy,
+    locate_binary: F,
+) -> Option<CompanionInjection>
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
     // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
@@ -4646,6 +4720,15 @@ async fn inject_codeg_mcp(
              anyway. Turn that per-agent switch off to restore the delegation tools."
         );
     }
+    // Which agents the user switched off, so the companion's advertised enum
+    // tracks the live toggle. One indexed query, skipped outright when
+    // delegation is off, and it fails open: the spawn-time disabled check is
+    // the hard gate either way.
+    let disabled = if delegation_enabled {
+        injection.agent_availability.disabled_agent_wire_slugs().await
+    } else {
+        Vec::new()
+    };
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -4655,9 +4738,12 @@ async fn inject_codeg_mcp(
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
     };
-    // `None` (no feature enabled) short-circuits the whole injection.
+    // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
+    // token registration and the server append: there is no companion to launch,
+    // and looking for a binary we would never use would also emit the "binary
+    // not found" warning below for a connection that asked for nothing.
     let features_arg = companion_features_arg(flags)?;
-    let Some(binary_path) = locate_codeg_mcp_binary() else {
+    let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \
              exe sibling, and PATH); skipping delegate_to_agent / check_user_feedback / \
@@ -4666,6 +4752,13 @@ async fn inject_codeg_mcp(
         );
         return None;
     };
+    // Registered-and-enabled custom agents become extra `delegate_to_agent`
+    // targets; disabled BUILT-INS are subtracted companion-side
+    // (`--disabled-agents`) so the embedded schema stays the single source of
+    // truth for the builtin list and its order. Either flag is omitted when
+    // empty, which also keeps an older codeg-mcp binary — one that rejects
+    // unknown flags at startup — working for installations needing neither.
+    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     let token = uuid::Uuid::new_v4().to_string();
     injection
         .tokens
@@ -4677,7 +4770,7 @@ async fn inject_codeg_mcp(
             },
         )
         .await;
-    let mut server = McpServerStdio::new("codeg-mcp", binary_path);
+    let mut server = McpServerStdio::new("codeg-mcp", binary_path.clone());
     let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
@@ -4695,20 +4788,6 @@ async fn inject_codeg_mcp(
         "--features".to_string(),
         features_arg,
     ];
-    // Advertised delegate targets track the user's enable toggles, read
-    // fresh at injection time. Registered-and-enabled custom agents become
-    // extra `delegate_to_agent` targets; disabled BUILT-INS are subtracted
-    // companion-side (`--disabled-agents`) so the embedded schema stays the
-    // single source of truth for the builtin list and its order. Either flag
-    // is omitted when empty: the companion then serves its embedded
-    // builtin-only schema unchanged, and an older codeg-mcp binary (which
-    // rejects unknown flags at startup) keeps working for every installation
-    // that needs neither.
-    let disabled = injection
-        .agent_availability
-        .disabled_agent_wire_slugs()
-        .await;
-    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
         args.push(custom_slugs.join(","));
@@ -4722,6 +4801,7 @@ async fn inject_codeg_mcp(
     Some(CompanionInjection {
         token,
         feedback_available: feedback_enabled,
+        delegation_enabled: flags.delegation,
     })
 }
 
@@ -5454,10 +5534,18 @@ async fn run_connection(
                 s.goal_actions = Some(goal_actions);
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
+                    s.delegation_enabled = injected.delegation_enabled;
                     // The agent's actual feedback capability for this session
                     // — the authoritative gate for submit + UI, fixed at
                     // launch.
                     s.feedback_tool_available = injected.feedback_available;
+                } else {
+                    // Keep a reused/test state fail-closed if companion
+                    // injection was skipped; no stale token or delegation
+                    // capability may survive.
+                    s.delegation_token = None;
+                    s.delegation_enabled = false;
+                    s.feedback_tool_available = false;
                 }
             }
 
@@ -6837,6 +6925,46 @@ fn config_option_already_holds(option: &SessionConfigOption, value: &str) -> boo
     }
 }
 
+/// Whether an advertised option IS the agent's model selector. ACP reserves no
+/// id for it, so match either signal — the `category` every agent that has a
+/// model publishes it under (see [`current_model_id_from_opts`]) or the
+/// conventional `model` id, the same pair the frontend's `isModelConfigOption`
+/// checks.
+fn is_model_config_option_value(option: &SessionConfigOption) -> bool {
+    matches!(option.category, Some(SessionConfigOptionCategory::Model))
+        || option.id.to_string() == MODEL_CONFIG_OPTION_ID
+}
+
+/// Saved preferences in application order: the model selector first, then every
+/// other id in its natural (sorted) order.
+///
+/// Order is load-bearing because a model switch RE-SCOPES the options hanging
+/// off it. Cursor's parameterized picker is the case that forced this: it
+/// answers `set_config_option("model", …)` by reloading THAT model's own saved
+/// (or default) parameter values, and rejects a parameter id the model in
+/// effect does not define. Replaying by raw key order would put `fast` before
+/// `model` and lose it to the switch — or hard-fail it against the outgoing
+/// model. Grok's dedicated path (`apply_grok_preferred_options`) already
+/// hard-codes the same order for the same reason; this is the generic half.
+///
+/// A preferred id the agent never advertised is ordered as a non-model option
+/// unless it is literally `model` — the fallback stays deliberately narrow
+/// because an unadvertised id is still sent (see `apply_preferred_session_options`).
+fn order_preferred_config_values<'a>(
+    options: &[SessionConfigOption],
+    preferred: &'a BTreeMap<String, String>,
+) -> Vec<(&'a String, &'a String)> {
+    let (model_first, rest): (Vec<_>, Vec<_>) = preferred.iter().partition(|(config_id, _)| {
+        options
+            .iter()
+            .find(|o| o.id.to_string() == **config_id)
+            .map_or(config_id.as_str() == MODEL_CONFIG_OPTION_ID, |o| {
+                is_model_config_option_value(o)
+            })
+    });
+    model_first.into_iter().chain(rest).collect()
+}
+
 /// Wire-level half of `set_session_config_option`: send the JSON-RPC request and
 /// return the agent's new config-options list, without touching SessionState or
 /// emitting events. Used at session-init to apply saved preferences before the
@@ -6951,7 +7079,11 @@ async fn apply_preferred_session_options(
 
     let session_id = session.session_id().clone();
     let mut options = initial_config_options;
-    for (config_id, value_id) in preferred_config_values {
+    // Model first — see `order_preferred_config_values`. Ordered once against
+    // the INITIAL list: every later list is the same agent's answer to a set,
+    // so the model selector cannot move between ids mid-replay.
+    let ordered = order_preferred_config_values(&options, preferred_config_values);
+    for (config_id, value_id) in ordered {
         // Skip the round-trip when the agent's current value already matches.
         // Note: codex-acp advertises "mode" as a config option (so the match
         // check below normally fires), but we still do NOT skip when a
@@ -7708,6 +7840,23 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
             }
         })
         .collect()
+}
+
+/// The single final agent boundary. `delegation_enabled` is this connection's
+/// launch verdict, so routing is appended for EVERY agent that received the
+/// companion's delegation group — that flag is the only gate, and it is already
+/// the injection gate's own verdict (`supports_mcp` + `agent_delivers_wire_mcp`
+/// + the delegation feature being on).
+fn prepare_agent_bound_prompt(
+    agent_type: AgentType,
+    mut blocks: Vec<PromptInputBlock>,
+    delegation_enabled: bool,
+) -> Vec<ContentBlock> {
+    append_agent_routes(&mut blocks, delegation_enabled);
+    if agent_type == AgentType::Grok {
+        blocks = normalize_grok_image_blocks(blocks);
+    }
+    map_prompt_blocks(blocks)
 }
 
 /// Result when the conversation loop exits due to a fork request.
@@ -8506,17 +8655,12 @@ async fn run_conversation_loop<'a>(
                         .collect();
                     (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
                 });
-                // Grok: settle each image onto the carriage grok can read —
-                // decodable ones as native Image blocks (so its describe
-                // sidecar runs), the rest back as resource blobs. The last
-                // point that sees the blocks, so every producer (composer,
-                // queued draft, work task, delegation) is covered at once.
-                let blocks = if agent_type == AgentType::Grok {
-                    normalize_grok_image_blocks(blocks)
-                } else {
-                    blocks
-                };
-                let prompt_blocks = map_prompt_blocks(blocks);
+                // Keep the user's blocks pristine through ledgering, previews,
+                // and cross-client broadcast. Only the final agent-bound prompt
+                // receives the machine routing block derived from agent badges.
+                let delegation_enabled = state.read().await.delegation_enabled;
+                let prompt_blocks =
+                    prepare_agent_bound_prompt(agent_type, blocks, delegation_enabled);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
                     // concurrency gate is set / the command is enqueued (see
@@ -13866,6 +14010,155 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_cursor() {
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Cursor,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Cursor initialize must advertise parameterizedModelPicker"
+        );
+        // Cursor must not pick up Claude/Codex-only extensions.
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("jetbrains"))
+            .is_none());
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("subagent-transcript"))
+            .is_none());
+    }
+
+    #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_custom_cursor_agent() {
+        use std::collections::BTreeMap;
+
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, BinaryPlatformSpec, CustomAgentDef, CustomAgentSpec,
+            CustomDistributionKind,
+        };
+
+        let _guard = hydrate_test_guard();
+        // Every platform, because `build_meta` REJECTS a binary def with no
+        // entry for the machine it runs on — a windows-only spec would leave
+        // the id unregistered on every other host and this test would then be
+        // asserting against `unregistered_meta`, not a cursor launch recipe.
+        let mut binary = BTreeMap::new();
+        for platform in [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "linux-aarch64",
+            "linux-x86_64",
+            "windows-aarch64",
+            "windows-x86_64",
+        ] {
+            binary.insert(
+                platform.to_string(),
+                BinaryPlatformSpec {
+                    archive: format!(
+                        "https://downloads.cursor.com/lab/2026.08.11-e8db854/{platform}/agent-cli-package.tar.gz"
+                    ),
+                    cmd: if platform.starts_with("windows") {
+                        "./dist-package/cursor-agent.cmd".into()
+                    } else {
+                        "./dist-package/cursor-agent".into()
+                    },
+                    args: vec!["acp".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let def = CustomAgentDef {
+            registry_id: "test-cursor-acp".into(),
+            name: "Test Cursor ACP".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Binary,
+            spec: CustomAgentSpec {
+                binary,
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        assert!(
+            hydrate(&[def]).is_empty(),
+            "the def must actually register — an unregistered id falls back to \
+             unregistered_meta, which advertises nothing"
+        );
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-cursor-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "custom cursor-agent acp must advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
+    fn client_capabilities_skip_parameterized_model_picker_for_non_cursor_custom_agent() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+
+        let _guard = hydrate_test_guard();
+        let def = CustomAgentDef {
+            registry_id: "test-codex-acp".into(),
+            name: "Test Codex ACP".into(),
+            description: String::new(),
+            version: "1.7.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "@agentclientprotocol/codex-acp@1.7.0".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    cmd: Some("codex-acp".into()),
+                    node_required: None,
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        // Same reason as the cursor case: an unregistered id would satisfy the
+        // negative assertion for the wrong reason.
+        assert!(hydrate(&[def]).is_empty());
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-codex-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .is_none(),
+            "non-cursor custom agents must not advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
     fn version_at_least_is_strict_semver_and_fails_closed() {
         assert!(version_at_least("0.64.0", "0.64.0"));
         assert!(version_at_least("0.64.1", "0.64.0"));
@@ -14275,6 +14568,22 @@ mod tests {
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_KEY"));
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_BASE_URL"));
         }
+    }
+
+    #[test]
+    fn cursor_force_knob_is_tri_state() {
+        // On.
+        for on in ["1", "true", "TRUE", " 1 "] {
+            assert!(cursor_force_enabled(Some(on)), "{on:?} must enable --force");
+        }
+        // Explicitly off — the value the panel now writes for "Ask before
+        // running", which has to be distinguishable from the unset case.
+        for off in ["0", "false", "", "  "] {
+            assert!(!cursor_force_enabled(Some(off)), "{off:?} must not force");
+        }
+        // Never configured. Ask, matching what Cursor sessions have always
+        // actually done, and matching what the panel now shows.
+        assert!(!cursor_force_enabled(None));
     }
 
     #[test]
@@ -15161,6 +15470,15 @@ mod tests {
         assert!(deepseek.get("elicitation").is_some());
         assert!(deepseek.get("_meta").is_none());
 
+        // Cursor: parameterized model picker only (no elicitation / AIR).
+        let cursor = caps_of(AgentType::Cursor);
+        assert_eq!(
+            cursor["_meta"]["parameterizedModelPicker"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(cursor.get("elicitation").is_none());
+        assert!(cursor["_meta"].get("jetbrains").is_none());
+
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);
         assert!(other.get("_meta").is_none());
@@ -15482,6 +15800,45 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn final_agent_boundary_appends_routes_for_every_agent_holding_a_snapshot() {
+        let visible = "ask [@Antigravity](codeg://agent/antigravity) to build";
+        let blocks = vec![PromptInputBlock::Text {
+            text: visible.into(),
+        }];
+        // Not Codex-specific: any parent whose companion carried the delegation
+        // group routes, including custom agents.
+        for parent in [
+            AgentType::Codex,
+            AgentType::ClaudeCode,
+            AgentType::Gemini,
+            AgentType::custom("delegating-custom").expect("valid custom id"),
+        ] {
+            let prompt = prepare_agent_bound_prompt(parent, blocks.clone(), true);
+            assert_eq!(prompt.len(), 2, "{parent} must receive the routing block");
+            assert!(matches!(
+                &prompt[0],
+                ContentBlock::Text(text) if text.text == visible
+            ));
+            assert!(matches!(
+                &prompt[1],
+                ContentBlock::Text(text)
+                    if text.text.contains("Codeg composer routing metadata (authoritative)")
+                        && text.text.contains(r#""agentType":"antigravity""#)
+            ));
+        }
+
+        // An agent that never received the companion (OpenClaw's
+        // supports_mcp=false, pi's wire exclusion) reaches here with delegation
+        // off and keeps a pristine prompt.
+        let unrouted = prepare_agent_bound_prompt(AgentType::OpenClaw, blocks, false);
+        assert_eq!(unrouted.len(), 1);
+        assert!(matches!(
+            &unrouted[0],
+            ContentBlock::Text(text) if text.text == visible
+        ));
     }
 
     #[test]
@@ -19750,6 +20107,88 @@ mod tests {
         ));
     }
 
+    struct TestConversationDepthLookup;
+
+    #[async_trait::async_trait]
+    impl crate::acp::delegation::broker::ConversationDepthLookup for TestConversationDepthLookup {
+        async fn parent_of(
+            &self,
+            _id: i32,
+        ) -> Result<Option<i32>, crate::acp::delegation::types::DelegationError> {
+            Ok(None)
+        }
+    }
+
+    struct TestNoQuestions;
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for TestNoQuestions {
+        async fn register_question(
+            &self,
+            _parent_connection_id: &str,
+            _questions: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            None
+        }
+
+        async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
+
+        async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestNoPlanApprovals;
+
+    #[async_trait::async_trait]
+    impl crate::acp::plan_approval::SessionPlanApprovalAccess for TestNoPlanApprovals {
+        async fn register_plan_approval(
+            &self,
+            _parent_connection_id: &str,
+            _tool_call_id: String,
+            _plan_markdown: String,
+        ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+            None
+        }
+
+        async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
+    struct TestAllAgentsAvailable;
+
+    #[async_trait::async_trait]
+    impl AgentAvailabilityLookup for TestAllAgentsAvailable {
+        async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn test_delegation_injection(
+        agent_availability: Arc<dyn AgentAvailabilityLookup>,
+    ) -> DelegationInjection {
+        use crate::acp::delegation::broker::DelegationBroker;
+        use crate::acp::delegation::listener::TokenRegistry;
+        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
+
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(TestConversationDepthLookup)
+                as Arc<dyn crate::acp::delegation::broker::ConversationDepthLookup>,
+        ));
+        DelegationInjection {
+            broker,
+            tokens: Arc::new(TokenRegistry::default()),
+            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
+            agent_availability,
+            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
+            ask: crate::acp::question::QuestionRuntimeConfig::new(),
+            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
+            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
+            questions: Arc::new(TestNoQuestions)
+                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+            plan_approvals: Arc::new(TestNoPlanApprovals)
+                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+        }
+    }
+
     // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
     //
     // Guards the "default off" product contract: when the broker config has
@@ -19761,75 +20200,14 @@ mod tests {
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationBroker};
-        use crate::acp::delegation::listener::TokenRegistry;
-        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
-        use crate::acp::delegation::types::DelegationError;
-
-        struct EmptyLookup;
-        #[async_trait::async_trait]
-        impl ConversationDepthLookup for EmptyLookup {
-            async fn parent_of(&self, _id: i32) -> Result<Option<i32>, DelegationError> {
-                Ok(None)
-            }
-        }
-
-        let broker = Arc::new(DelegationBroker::new(
-            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
-            Arc::new(EmptyLookup) as Arc<dyn ConversationDepthLookup>,
-        ));
         // No set_config call: broker carries its default config, which is
         // `enabled: false` after the product-default flip. This is the
         // exact state a fresh install reaches before the user touches the
         // settings panel. Feedback is likewise disabled by default, so with
         // BOTH features off the companion isn't injected at all.
-        struct NoQuestions;
-        #[async_trait::async_trait]
-        impl crate::acp::question::SessionQuestionAccess for NoQuestions {
-            async fn register_question(
-                &self,
-                _parent_connection_id: &str,
-                _questions: Vec<crate::acp::question::QuestionSpec>,
-            ) -> Option<crate::acp::question::RegisteredQuestion> {
-                None
-            }
-            async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
-            async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct NoPlanApprovals;
-        #[async_trait::async_trait]
-        impl crate::acp::plan_approval::SessionPlanApprovalAccess for NoPlanApprovals {
-            async fn register_plan_approval(
-                &self,
-                _parent_connection_id: &str,
-                _tool_call_id: String,
-                _plan_markdown: String,
-            ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
-                None
-            }
-            async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
-        }
-        struct AllEnabled;
-        #[async_trait::async_trait]
-        impl AgentAvailabilityLookup for AllEnabled {
-            async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
-                Vec::new()
-            }
-        }
-        let injection = DelegationInjection {
-            broker,
-            tokens: Arc::new(TokenRegistry::default()),
-            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
-            agent_availability: Arc::new(AllEnabled) as Arc<dyn AgentAvailabilityLookup>,
-            feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
-            ask: crate::acp::question::QuestionRuntimeConfig::new(),
-            sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
-            authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
-            questions: Arc::new(NoQuestions)
-                as Arc<dyn crate::acp::question::SessionQuestionAccess>,
-            plan_approvals: Arc::new(NoPlanApprovals)
-                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
-        };
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
 
         let mut servers: Vec<McpServer> = Vec::new();
         let result = inject_codeg_mcp(
@@ -20169,6 +20547,93 @@ mod tests {
         let untyped = UntypedMessage::new("session/new", req).expect("builds");
         assert_eq!(untyped.method(), "session/new");
         assert_eq!(untyped.params(), &expected);
+    }
+
+    /// The saved-preference replay must set the model BEFORE anything scoped to
+    /// it. Cursor's parameterized picker (unlocked by
+    /// `_meta.parameterizedModelPicker`) ships `fast` / thinking options that
+    /// belong to the CURRENT model: setting `model` reloads that model's own
+    /// parameter values, and setting a parameter the model in effect does not
+    /// define is rejected outright. Raw key order is alphabetical, which puts
+    /// `fast` first — exactly backwards.
+    #[test]
+    fn preferred_config_values_apply_the_model_first() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "mode",
+                "name": "Mode",
+                "category": "mode",
+                "currentValue": "agent",
+                "options": [{"value": "agent", "name": "Agent"}]
+            },
+            {
+                "type": "select",
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "composer-2.5",
+                "options": [{"value": "composer-2.5", "name": "Composer 2.5"}]
+            },
+            {
+                "type": "select",
+                "id": "fast",
+                "name": "Fast",
+                "category": "model_config",
+                "currentValue": "true",
+                "options": [{"value": "true", "name": "On"}, {"value": "false", "name": "Off"}]
+            },
+        ]))
+        .expect("parses");
+
+        let preferred = BTreeMap::from([
+            ("fast".to_string(), "false".to_string()),
+            ("mode".to_string(), "plan".to_string()),
+            ("model".to_string(), "composer-2.5".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&options, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            ordered,
+            vec!["model", "fast", "mode"],
+            "model leads; the rest keep their sorted order"
+        );
+
+        // An agent that labels its model selector only by category still leads.
+        let by_category: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "llm",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "a",
+                "options": [{"value": "a", "name": "A"}]
+            },
+        ]))
+        .expect("parses");
+        let preferred = BTreeMap::from([
+            ("effort".to_string(), "high".to_string()),
+            ("llm".to_string(), "b".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&by_category, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["llm", "effort"]);
+
+        // Nothing model-shaped: the order is untouched, and an id the agent
+        // never advertised is still replayed (it is not codeg's call to drop).
+        let preferred = BTreeMap::from([
+            ("a_thing".to_string(), "1".to_string()),
+            ("z_thing".to_string(), "2".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&[], &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["a_thing", "z_thing"]);
     }
 
     #[test]

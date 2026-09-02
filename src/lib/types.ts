@@ -369,7 +369,70 @@ export interface FolderDetail {
    * folder's real `path`/`id`.
    */
   alias: string | null
+  /**
+   * Sidebar folder group this folder sits in, or null for top level. Purely a
+   * sidebar-organisation concept: never consulted for cwd, agent or
+   * conversation resolution. Always null on worktree children — they follow
+   * their repo, which is what carries the whole family into a group.
+   *
+   * May name a group that no longer exists (deleted in another window between
+   * this snapshot and the group list's); `buildSidebarLayout` falls such a
+   * folder back to the top level rather than hiding it.
+   */
+  group_id: number | null
 }
+
+/**
+ * A sidebar folder group: a named, optionally colored band that holds folders.
+ * Groups never nest and never hold conversations directly.
+ *
+ * `sort_order` is its position among TOP-LEVEL siblings, sharing one numeric
+ * space with the `sort_order` of ungrouped folders — that shared sequence is
+ * what lets groups and loose folders interleave in a single list.
+ */
+export interface FolderGroupDetail {
+  id: number
+  name: string
+  /**
+   * A {@link FolderThemeColor} value, or `"inherit"` for the app theme. Tints
+   * only the group's own header row; member folders keep their own color.
+   */
+  color: string
+  sort_order: number
+}
+
+/** Which kind of sidebar entry a {@link SidebarLayoutEntry} names. */
+export type SidebarEntryKind = "folder" | "group"
+
+/**
+ * One row of the sidebar's desired layout, as submitted after a drag. The
+ * client sends the COMPLETE visible layout — the top-level sequence followed by
+ * each group's members, in render order — and the backend assigns `sort_order`
+ * from a per-container counter. Positional, so the client never computes
+ * `sort_order` values itself; idempotent, so a replay is a no-op.
+ */
+export interface SidebarLayoutEntry {
+  kind: SidebarEntryKind
+  id: number
+  /** Only meaningful for `folder` entries: the group it lands in, or null for
+   *  top level. Always null for `group` entries — groups never nest. */
+  groupId: number | null
+}
+
+/**
+ * Payload for the global `folder-group://changed` side-channel. Group CRUD
+ * carries its detail so clients apply it without a re-fetch; `layout` carries
+ * nothing on purpose — one drag rewrites `group_id`/`sort_order` across every
+ * visible folder, so a single "re-read both lists" nudge is smaller and
+ * order-independent compared to a burst of per-row upserts. Mirrors the Rust
+ * `FolderGroupChange` (serde `tag = "kind"`).
+ */
+export type FolderGroupChange =
+  | { kind: "upsert"; group: FolderGroupDetail }
+  | { kind: "deleted"; id: number }
+  | { kind: "layout" }
+
+export const FOLDER_GROUP_CHANGED_EVENT = "folder-group://changed"
 
 /**
  * Result of `createChatConversation`: the new conversation id plus the hidden
@@ -672,6 +735,103 @@ export interface ConversationsBulkChanged {
 }
 
 export const CONVERSATIONS_BULK_CHANGED_EVENT = "conversations://bulk-changed"
+
+// ─── Conversation canvas ───
+
+/** What a canvas node is bound to. Mirrors the Rust `CanvasNodeKind`. */
+export type CanvasNodeKind =
+  | "folder"
+  | "group"
+  | "agent"
+  | "conversation"
+  | "custom"
+  | "note"
+
+/** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
+ *  a binding region (folder / folder group / agent / single conversation), a
+ *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
+ *  `folder_group_id` / `conversation_id` are soft references — a binding whose
+ *  target is gone renders as unresolved. */
+export interface CanvasNode {
+  id: number
+  kind: CanvasNodeKind
+  folder_id: number | null
+  /** kind=group: the sidebar folder group this region mirrors. */
+  folder_group_id: number | null
+  agent_type: string | null
+  conversation_id: number | null
+  /** kind=custom: pinned conversation ids in insertion order; `[]` otherwise. */
+  member_ids: number[]
+  title: string | null
+  content: string | null
+  color: string | null
+  collapsed: boolean
+  /**
+   * Region grid shape. `0` on an axis means AUTO — columns are derived from the
+   * region width, rows are capped by `MAX_VISIBLE_MEMBERS`. A non-zero value
+   * pins that axis, which is what makes a resize step by whole cards. Always 0
+   * on pinned cards and notes.
+   */
+  grid_columns: number
+  grid_rows: number
+  x: number
+  y: number
+  width: number
+  height: number
+  created_at: string
+  updated_at: string
+}
+
+/** Response of `canvas_list_nodes`: the full node set plus the revision it was
+ *  read at (single read transaction server-side). Seeds `lastRevision`. */
+export interface CanvasSnapshot {
+  nodes: CanvasNode[]
+  revision: number
+}
+
+/** Envelope of every canvas mutation: the result plus the revision its single
+ *  broadcast event carries. Responses never advance `lastRevision` — the event
+ *  stream is the only ordered channel (see canvas-store). */
+export interface CanvasMutation<T> {
+  value: T
+  revision: number
+}
+
+export interface CanvasNodeMovePayload {
+  id: number
+  x: number
+  y: number
+}
+
+/** Payload for the global `canvas://changed` side-channel: exactly one event
+ *  per committed mutation, carrying a dense server revision. Payloads are
+ *  full-state and idempotent, so every client — including the originator —
+ *  applies them identically. Mirrors the Rust `CanvasChange` enum. */
+export type CanvasChange =
+  | { kind: "upsert"; node: CanvasNode; revision: number }
+  | { kind: "moved"; moves: CanvasNodeMovePayload[]; revision: number }
+  | { kind: "deleted"; id: number; revision: number }
+  | {
+      kind: "detached"
+      removed_from: number | null
+      node: CanvasNode
+      revision: number
+    }
+  | {
+      kind: "grouped"
+      node: CanvasNode
+      /** Pinned cards the new region absorbed, deleted in the same commit. */
+      deleted_ids: number[]
+      revision: number
+    }
+  | {
+      kind: "pruned"
+      deleted_ids: number[]
+      updated: CanvasNode[]
+      revision: number
+    }
+
+export const CANVAS_CHANGED_EVENT = "canvas://changed"
 
 export interface DbConversationDetail {
   summary: DbConversationSummary
@@ -1845,6 +2005,12 @@ export interface ForgeRemote {
   /** Which forge this host is — decided by the backend from the configured
    *  accounts and the hostname, never chosen here. */
   provider: ForgeProviderId
+  /** Whether `provider` is KNOWN rather than assumed — an account configured
+   *  for the host, or a hostname naming one of the two forges. `false` is a
+   *  remote that parsed perfectly well but lives somewhere codeg cannot read
+   *  (Bitbucket, Gitee, a Gitea): the panel says only GitHub and GitLab are
+   *  supported rather than spending a call that fails as a raw API error. */
+  supported: boolean
 }
 
 /** Latest task (any state) for a source key — the row chip's data. */
@@ -2026,6 +2192,15 @@ export interface WorkTaskFolderSettings {
   /** Shell line run inside a freshly created worktree before the agent
    *  starts (deps install, env seeding). */
   init_command?: string | null
+  /** Context-window occupancy (percent) at or above which a round that RESUMES
+   *  the task's session compacts first: the engine sends `compact_command`,
+   *  waits for that turn to land, and only then sends the round's own message.
+   *  0 = off. A fresh session is never compacted — it starts empty. */
+  auto_compact_percent: number
+  /** The command sent to compact, verbatim (e.g. `/compact`). Null/blank
+   *  resolves per agent: what the live session advertises, else a built-in
+   *  default for the agents codeg knows first-hand. */
+  compact_command?: string | null
   /** Extra instructions appended after the built-in prompt of a launch stage.
    *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
    *  plus the reserved `all`, which applies to every stage. */

@@ -1,5 +1,6 @@
 "use client"
 
+import type { ConversationFolderPickerOverride } from "@/components/chat/conversation-context-bar"
 import { memo } from "react"
 import { useTranslations } from "next-intl"
 import type {
@@ -48,6 +49,8 @@ interface ChatInputProps {
   onDraftConversationConfigChange?: (config: DraftConversationConfig) => void
   availableCommands?: AvailableCommandInfo[] | null
   attachmentTabId?: string | null
+  /** Pass-through: see `MessageInput`. */
+  folderPickerOverride?: ConversationFolderPickerOverride
   draftStorageKey?: string | null
   isActive?: boolean
   /** Show the composer's flowing active-session border. Set only for the active
@@ -111,6 +114,7 @@ export const ChatInput = memo(function ChatInput({
   onDraftConversationConfigChange,
   availableCommands,
   attachmentTabId,
+  folderPickerOverride,
   draftStorageKey,
   isActive,
   showActiveFlow,
@@ -221,6 +225,7 @@ export const ChatInput = memo(function ChatInput({
         availableCommands={availableCommands}
         commandsLoading={commandsLoading}
         attachmentTabId={attachmentTabId}
+        folderPickerOverride={folderPickerOverride}
         draftStorageKey={draftStorageKey}
         isActive={isActive}
         showActiveFlow={showActiveFlow}

@@ -80,6 +80,7 @@ import {
   ConversationContextBar,
   ConversationFolderBranchPicker,
   useConversationFolderBranchPickerVisible,
+  type ConversationFolderPickerOverride,
 } from "@/components/chat/conversation-context-bar"
 import { ComposerContextUsage } from "@/components/chat/composer-context-usage"
 import { ComposerConnectionStatus } from "@/components/chat/composer-connection-status"
@@ -90,6 +91,7 @@ import {
   InlineSessionConfigToggle,
 } from "@/components/chat/session-config-selector"
 import { ModelOptionPicker } from "@/components/chat/model-option-picker"
+import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
   SessionSelectorsPanel,
   type SessionSelectorGroup,
@@ -202,6 +204,10 @@ interface MessageInputProps {
   commandsLoading?: boolean
   promptCapabilities: PromptCapabilitiesInfo
   attachmentTabId?: string | null
+  /** Identity + switching for a composer that isn't in a tab (a canvas card).
+   *  Passed straight to the folder picker below the composer; without it that
+   *  picker falls back to the workspace's active tab. */
+  folderPickerOverride?: ConversationFolderPickerOverride
   draftStorageKey?: string | null
   isActive?: boolean
   /** Paint the flowing active-session gradient on the composer border. Set only
@@ -339,6 +345,7 @@ export function MessageInput({
   commandsLoading = false,
   promptCapabilities,
   attachmentTabId,
+  folderPickerOverride,
   draftStorageKey,
   isActive = false,
   showActiveFlow = false,
@@ -723,8 +730,10 @@ export function MessageInput({
   const hasAnySelector =
     showConfigLoading || hasConfigOptions || showModeLoading || showModeSelector
   const hasInlineSelectors = hasConfigOptions || showModeSelector
-  const hasFolderBranchPicker =
-    useConversationFolderBranchPickerVisible(attachmentTabId)
+  const hasFolderBranchPicker = useConversationFolderBranchPickerVisible(
+    attachmentTabId,
+    folderPickerOverride
+  )
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
@@ -1923,29 +1932,6 @@ export function MessageInput({
                 className
               )}
             >
-              {hasFolderBranchPicker && (
-                <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-3 text-xs text-muted-foreground">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <ConversationFolderBranchPicker tabId={attachmentTabId} />
-                  </div>
-                  <div className="flex shrink-0 items-center gap-3 pr-1">
-                    <ConversationConfigPopover
-                      conversationId={conversationId}
-                      agentType={agentType}
-                      draftConfig={draftConversationConfig}
-                      onDraftConfigChange={onDraftConversationConfigChange}
-                      connectionKey={attachmentTabId}
-                      isPrompting={isPrompting}
-                    />
-                    <ComposerContextUsage tabId={attachmentTabId ?? null} />
-                    <ComposerConnectionStatus
-                      tabId={attachmentTabId ?? null}
-                      conversationId={conversationId}
-                      draftConfig={draftConversationConfig}
-                    />
-                  </div>
-                </div>
-              )}
               {!hasFolderBranchPicker && (
                 <div className="flex shrink-0 justify-end px-4 pt-2.5 -mb-1">
                   <ConversationConfigPopover
@@ -2019,24 +2005,31 @@ export function MessageInput({
                         open={collapsedSelectorsOpen}
                         onOpenChange={setCollapsedSelectorsOpen}
                       >
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="shrink-0"
-                            title={t("agentSettings")}
-                            aria-label={t("agentSettings")}
-                          >
-                            {agentType ? (
-                              <AgentIcon
-                                agentType={agentType}
-                                className="size-3"
-                              />
-                            ) : (
-                              <Cog className="size-3" />
-                            )}
-                          </Button>
-                        </PopoverTrigger>
+                        {/* Suppressed while the panel is open — the Popover is
+                            non-modal, so the trigger keeps taking hover under
+                            it (see SelectorTooltip). */}
+                        <SelectorTooltip
+                          label={t("agentSettings")}
+                          suppressed={collapsedSelectorsOpen}
+                        >
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              className="shrink-0"
+                              aria-label={t("agentSettings")}
+                            >
+                              {agentType ? (
+                                <AgentIcon
+                                  agentType={agentType}
+                                  className="size-3"
+                                />
+                              ) : (
+                                <Cog className="size-3" />
+                              )}
+                            </Button>
+                          </PopoverTrigger>
+                        </SelectorTooltip>
                         <PopoverContent
                           ref={collapsedSelectorsGuard.contentRef}
                           side="top"
@@ -2176,6 +2169,41 @@ export function MessageInput({
             </ContextMenuSub>
           </ContextMenuContent>
         </ContextMenu>
+        {hasFolderBranchPicker && (
+          // `px-2` mirrors the action bar so this row lines up with the composer
+          // above; the folder icon then aligns with the centered "+" icon (both
+          // add the same 1px transparent border, paired with the picker buttons'
+          // `px-1.5`). The row only renders while attached below the composer, so
+          // it always takes the rounded-bottom box treatment. Pickers sit at the
+          // left edge; the context-usage circle + agent connection status
+          // right-align at the trailing edge.
+          <div className="flex items-center justify-between gap-2 rounded-b-xl px-2 pt-1 text-xs text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1">
+              <ConversationFolderBranchPicker
+                tabId={attachmentTabId}
+                override={folderPickerOverride}
+              />
+            </div>
+            {/* `pr-px` offsets the composer chrome's 1px border: the send button
+                sits INSIDE that border while this status row sits outside it, so
+                without the 1px nudge the trailing icon hangs 1px past the button.
+                With it, the connection icon's RIGHT edge is flush (0px) with the
+                send button's right edge in the action bar above — no centring
+                slot, which would inset the narrow icon and break the alignment. */}
+            <div className="flex shrink-0 items-center gap-3 pr-px">
+              <ConversationConfigPopover
+                conversationId={conversationId}
+                agentType={agentType}
+                draftConfig={draftConversationConfig}
+                onDraftConfigChange={onDraftConversationConfigChange}
+                connectionKey={attachmentTabId}
+                isPrompting={isPrompting}
+              />
+              <ComposerContextUsage tabId={attachmentTabId ?? null} />
+              <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
+            </div>
+          </div>
+        )}
       </div>
       {!attach.showNativePaperclip && (
         <ServerFileBrowserDialog

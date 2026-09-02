@@ -388,6 +388,13 @@ pub struct SessionState {
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
 
+    /// Whether `delegate_to_agent` was exposed to THIS agent at launch (the
+    /// `delegation` feature was on when its companion was injected). The sole
+    /// gate on appending the `@agent` routing frame: an agent with no such tool
+    /// would just be told to route through something it cannot call. Backend-only
+    /// and fixed for the connection's lifetime.
+    pub delegation_enabled: bool,
+
     /// Whether the `check_user_feedback` MCP tool was exposed to THIS agent at
     /// launch (the `feedback` feature was on when its companion was injected).
     /// Fixed for the connection's lifetime — tool exposure can't change after
@@ -583,6 +590,7 @@ impl SessionState {
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
+            delegation_enabled: false,
             feedback_tool_available: false,
             native_steering_available: false,
             neutral_goal_channel: false,
