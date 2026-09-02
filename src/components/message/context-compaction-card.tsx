@@ -122,7 +122,7 @@ export function ContextCompactionCard({ state, meta, count = 1 }: Props) {
         {label}
       </span>
       {!failed && !isRunning && duration ? (
-        <span className="shrink-0 text-muted-foreground/60">{duration}</span>
+        <span className="shrink-0 text-muted-foreground/60">· {duration}</span>
       ) : null}
       {count > 1 ? (
         <span

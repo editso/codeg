@@ -89,6 +89,8 @@ interface ChatInputProps {
   /** Drop the input's own horizontal padding when an ancestor already supplies
    *  the gutter (the welcome column wraps this in its own `px-4`). */
   flush?: boolean
+  /** Use a taller minimum height for the welcome composer. */
+  tall?: boolean
 }
 
 export const ChatInput = memo(function ChatInput({
@@ -137,6 +139,7 @@ export const ChatInput = memo(function ChatInput({
   injectContent,
   onInjectConsumed,
   flush = false,
+  tall = false,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
   const isConnected = status === "connected"
@@ -165,14 +168,12 @@ export const ChatInput = memo(function ChatInput({
   // or not the agent has any commands, so this can never hang on a spinner.
   const commandsLoading = isConnecting || selectorsLoading
 
-  // The composer docks at the bottom of the message list, but keeps a 20px
-  // breathing gap now that the workspace no longer has a bottom status bar.
-  // The root layout owns mobile safe-area padding, so this remains a visual
-  // gutter rather than a second safe-area inset. The welcome/draft composer
-  // (`flush`) shares the same bottom gap while supplying its own px-4 gutter.
+  // The attached folder/branch selector row sits at the composer's bottom edge,
+  // so the docked composer keeps only a tight bottom gap. The welcome/draft
+  // composer (`flush`) shares the same gap while supplying its own px-4 gutter.
   return (
     <div
-      className={cn("pt-0", flush ? "pb-5" : "px-4 pb-5")}
+      className={cn("pt-0", flush ? "pb-1" : "px-4 pb-1")}
       onContextMenu={(event) => event.stopPropagation()}
       // Touch and pen open a context menu from a LONG PRESS, which Radix arms on
       // pointerdown — and the whole conversation panel (composer included) sits
@@ -249,7 +250,7 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className="min-h-32 max-h-60"
+        className={cn(tall ? "min-h-30" : "min-h-24", "max-h-60")}
       />
     </div>
   )

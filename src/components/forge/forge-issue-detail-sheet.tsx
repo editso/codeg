@@ -1640,7 +1640,12 @@ function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
             The tab underneath stays the scroller for everything else, and the
             wheel carries on down it once a diff reaches its end — nothing here
             contains the overscroll. */}
-        <UnifiedDiffPreview diffText={patch} embedded hideViewToggle />
+        <UnifiedDiffPreview
+          diffText={patch}
+          embedded
+          perFileScroll
+          hideViewToggle
+        />
       </CollapsibleContent>
     </Collapsible>
   )

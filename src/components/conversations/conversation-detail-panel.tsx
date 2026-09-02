@@ -1452,9 +1452,7 @@ const ConversationTabView = memo(function ConversationTabView({
             )
           }
           if (mountedRef.current) {
-            setAgentConnectError(
-              toErrorMessage(e) || tWelcome("createConversationFailed")
-            )
+            setAgentConnectError(tWelcome("createConversationFailed"))
           }
         } finally {
           createConversationPendingRef.current = false
@@ -2424,6 +2422,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 injectContent={composerInject}
                 onInjectConsumed={handleComposerInjectConsumed}
                 flush
+                tall
               />
             </div>
             <div className="flex-1" />
@@ -2959,12 +2958,12 @@ export function ConversationDetailPanel() {
       touchesTop && rect.x + rect.w >= 100 - GROUP_EDGE_EPSILON
     // The group's selected tab drives its header, so every split keeps the
     // same tabs-and-title-bar pairing as the unsplit workspace.
-    const selectedTab =
+    const selTab =
       groupTabs.find((tab) => tab.id === groupSelection[groupId]) ??
       groupTabs[0] ??
       null
-    const selectedTabFolder = selectedTab
-      ? allFolders.find((item) => item.id === selectedTab.folderId)
+    const selectedTabFolder = selTab
+      ? allFolders.find((item) => item.id === selTab.folderId)
       : undefined
     // NOTE: the strip, header, and content stay PLAIN SIBLING SLOTS (no fragment
     // around any pair) — a `false` conditional is a reconciliation hole, so the
@@ -2992,7 +2991,7 @@ export function ConversationDetailPanel() {
             {touchesRight && <SplitStripCornerReserve side="right" />}
           </div>
         )}
-        {isSplit && selectedTab && (
+        {isSplit && selTab && (
           <div
             className="shrink-0"
             onPointerDownCapture={() => {
@@ -3003,13 +3002,13 @@ export function ConversationDetailPanel() {
             }}
           >
             <ConversationDetailHeader
-              tabId={selectedTab.id}
-              conversationId={selectedTab.conversationId}
-              runtimeConversationId={selectedTab.runtimeConversationId ?? null}
-              folderId={selectedTab.folderId}
+              tabId={selTab.id}
+              conversationId={selTab.conversationId}
+              runtimeConversationId={selTab.runtimeConversationId ?? null}
+              folderId={selTab.folderId}
               folderPath={selectedTabFolder?.path}
-              title={selectedTab.title}
-              status={selectedTab.status as ConversationStatus | undefined}
+              title={selTab.title}
+              status={selTab.status as ConversationStatus | undefined}
             />
           </div>
         )}

@@ -1,7 +1,18 @@
-import { type ReactElement } from "react"
+import { type ReactElement, type ReactNode } from "react"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it } from "vitest"
+
+vi.mock("@/components/ai-elements/link-safety", () => ({
+  FilePathLink: ({
+    filePath,
+    children,
+  }: {
+    filePath: string
+    children: ReactNode
+  }) => <button data-path={filePath}>{children}</button>,
+  useStreamdownLinkSafety: () => ({ enabled: false }),
+}))
 
 import enMessages from "@/i18n/messages/en.json"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
@@ -16,6 +27,19 @@ function renderWithIntl(ui: ReactElement) {
       {ui}
     </NextIntlClientProvider>
   )
+}
+
+/** Completed assistant progress has an outer reply fold and an inner activity fold. */
+function expandActivityDetails() {
+  for (let depth = 0; depth < 3; depth += 1) {
+    const collapsed = screen
+      .getAllByRole("button")
+      .filter((button) => button.getAttribute("aria-expanded") === "false")
+    if (collapsed.length === 0) return
+    for (const button of collapsed) {
+      fireEvent.click(button)
+    }
+  }
 }
 
 const COMPLETED_PARTS: AdaptedContentPart[] = [
@@ -88,15 +112,14 @@ describe("CompletedTurnContent with nothing left to show", () => {
         completed
       />
     )
+    expandActivityDetails()
 
     // The header still reports the duration — it is the only place that does
     // now — but as a static row, with no toggle that could hide the reply.
     expect(screen.getByText("Worked for 5s")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Worked for/ })).toBeNull()
     expect(screen.getByText("Wrapping up.")).toBeInTheDocument()
-    // The completion card renders the result as both its header title and its
-    // body, so match on presence rather than a unique node.
-    expect(screen.getAllByText("All done.").length).toBeGreaterThan(0)
+    expect(document.body.textContent).toContain("All done.")
   })
 
   it("does not treat a blank trailing text part as the answer", () => {
@@ -107,9 +130,10 @@ describe("CompletedTurnContent with nothing left to show", () => {
         completed
       />
     )
+    expandActivityDetails()
 
     expect(screen.queryByRole("button", { name: /Worked for/ })).toBeNull()
-    expect(screen.getAllByText("All done.").length).toBeGreaterThan(0)
+    expect(document.body.textContent).toContain("All done.")
   })
 
   it("keeps folding it away impossible even after a send folds the thread", () => {
@@ -124,6 +148,7 @@ describe("CompletedTurnContent with nothing left to show", () => {
         foldEpoch={0}
       />
     )
+    expandActivityDetails()
     view.rerender(
       <NextIntlClientProvider locale="en" messages={enMessages}>
         <CompletedTurnContent
@@ -134,8 +159,9 @@ describe("CompletedTurnContent with nothing left to show", () => {
         />
       </NextIntlClientProvider>
     )
+    expandActivityDetails()
 
-    expect(screen.getAllByText("All done.").length).toBeGreaterThan(0)
+    expect(document.body.textContent).toContain("All done.")
   })
 })
 
@@ -157,6 +183,7 @@ describe("CompletedTurnContent", () => {
     ).not.toBeInTheDocument()
 
     fireEvent.click(trigger)
+    expandActivityDetails()
 
     expect(trigger).toHaveAttribute("aria-expanded", "true")
     expect(
@@ -174,6 +201,7 @@ describe("CompletedTurnContent", () => {
       <CompletedTurnContent parts={parts} durationMs={69_000} completed />
     )
     fireEvent.click(screen.getByRole("button", { name: "Worked for 1m 9s" }))
+    expandActivityDetails()
     expect(
       screen.getByText("I found the relevant component.")
     ).toBeInTheDocument()
@@ -182,6 +210,7 @@ describe("CompletedTurnContent", () => {
     renderWithIntl(
       <CompletedTurnContent parts={parts} durationMs={69_000} completed />
     )
+    expandActivityDetails()
 
     expect(
       screen.getByRole("button", { name: "Worked for 1m 9s" })
@@ -199,6 +228,7 @@ describe("CompletedTurnContent", () => {
         completed={false}
       />
     )
+    expandActivityDetails()
 
     expect(screen.queryByText("Worked for 1m 9s")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Working..." })).toHaveAttribute(
@@ -208,9 +238,7 @@ describe("CompletedTurnContent", () => {
     expect(
       screen.getByText("I found the relevant component.")
     ).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: /Read src\/app\.tsx/ })
-    ).toBeInTheDocument()
+    expect(screen.getAllByText("src/app.tsx").length).toBeGreaterThan(0)
     expect(screen.getByText("The fix is complete.")).toBeInTheDocument()
   })
 
@@ -247,6 +275,7 @@ describe("CompletedTurnContent", () => {
         />
       </NextIntlClientProvider>
     )
+    expandActivityDetails()
 
     expect(
       screen.getByRole("button", { name: "Worked for 1m 9s" })
@@ -295,6 +324,7 @@ describe("CompletedTurnContent", () => {
       />
     )
     fireEvent.click(screen.getByRole("button", { name: "Worked for 1m 9s" }))
+    expandActivityDetails()
     expect(
       screen.getByText("I found the relevant component.")
     ).toBeInTheDocument()

@@ -32,6 +32,10 @@ vi.mock("@/components/ai-elements/code-block", () => ({
   CodeBlock: ({ code }: { code: string }) => (
     <pre data-testid="code-block">{code}</pre>
   ),
+  CodeBlockContainer: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  CodeBlockContent: ({ code }: { code: string }) => <pre>{code}</pre>,
 }))
 
 vi.mock("@/components/ai-elements/message", () => ({
@@ -44,11 +48,11 @@ import { ContentPartsRenderer } from "./content-parts-renderer"
 import enMessages from "@/i18n/messages/en.json"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 
-/** Search cards are collapsed by default; expand so the body is asserted on. */
+/** Exercise the specialized card directly; assistant turns use an activity preview. */
 function renderParts(parts: AdaptedContentPart[], expand = true) {
   const result = render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <ContentPartsRenderer parts={parts} role="assistant" />
+      <ContentPartsRenderer parts={parts} />
     </NextIntlClientProvider>
   )
   if (expand) fireEvent.click(screen.getAllByRole("button")[0])

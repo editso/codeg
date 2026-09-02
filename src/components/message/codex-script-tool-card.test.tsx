@@ -47,7 +47,7 @@ import { CODEX_SCRIPT_TOOL_NAME } from "@/lib/codex-code-mode"
 function renderParts(parts: AdaptedContentPart[], expand = true) {
   const result = render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <ContentPartsRenderer parts={parts} role="assistant" />
+      <ContentPartsRenderer parts={parts} />
     </NextIntlClientProvider>
   )
   if (expand) fireEvent.click(screen.getAllByRole("button")[0])

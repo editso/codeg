@@ -1028,6 +1028,7 @@ export function UnifiedDiffPreview({
   embedded = false,
   unbounded = false,
   fill = false,
+  perFileScroll = false,
   hideViewToggle = false,
 }: {
   diffText: string
@@ -1054,6 +1055,8 @@ export function UnifiedDiffPreview({
    * height used in message and dialog surfaces.
    */
   fill?: boolean
+  /** Keep each embedded file section as its own bounded vertical scrollport. */
+  perFileScroll?: boolean
   /**
    * Suppress the `embedded` layout's own toggle row, for a host that renders
    * `ViewModeToggle` itself somewhere better.
@@ -1108,12 +1111,16 @@ export function UnifiedDiffPreview({
   const Frame = unbounded ? UnboundedFrame : ScrollAreaFrame
   // A plain embedded preview is one continuous detail flow. Its outer viewport
   // owns vertical scrolling; individual files retain horizontal scrolling only.
-  const fileContentUnbounded = unbounded || embedded
+  const fileContentUnbounded = unbounded || (embedded && !perFileScroll)
 
   return (
     <Frame
       className={cn(
-        embedded && !unbounded && !fill && "max-h-[min(28rem,55vh)]",
+        embedded &&
+          !unbounded &&
+          !fill &&
+          !perFileScroll &&
+          "max-h-[min(28rem,55vh)]",
         className
       )}
     >

@@ -734,6 +734,7 @@ export function MessageInput({
     attachmentTabId,
     folderPickerOverride
   )
+  const folderBranchPickerAttached = hasFolderBranchPicker
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
@@ -1932,7 +1933,28 @@ export function MessageInput({
                 className
               )}
             >
-              {!hasFolderBranchPicker && (
+              {folderBranchPickerAttached ? (
+                <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-3 text-xs text-muted-foreground">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <ConversationFolderBranchPicker
+                      tabId={attachmentTabId}
+                      override={folderPickerOverride}
+                    />
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3 pr-1">
+                    <ConversationConfigPopover
+                      conversationId={conversationId}
+                      agentType={agentType}
+                      draftConfig={draftConversationConfig}
+                      onDraftConfigChange={onDraftConversationConfigChange}
+                      connectionKey={attachmentTabId}
+                      isPrompting={isPrompting}
+                    />
+                    <ComposerContextUsage tabId={attachmentTabId ?? null} />
+                    <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
+                  </div>
+                </div>
+              ) : (
                 <div className="flex shrink-0 justify-end px-4 pt-2.5 -mb-1">
                   <ConversationConfigPopover
                     conversationId={conversationId}
@@ -2169,41 +2191,6 @@ export function MessageInput({
             </ContextMenuSub>
           </ContextMenuContent>
         </ContextMenu>
-        {hasFolderBranchPicker && (
-          // `px-2` mirrors the action bar so this row lines up with the composer
-          // above; the folder icon then aligns with the centered "+" icon (both
-          // add the same 1px transparent border, paired with the picker buttons'
-          // `px-1.5`). The row only renders while attached below the composer, so
-          // it always takes the rounded-bottom box treatment. Pickers sit at the
-          // left edge; the context-usage circle + agent connection status
-          // right-align at the trailing edge.
-          <div className="flex items-center justify-between gap-2 rounded-b-xl px-2 pt-1 text-xs text-muted-foreground">
-            <div className="flex min-w-0 items-center gap-1">
-              <ConversationFolderBranchPicker
-                tabId={attachmentTabId}
-                override={folderPickerOverride}
-              />
-            </div>
-            {/* `pr-px` offsets the composer chrome's 1px border: the send button
-                sits INSIDE that border while this status row sits outside it, so
-                without the 1px nudge the trailing icon hangs 1px past the button.
-                With it, the connection icon's RIGHT edge is flush (0px) with the
-                send button's right edge in the action bar above — no centring
-                slot, which would inset the narrow icon and break the alignment. */}
-            <div className="flex shrink-0 items-center gap-3 pr-px">
-              <ConversationConfigPopover
-                conversationId={conversationId}
-                agentType={agentType}
-                draftConfig={draftConversationConfig}
-                onDraftConfigChange={onDraftConversationConfigChange}
-                connectionKey={attachmentTabId}
-                isPrompting={isPrompting}
-              />
-              <ComposerContextUsage tabId={attachmentTabId ?? null} />
-              <ComposerConnectionStatus tabId={attachmentTabId ?? null} />
-            </div>
-          </div>
-        )}
       </div>
       {!attach.showNativePaperclip && (
         <ServerFileBrowserDialog
