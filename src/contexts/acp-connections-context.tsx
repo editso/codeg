@@ -51,6 +51,8 @@ import type {
   AcpAgentStatus,
   AcpEvent,
   ActiveDelegationState,
+  AsyncTaskDelta,
+  AsyncTaskRecord,
   AvailableCommandInfo,
   ConfigStaleKind,
   ConnectionStatus,
@@ -80,6 +82,12 @@ import {
   upsertSessionFailure,
   type SessionFailureSettleScope,
 } from "@/lib/session-failures"
+import {
+  adoptUnknownAsyncTasks,
+  liveAsyncTasks,
+  mergeAsyncTasks,
+  upsertAsyncTask,
+} from "@/lib/async-tasks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   CONNECTION_IDLE_TIMEOUT_MS,
@@ -243,6 +251,11 @@ export interface ConnectionState {
    *  merge/settle contract). Retained resolved — entries double as per-id
    *  revision watermarks; the banner splits active from resolved itself. */
   sessionFailures: SessionFailureRecord[]
+  /** AIR async tasks — Claude's background shells / workflows / monitors (see
+   *  `lib/async-tasks.ts` for the merge contract). Retained after they settle,
+   *  because the adapter keeps revising a finished task; the strip filters to
+   *  the live ones itself. */
+  asyncTasks: AsyncTaskRecord[]
   error: string | null
   /**
    * Set when the agent rejected `session/load` in a way codeg cannot paper
@@ -431,6 +444,13 @@ type Action =
       type: "SESSION_FAILURE"
       contextKey: string
       record: SessionFailureRecord
+    }
+  | {
+      // One AIR async-task delta (`async_task` event). PARTIAL — merged into
+      // the task table by `lib/async-tasks.ts`; only a `spawned` delta creates.
+      type: "ASYNC_TASK"
+      contextKey: string
+      delta: AsyncTaskDelta
     }
   | {
       // Lifecycle settle for the AIR failure table (mirrors
@@ -1359,6 +1379,7 @@ function connectionsReducer(
         pendingPlanApproval: null,
         claudeApiRetry: null,
         sessionFailures: [],
+        asyncTasks: [],
         error: null,
         loadError: null,
         loadErrorCommand: null,
@@ -1417,6 +1438,7 @@ function connectionsReducer(
         pendingPlanApproval: null,
         claudeApiRetry: null,
         sessionFailures: [],
+        asyncTasks: [],
         error: null,
         loadError: null,
         loadErrorCommand: null,
@@ -1493,8 +1515,36 @@ function connectionsReducer(
         current.sessionFailures,
         action.patch.sessionFailures
       )
+      // Async tasks contribute on both branches — a client that attached
+      // mid-episode has no other way to learn about work already running — but
+      // NOT by the same rule, because the rows carry no revision. On the fresh
+      // branch the snapshot is the backend's merge of every delta up to a seq
+      // this client hasn't reached, so replacing by id is right. On the stale
+      // branch it predates deltas already applied here, and replacing would
+      // walk a task the client watched finish back to `running` with no live
+      // event left to correct it. There it may only ADD ids we don't have.
+      //
+      // Both branches are additionally gated on the snapshot describing the
+      // SESSION we are on. The rows are session-scoped and the fork transition
+      // clears them, but a snapshot fetch that started before the fork can land
+      // after it — a viewer hydrating while the owner's route consumed the fork
+      // event is the ordinary way there — and would re-add rows whose terminal
+      // frames now publish on a session id this connection has left. Nothing
+      // would ever settle them: no live event, no valid stop target, and a live
+      // row defers the idle sweep. The same identity-guard shape as the
+      // `connectionId` check above, one level down.
+      const sameSession =
+        action.patch.sessionId === null ||
+        current.sessionId === null ||
+        action.patch.sessionId === current.sessionId
+      const isStaleSnapshot = action.patch.eventSeq <= current.lastAppliedSeq
+      const mergedAsyncTasks = !sameSession
+        ? current.asyncTasks
+        : isStaleSnapshot
+          ? adoptUnknownAsyncTasks(current.asyncTasks, action.patch.asyncTasks)
+          : mergeAsyncTasks(current.asyncTasks, action.patch.asyncTasks)
 
-      if (action.patch.eventSeq <= current.lastAppliedSeq) {
+      if (isStaleSnapshot) {
         if (
           mergedSelectorsReady === current.selectorsReady &&
           mergedSupportsFork === current.supportsFork &&
@@ -1502,7 +1552,8 @@ function connectionsReducer(
           mergedConfigOptions === current.configOptions &&
           mergedAvailableCommands === current.availableCommands &&
           mergedPromptCapabilities === current.promptCapabilities &&
-          mergedSessionFailures === current.sessionFailures
+          mergedSessionFailures === current.sessionFailures &&
+          mergedAsyncTasks === current.asyncTasks
         ) {
           return state
         }
@@ -1516,6 +1567,7 @@ function connectionsReducer(
           selectorsReady: mergedSelectorsReady,
           supportsFork: mergedSupportsFork,
           sessionFailures: mergedSessionFailures,
+          asyncTasks: mergedAsyncTasks,
         })
         return next
       }
@@ -1552,6 +1604,7 @@ function connectionsReducer(
         // replay for it, so its teardown gates hold.
         backgroundOutstanding: action.patch.backgroundOutstanding,
         sessionFailures: mergedSessionFailures,
+        asyncTasks: mergedAsyncTasks,
         error: action.patch.lastError,
         lastAppliedSeq: action.patch.eventSeq,
       })
@@ -2190,9 +2243,19 @@ function connectionsReducer(
       const conn = state.get(action.contextKey)
       if (!conn) return state
       const next = new Map(state)
+      // Mirrors the backend's `SessionStarted` arm: a CHANGED session id (a
+      // fork) strands the AIR task rows, because their terminal frames are
+      // published on the id this connection has left and never route here
+      // again. The backend drops its table, and an empty snapshot table can't
+      // clear ours for us (`mergeAsyncTasks` treats empty as "nothing to say"),
+      // so without this the strip shows tasks that can never finish AND the
+      // idle sweep below defers on them forever. Guarded on the id actually
+      // changing, so a replayed announcement stays idempotent.
+      const forked = conn.sessionId !== action.sessionId
       next.set(action.contextKey, {
         ...conn,
         sessionId: action.sessionId,
+        asyncTasks: forked ? [] : conn.asyncTasks,
       })
       return next
     }
@@ -2406,6 +2469,18 @@ function connectionsReducer(
       if (merged === conn.sessionFailures) return state
       const next = new Map(state)
       next.set(action.contextKey, { ...conn, sessionFailures: merged })
+      return next
+    }
+
+    case "ASYNC_TASK": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const merged = upsertAsyncTask(conn.asyncTasks, action.delta)
+      // A delta for a task we never saw announced changes nothing — same
+      // reference, no re-render.
+      if (merged === conn.asyncTasks) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, asyncTasks: merged })
       return next
     }
 
@@ -3974,6 +4049,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           break
         }
+        case "async_task": {
+          // JetBrains AIR async-task delta (claude only) — Claude's background
+          // shells / workflows / monitors. Merged into the connection's task
+          // table; the live rows render in `AsyncTaskStrip` under the composer.
+          dispatch({
+            type: "ASYNC_TASK",
+            contextKey,
+            delta: e.delta,
+          })
+          break
+        }
         case "turn_retrying": {
           // codex-acp #289: a retryable turn error keeps the turn alive (codex
           // auto-retries). Reuse the Claude API-retry banner — codex doesn't
@@ -4257,6 +4343,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 })
               case "session_unavailable":
                 return t("backendErrors.sessionLoadUnavailable", {
+                  agent: agentLabel,
+                })
+              // Unlike its neighbours this one is temporary and self-clearing,
+              // so the message says what holds the session rather than what
+              // went wrong: the fork took the lock, closing it gives it back.
+              case "session_busy":
+                return t("backendErrors.sessionLoadBusy", {
                   agent: agentLabel,
                 })
               case "session_archived":
@@ -4790,6 +4883,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // expires the accounting and emits `outstanding: 0`, which re-arms
         // this sweep for the connection.
         if (conn.backgroundOutstanding > 0) continue
+        // The AIR channel's half of the same rule. The watcher above only sees
+        // background work that leaves a transcript trace; a workflow or monitor
+        // task announces itself here and nowhere else, so without this check a
+        // quiet interval would disconnect the connection and kill a task the
+        // strip is actively showing as running. Mirrors the backend's
+        // `has_active_background_work`, which ORs the two the same way.
+        if (liveAsyncTasks(conn.asyncTasks).length > 0) continue
         const lastActive = lastActivityRef.current.get(contextKey) ?? 0
         if (now - lastActive > CONNECTION_IDLE_TIMEOUT_MS) {
           toDisconnect.push({

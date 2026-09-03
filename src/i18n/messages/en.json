@@ -1842,6 +1842,7 @@
       "forkSession": "Fork Session",
       "forkSessionSuccess": "Session forked successfully",
       "forkSessionFailed": "Failed to fork session: {error}",
+      "forkSessionBusy": "Failed to fork session: a turn is running",
       "exportConversation": "Export Conversation",
       "exportImage": "Image",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "{agent} download failed: {message}",
           "sessionLoadResourceNotFound": "{agent} session failed to load. Reload to retry, or start a new conversation.",
           "sessionLoadUnavailable": "{agent} couldn't restore this session — it may have ended or the agent stopped. Reload to retry, or start a new conversation.",
+          "sessionLoadBusy": "This history is held open by the session forked from it. Close that session, then reload to open this one.",
           "sessionArchived": "The previous session was archived on the {agent} side. Run {command} in a terminal to restore it and reload, or start a new conversation.",
           "turnFailedRefusal": "{agent} refused to continue this turn. This often indicates a backend or gateway error — check the agent's logs.",
           "turnFailedMaxTokens": "{agent} reached the maximum token limit for this turn.",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",
+        "forkFromHere": "Fork from here",
         "copied": "Copied",
         "selectionActions": "Selection actions",
         "selectionCopy": "Copy Text",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "Entered plan mode",
-          "planLabel": "Plan",
           "reviewApproved": "Plan approved — implementing",
           "reviewKept": "Kept in plan mode",
           "reviewPending": "Awaiting plan decision",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "asyncTasks": {
+        "openOutput": "Output",
+        "stop": "Stop",
+        "tokens": "{count} tokens",
+        "stopDeclined": "That task could not be stopped — it may have already finished.",
+        "stopFailed": "Failed to stop the task: {error}"
       },
       "proposedPlan": {
         "title": "Proposed plan",

@@ -381,13 +381,18 @@ export async function acpFork(
   // the connection is already linked (a new-conversation-then-fork). See
   // `ConnectionManager::fork_session`.
   conversationId?: number | null,
-  folderId?: number | null
+  folderId?: number | null,
+  // "Fork from here": the rendered turn to fork at. Omit to fork at the tail,
+  // which is what fork-send does. A turn the agent cannot name also forks at
+  // the tail rather than failing — the backend decides, see `resolve_fork_point`.
+  forkFromTurnId?: string | null
 ): Promise<ForkResult> {
   try {
     return await getTransport().call("acp_fork", {
       connectionId,
       conversationId: conversationId ?? null,
       folderId: folderId ?? null,
+      forkFromTurnId: forkFromTurnId ?? null,
     })
   } catch (e) {
     // A fork is serialized with prompts on the backend: it returns
@@ -396,6 +401,22 @@ export async function acpFork(
     if (isTurnInProgressRejection(e)) throw new TurnBusyError()
     throw e
   }
+}
+
+/**
+ * Stop one AIR async task (`_session/async_task/stop`).
+ *
+ * Resolves to the adapter's own verdict, NOT "the request went through": it
+ * answers `false` for a task it declines to stop (unknown, already finished, or
+ * a stop already in flight). The visible result — the task's terminal state and
+ * the agent's acknowledgement — arrives on the session channel either way, so
+ * callers use this only to avoid claiming they stopped something they didn't.
+ */
+export async function acpStopAsyncTask(
+  connectionId: string,
+  taskId: string
+): Promise<boolean> {
+  return getTransport().call("acp_stop_async_task", { connectionId, taskId })
 }
 
 export async function acpRespondPermission(

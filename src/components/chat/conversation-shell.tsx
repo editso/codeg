@@ -14,12 +14,14 @@ import type {
   PromptInputBlock,
   QuestionAnswer,
   SessionConfigOptionInfo,
+  AsyncTaskRecord,
   SessionModeInfo,
   AvailableCommandInfo,
   SessionFailureRecord,
 } from "@/lib/types"
 import type { SessionFailureAction } from "@/lib/session-failures"
 import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
+import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
 import type {
   PendingPermission,
   PendingQuestion,
@@ -49,6 +51,12 @@ interface ConversationShellProps {
     failure: SessionFailureRecord
   ) => void
   onSessionFailureDismiss?: (ids: string[]) => void
+  /** AIR async tasks for this connection. The strip filters to the live ones
+   *  itself; omit/empty renders nothing. */
+  asyncTasks?: AsyncTaskRecord[]
+  /** Stops one async task. Omitted for read-only surfaces — the stop buttons
+   *  are then hidden, which is right: a viewer has no connection to ask. */
+  onStopAsyncTask?: (taskId: string) => Promise<boolean>
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question`. */
@@ -146,6 +154,8 @@ export function ConversationShell({
   sessionFailures,
   onSessionFailureAction,
   onSessionFailureDismiss,
+  asyncTasks,
+  onStopAsyncTask,
   pendingPermission,
   pendingQuestion,
   pendingAskQuestion,
@@ -272,6 +282,16 @@ export function ConversationShell({
       onKeyDownCapture={onKeyDownCapture}
     >
       {topBanner}
+
+      {/* Above the transcript, not down in the composer dock: this is the state
+          of work running RIGHT NOW, and pinning it here keeps it still while the
+          messages scroll under it — the stop button doesn't move out from under
+          the pointer. The dock below is for things that come and go with the
+          turn (retry line, last error). */}
+      {asyncTasks && asyncTasks.length > 0 && (
+        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
+      )}
+
       <div className="flex-1 min-h-0">{children}</div>
 
       <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />

@@ -286,6 +286,7 @@ impl AgentParser for ClineParser {
                         duration_ms: None,
                         model,
                         completed_at: Some(timestamp),
+                    agent_message_id: None,
                     });
                 }
                 "user" => {
@@ -306,6 +307,7 @@ impl AgentParser for ClineParser {
                             duration_ms: None,
                             model: None,
                             completed_at: Some(timestamp),
+                        agent_message_id: None,
                         });
                     }
 
@@ -321,6 +323,7 @@ impl AgentParser for ClineParser {
                             duration_ms: None,
                             model: None,
                             completed_at: Some(timestamp),
+                        agent_message_id: None,
                         });
                     }
                 }

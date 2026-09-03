@@ -295,6 +295,30 @@ export interface MessageTurn {
    * `timestamp + duration_ms` — those two fields encode unrelated spans in
    * most parsers. */
   completed_at?: string | null
+  /** The id the AGENT knows this turn's message by, when codeg can name it the
+   * same way the agent does — `id` above is positional (`turn-3`) and names
+   * nothing an agent could look up.
+   *
+   * Present only where the turn can be a fork point ("fork from here"), which
+   * today means Claude assistant turns. Its absence does NOT mean the turn
+   * cannot be forked at: codex forks by content fingerprint instead, resolved
+   * entirely in the backend — so never gate the fork affordance on this. */
+  agent_message_id?: string | null
+  /** CLIENT-ONLY, never on the wire. The id the PARSER gave this turn.
+   *
+   * A turn produced in the current session is named
+   * `live-<conversationId>-<liveMessageId>` by `buildStreamingTurnsFromLiveMessage`
+   * and keeps that name after it settles into `localTurns`. The backend has
+   * never heard of it — it resolves turns against a fresh parse, whose turns are
+   * `turn-N` — so asking the backend to act on "this turn" by its live id
+   * silently finds nothing. "Fork from here" hit exactly that: it degraded to a
+   * tail fork, and the forked session came out identical to its parent.
+   *
+   * Backfilled by the post-turn reparse (`computeTurnMetadataPatches`), which
+   * already aligns parsed turns onto local ones to fill in usage/duration.
+   * Absent on turns that came from the parser to begin with — those already ARE
+   * `turn-N` — so read it as `turn.source_turn_id ?? turn.id`. */
+  source_turn_id?: string | null
 }
 
 export interface ConversationDetail {
@@ -2623,13 +2647,27 @@ export type AcpEvent =
       type: "session_failure"
       record: SessionFailureRecord
     }
+  /**
+   * A JetBrains AIR async-task delta (claude only — see `AsyncTaskDelta`).
+   * PARTIAL by design: the reducer merges it into the connection's task table
+   * by the same rule the backend snapshot applies, and only a `spawned` delta
+   * may create a row.
+   */
+  | {
+      type: "async_task"
+      delta: AsyncTaskDelta
+    }
   | {
       type: "session_load_failed"
       session_id: string
       message: string
       /**
        * Stable backend identifier: `"resource_not_found"`,
-       * `"session_unavailable"`, or `"session_archived"`.
+       * `"session_unavailable"`, `"session_archived"`, or `"session_busy"`.
+       *
+       * The first three mean the session is gone. `"session_busy"` does not —
+       * another live session holds it (codex keeps the parent thread's writer
+       * after a fork), and it clears when that one closes.
        */
       code: string
     }
@@ -2981,6 +3019,80 @@ export interface SessionFailureRecord {
   dismissed?: boolean
 }
 
+/**
+ * Cumulative cost of one async task (mirror of Rust `AsyncTaskUsage`). All
+ * three counters are present together or the object is absent — the adapter
+ * drops a partial one.
+ */
+export interface AsyncTaskUsage {
+  total_tokens: number
+  tool_uses: number
+  duration_ms: number
+}
+
+/**
+ * One JetBrains AIR async task (mirror of Rust `AsyncTaskRecord`;
+ * claude-agent-acp 0.73+, published only because codeg advertises the
+ * `asyncTasks` AIR capability — codex-acp has no such channel).
+ *
+ * Claude's NON-AGENT background work: background shells, workflows, monitors.
+ * Sub-agents are excluded by the adapter itself. This is the MERGED row, not a
+ * wire frame — the adapter announces a task once and then revises it with
+ * partial deltas (`AsyncTaskDelta`), and the reducer applies the same merge as
+ * the backend's `SessionState::apply_event` so a client hydrating from the
+ * snapshot and one that saw every delta agree.
+ */
+export interface AsyncTaskRecord {
+  task_id: string
+  /** Adapter-authored label — the workflow name, else the description. */
+  name: string
+  /** Already friendly: `shell` | `workflow` | `monitor` | `task`, or an
+   *  unmapped future value rendered as itself. NOT the SDK's raw type. */
+  task_type: string
+  description: string
+  /** Whether the task earns its own transcript card upstream. The strip renders
+   *  either way and does not read this today; `false` marks work already drawn
+   *  as an ordinary tool call (a background `Bash` is). */
+  show_in_transcript: boolean
+  /** Whether `_session/async_task/stop` is offered for this task. */
+  can_stop: boolean
+  /** `running` | `paused` | `completed` | `failed` | `stopped`. Anything
+   *  outside the terminal three is treated as still live. */
+  state: string
+  summary?: string | null
+  last_tool_name?: string | null
+  usage?: AsyncTaskUsage | null
+  /** Absolute path to the task's output file, when the adapter recovered one. */
+  output_file_path?: string | null
+  /** The tool call this task belongs to, when it has one. */
+  tool_call_id?: string | null
+}
+
+/**
+ * One async-task delta as it arrived on the wire (mirror of Rust
+ * `AsyncTaskDelta`). `task_id` says which row, `spawned` says whether this
+ * frame may CREATE one, and every other field is an optional revision —
+ * ABSENT MEANS UNCHANGED, never "clear it".
+ */
+export interface AsyncTaskDelta {
+  task_id: string
+  /** True only for `async_task_spawned`, the only frame carrying a task's
+   *  identity. A delta naming an unknown task is dropped rather than creating a
+   *  nameless placeholder row. */
+  spawned: boolean
+  name?: string | null
+  task_type?: string | null
+  description?: string | null
+  show_in_transcript?: boolean | null
+  can_stop?: boolean | null
+  state?: string | null
+  summary?: string | null
+  last_tool_name?: string | null
+  usage?: AsyncTaskUsage | null
+  output_file_path?: string | null
+  tool_call_id?: string | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -3041,6 +3153,11 @@ export interface LiveSessionSnapshot {
    *  watermarks included, so an attaching client seeds the same monotonic
    *  merge the live path applies. Absent while empty (the common case). */
   session_failures?: SessionFailureRecord[]
+  /** AIR async tasks, merged. Terminal rows included: they carry the ids the
+   *  subsequent live deltas revise, so a client seeded without them would
+   *  re-create a settled task as a running one on its next correction. Absent
+   *  while empty (the common case). */
+  async_tasks?: AsyncTaskRecord[]
   /** Goal-control action vocabulary the goal card gates its buttons on: the
    *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
    *  "pause"), else the legacy ["pause","clear"] pair. `null` while the

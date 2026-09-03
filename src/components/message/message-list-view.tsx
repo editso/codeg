@@ -145,6 +145,14 @@ interface MessageListViewProps {
    * action isn't offered. MUST be referentially stable.
    */
   onSaveNoteSelection?: (text: string) => void
+  /**
+   * Fork the session at a rendered assistant turn ("fork from here"). Undefined
+   * hides the affordance everywhere in this view — pass it only where a fork
+   * can actually run (live connection, agent supports `session/fork`, no turn
+   * in flight). Embeds that are not the owning conversation surface leave it
+   * unset.
+   */
+  onForkFromTurn?: (turnId: string) => void
 }
 
 export interface ResolvedMessageGroup {
@@ -800,6 +808,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   roundOpen = true,
   onRoundOpenChange,
   foldEpoch = 0,
+  onForkFromTurn,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -811,6 +820,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   roundOpen?: boolean
   onRoundOpenChange?: (open: boolean) => void
   foldEpoch?: number
+  onForkFromTurn?: (turnId: string) => void
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
@@ -873,6 +883,24 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           isResponseComplete={isResponseComplete}
           copyText={extractTextFromParts(group.parts)}
           completedAt={group.completed_at}
+          onForkFromHere={
+            // The group's LAST turn: forking is "up to and including this
+            // reply", and a merged group ends where the reply does. Gated on a
+            // settled turn — forking mid-stream would name a message the agent
+            // is still writing.
+            //
+            // `source_turn_id` first: a turn produced in THIS session is named
+            // `live-…`, which the backend cannot resolve against its own parse
+            // — sending it forked at the tail and produced a copy of the parent.
+            // The post-turn reparse backfills the parser's name; `id` is the
+            // right answer only for turns that came from the parser already.
+            onForkFromTurn && isResponseComplete && sourceTurns?.length
+              ? () => {
+                  const turn = sourceTurns[sourceTurns.length - 1]
+                  onForkFromTurn(turn.source_turn_id ?? turn.id)
+                }
+              : undefined
+          }
         />
       )}
     </div>
@@ -939,6 +967,7 @@ export function MessageListView({
   onQuoteSelection,
   onAskSelection,
   onSaveNoteSelection,
+  onForkFromTurn,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1236,6 +1265,7 @@ export function MessageListView({
                 roundOpen={fold.roundOpen}
                 onRoundOpenChange={handleRoundOpenChange}
                 foldEpoch={fold.epoch}
+                onForkFromTurn={onForkFromTurn}
               />
             </div>
           )
@@ -1260,6 +1290,7 @@ export function MessageListView({
       fold.roundOpen,
       fold.epoch,
       handleRoundOpenChange,
+      onForkFromTurn,
     ]
   )
 

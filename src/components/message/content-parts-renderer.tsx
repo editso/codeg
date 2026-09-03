@@ -85,7 +85,7 @@ import { BackgroundTaskCard } from "./background-task-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
 import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
 import { PlanCard, PlanEntriesList } from "./plan-card"
-import { PlanModeCard } from "./plan-mode-card"
+import { PlanMarkdownCard, PlanModeCard } from "./plan-mode-card"
 import { PlainTextWithBadges } from "./plain-text-with-badges"
 import {
   AssistantActivityGroup,
@@ -105,7 +105,6 @@ import {
   TerminalIcon,
   SearchIcon,
   GlobeIcon,
-  ClipboardListIcon,
   ListTodoIcon,
   SparklesIcon,
   CircleCheckIcon,
@@ -3126,29 +3125,23 @@ const PlanPart = memo(function PlanPart({
 
 // Codex Plan-mode `<proposed_plan>` block: free-form markdown plan document
 // rendered inside card chrome (distinct from the TodoWrite checklist PlanCard).
+//
+// Renders through the SAME <PlanMarkdownCard> the live `plan_review` tool call
+// uses. The two carriers of a codex plan — this lifted block on reload, that
+// tool call live — previously had their own chrome, so the reloaded plan lost
+// the prose styling and the clamp/expand footer the live one had.
 const ProposedPlanPart = memo(function ProposedPlanPart({
   part,
 }: {
   part: Extract<AdaptedContentPart, { type: "proposed-plan" }>
 }) {
   const t = useTranslations("Folder.chat.proposedPlan")
-  const markdown = part.markdown.trim()
   return (
-    <div className="overflow-hidden rounded-lg border bg-card/50 ws-msg-card">
-      <div className="flex items-center gap-2 border-b px-3 py-2">
-        <ClipboardListIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {t("title")}
-        </span>
-      </div>
-      <div className="px-3 py-2 text-sm">
-        {markdown.length > 0 ? (
-          <MessageResponse>{markdown}</MessageResponse>
-        ) : (
-          <span className="text-muted-foreground">{t("planning")}</span>
-        )}
-      </div>
-    </div>
+    <PlanMarkdownCard
+      markdown={part.markdown.trim()}
+      label={t("title")}
+      emptyLabel={t("planning")}
+    />
   )
 })
 

@@ -24,7 +24,10 @@ import { toast } from "sonner"
 import { toPng } from "html-to-image"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTabActions } from "@/contexts/tab-context"
-import { useAcpActions } from "@/contexts/acp-connections-context"
+import {
+  useAcpActions,
+  useConnectionStore,
+} from "@/contexts/acp-connections-context"
 import {
   canvasCreateNode,
   canvasDeleteNode,
@@ -42,12 +45,15 @@ import {
   loadCanvasDrafts,
   loadCanvasExpandedCards,
   loadCanvasExpandedRegions,
+  loadCanvasSurfaceKeys,
   loadCanvasViewport,
   saveCanvasDrafts,
   saveCanvasExpandedCards,
   saveCanvasExpandedRegions,
+  saveCanvasSurfaceKeys,
   saveCanvasViewport,
   type CanvasDraftCard,
+  type CanvasSurfaceKey,
 } from "@/lib/canvas-view-storage"
 import { resolveDefaultAgent } from "@/lib/resolve-default-agent"
 import {
@@ -85,6 +91,7 @@ import {
   BOARD_DOT_GAP,
   DETAIL_CARD_HEIGHT,
   DETAIL_CARD_WIDTH,
+  DRAG_HANDLE_SELECTOR,
   REGION_PADDING,
   columnsForRegionWidth,
   computeAlignment,
@@ -251,10 +258,12 @@ function CanvasFlow() {
   }, [])
   // Pin db id → the connection key its surface must keep using. Only ever
   // written when a draft materializes (see `materializeDraft`); every other
-  // card uses `pinSurfaceKey`.
-  const [surfaceKeys, setSurfaceKeys] = useState<ReadonlyMap<number, string>>(
-    () => new Map()
-  )
+  // card uses `pinSurfaceKey`. Restored like the expansions are: recomputing it
+  // after a route switch would point the card at `canvas-node-<id>` while the
+  // agent its first message started is still running under the draft's key.
+  const [surfaceKeys, setSurfaceKeys] = useState<
+    ReadonlyMap<number, CanvasSurfaceKey>
+  >(loadCanvasSurfaceKeys)
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     () => new Set()
   )
@@ -365,9 +374,12 @@ function CanvasFlow() {
   // Drop ids whose nodes are gone — deleted here, deleted from another window,
   // or belonging to a different backend entirely. Runs on every change to the
   // board rather than once at hydration: a node deleted later in the session
-  // would otherwise keep its id in storage, and ids are REUSED (SQLite hands
-  // the next row the same rowid after the last one is deleted), so a stale
-  // "expanded" id can eventually reopen a card the user never expanded.
+  // would otherwise keep its id in storage, and this storage is not
+  // backend-scoped, so two databases behind one origin hand out the same low
+  // ids to entirely different nodes — a stale "expanded" id can then reopen a
+  // card the user never expanded. (Within ONE database that cannot happen:
+  // `canvas_node.id` is AUTOINCREMENT, so a deleted id is never handed out
+  // again. An earlier version of this comment said otherwise.)
   // Safe to run continuously because `hydrated` only goes true once the node
   // set has actually loaded, and `reset()` clears it again — the empty map
   // during a refetch is never mistaken for an empty board.
@@ -381,6 +393,25 @@ function CanvasFlow() {
       const next = new Set([...prev].filter((id) => dbNodes.has(id)))
       if (next.size === prev.size) return prev
       saveCanvasExpandedRegions([...next])
+      return next
+    })
+    // Connection keys are checked against the card they were written for, not
+    // just its id — same cross-database reason as above, except a mismatch here
+    // would hand a card a stranger's ACP connection key rather than merely open
+    // it. `created_at` is the half that survives an id sequence. Runs before any
+    // card can mount: `hydrated` is what puts nodes on the board at all.
+    setSurfaceKeys((prev) => {
+      const next = new Map(
+        [...prev].filter(([id, entry]) => {
+          const node = dbNodes.get(id)
+          return (
+            node?.conversation_id === entry.conversationId &&
+            node.created_at === entry.createdAt
+          )
+        })
+      )
+      if (next.size === prev.size) return prev
+      saveCanvasSurfaceKeys(next)
       return next
     })
   }, [hydrated, dbNodes, setDetailCardsPersisted])
@@ -441,6 +472,16 @@ function CanvasFlow() {
         width: size?.width ?? draft.width,
         height: size?.height ?? draft.height,
         selected: selectedIds.has(rfId),
+        // Same title-bar-only handle the expanded card uses, and for a reason
+        // that is invisible until someone types into the card: a node with NO
+        // `dragHandle` passes d3-drag's filter on every mousedown anywhere in
+        // it, and d3 answers by installing a capture-phase `selectstart`
+        // preventDefault on the window for the life of the gesture. The browser
+        // asks permission to move a caret through that same event, so a click
+        // inside the composer focused the textarea but could not put the cursor
+        // where it was clicked, and no text in the card could be selected. The
+        // handle is what keeps the filter from matching in the body at all.
+        dragHandle: DRAG_HANDLE_SELECTOR,
         data: {
           draftId: draft.id,
           target: draft.target,
@@ -658,10 +699,69 @@ function CanvasFlow() {
     )
   }, [])
 
+  // Reads `surfaceKeys` alone, never `dbNodes`: a card's connection key has to
+  // be stable for its whole life, and re-deriving it from a map that changes on
+  // every board mutation would re-key a live connection. Entries are validated
+  // against their node in the prune above, which runs on hydration — i.e.
+  // before there is a board for a card to mount on.
   const contextKeyForPin = useCallback(
-    (pinDbId: number) => surfaceKeys.get(pinDbId) ?? pinSurfaceKey(pinDbId),
+    (pinDbId: number) =>
+      surfaceKeys.get(pinDbId)?.key ?? pinSurfaceKey(pinDbId),
     [surfaceKeys]
   )
+
+  /**
+   * Cards whose agent is ALREADY running come back live, not dormant.
+   *
+   * Dormancy exists so that arriving on a board with six expanded cards does
+   * not start six agent CLIs — it is about not SPAWNING agents, not about
+   * refusing to hold one that is already there. Leaving such a card asleep
+   * costs twice: it reads as disconnected (or streams a reply into a card whose
+   * composer nobody has armed) while the user watches, and because
+   * `registerLiveSurfaceKeys` only claims live surfaces, nothing claims that
+   * connection — so a minute after the turn settles the idle sweep reclaims it
+   * and kills the agent out from under the card.
+   *
+   * Adopting one starts nothing: `connect()` returns on its fast path for an
+   * entry with the same agent and working directory, so this only makes the
+   * card own what it is already showing.
+   *
+   * Runs once per canvas mount, off the connection store's synchronous
+   * snapshot. Both inputs are read from storage before first paint, so nothing
+   * has to load first — including a key inherited from a draft, which the prune
+   * above has not validated yet at this point. That window is harmless in the
+   * only direction that matters: an entry belonging to some other database
+   * names a key this client never opened a connection under, so it matches
+   * nothing and adopts nothing.
+   *
+   * Drafts are deliberately not scanned. A draft that was merely connected is
+   * disconnected by its own unmount (`shouldDisconnectOnUnmount` keeps only
+   * BUSY connections), so by the time the board comes back there is nothing
+   * left to adopt; a draft that was mid-first-send is a card that should have
+   * become a pinned one already.
+   */
+  const connectionStore = useConnectionStore()
+  const adoptedLiveRef = useRef(false)
+  useEffect(() => {
+    if (adoptedLiveRef.current) return
+    adoptedLiveRef.current = true
+    const alive = [...detailCards]
+      .map((pinDbId) => contextKeyForPin(pinDbId))
+      .filter((key) => {
+        const status = connectionStore.getConnection(key)?.status
+        return (
+          status === "connected" ||
+          status === "prompting" ||
+          status === "connecting"
+        )
+      })
+    if (alive.length === 0) return
+    setLiveSurfaces((prev) => {
+      const next = new Set(prev)
+      for (const key of alive) next.add(key)
+      return next
+    })
+  }, [connectionStore, contextKeyForPin, detailCards])
 
   /** The side panel's conversation, re-resolved rather than snapshotted so a
    *  rename or a status change reaches its header — and so the panel empties
@@ -889,12 +989,33 @@ function CanvasFlow() {
       })
       if (!created) return
       const key = draftSurfaceKey(draftId)
-      setSurfaceKeys((prev) => new Map(prev).set(created.id, key))
+      // Inheriting the key is also what carries the RUNTIME session across: the
+      // message the user just sent, and the reply already answering it, are
+      // filed under the id that key derives, and the arriving card adopts them
+      // in a layout effect. That has to happen on the far side of this swap —
+      // ReactFlow applies a changed `nodes` prop from a passive effect, so the
+      // draft card is still mounted (and paintable) after this returns. See
+      // `CanvasConversationSurface`'s hand-off effect.
+      setSurfaceKeys((prev) => {
+        const next = new Map(prev).set(created.id, {
+          conversationId,
+          createdAt: created.created_at,
+          key,
+        })
+        saveCanvasSurfaceKeys(next)
+        return next
+      })
       activateSurface(key)
       // Open the persisted card in detail mode BEFORE removing the draft so the
       // surface the user is watching swaps in place rather than blinking away.
       setDetailCardsPersisted((prev) => new Set(prev).add(created.id))
-      dismissDraft(draftId)
+      // Deliberately not `dismissDraft`: its guard refuses to drop a draft whose
+      // first send is in flight, which is exactly the state this one is in. That
+      // guard exists for the three DISCARD paths, where dropping the card would
+      // strand a conversation nobody can see. This is the hand-off — the row is
+      // created, the card that shows it is on screen, and leaving the draft up
+      // would put a second surface on the same connection key.
+      setDraftsPersisted((prev) => prev.filter((d) => d.id !== draftId))
     },
     [
       drafts,
@@ -903,7 +1024,7 @@ function CanvasFlow() {
       createNode,
       activateSurface,
       setDetailCardsPersisted,
-      dismissDraft,
+      setDraftsPersisted,
     ]
   )
 

@@ -7,6 +7,7 @@ import {
   CheckIcon,
   Coins,
   CopyIcon,
+  GitFork,
   ListTodo,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -32,6 +33,10 @@ interface TurnStatsProps {
   copyText?: string
   /** ISO timestamp marking when the assistant reply finished. */
   completedAt?: string | null
+  /** Fork the session at THIS reply. Undefined hides the affordance — the
+   * session has no live connection, the agent has no `session/fork`, or a turn
+   * is in flight. */
+  onForkFromHere?: () => void
 }
 
 const iconButtonClass =
@@ -46,6 +51,7 @@ export function TurnStats({
   isResponseComplete = true,
   copyText = "",
   completedAt,
+  onForkFromHere,
 }: TurnStatsProps) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.messageList")
@@ -128,7 +134,8 @@ export function TurnStats({
   if (!isResponseComplete) return null
   // Deliberately not gated on `hasDuration`: nothing in this row renders a
   // duration any more, so a turn carrying only one would open an empty row.
-  if (!hasCopy && !hasUsage && !hasCompletedAt && !hasJump) return null
+  if (!hasCopy && !hasUsage && !hasCompletedAt && !hasJump && !onForkFromHere)
+    return null
 
   return (
     <div className="mt-2 -ms-[0.3125rem] flex pointer-events-none items-center justify-start gap-1 text-xs text-muted-foreground opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/assistant-turn:pointer-events-auto group-hover/assistant-turn:opacity-100 group-focus-within/assistant-turn:pointer-events-auto group-focus-within/assistant-turn:opacity-100">
@@ -169,6 +176,21 @@ export function TurnStats({
             <TooltipContent side="top">
               {tTasks("createFromMessage")}
             </TooltipContent>
+          </Tooltip>
+        )}
+        {onForkFromHere && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onForkFromHere}
+                className={iconButtonClass}
+                aria-label={t("forkFromHere")}
+              >
+                <GitFork aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">{t("forkFromHere")}</TooltipContent>
           </Tooltip>
         )}
         {displayModels.length > 0 && (

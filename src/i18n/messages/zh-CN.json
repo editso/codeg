@@ -1842,6 +1842,7 @@
       "forkSession": "分叉会话",
       "forkSessionSuccess": "会话分叉成功",
       "forkSessionFailed": "会话分叉失败：{error}",
+      "forkSessionBusy": "分叉失败：当前有回合正在进行",
       "exportConversation": "导出会话",
       "exportImage": "图片",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "{agent} 下载失败：{message}",
           "sessionLoadResourceNotFound": "{agent} 会话加载失败，可重新加载重试，或开始新会话。",
           "sessionLoadUnavailable": "{agent} 无法恢复此会话，它可能已结束或 agent 已停止。可重新加载重试，或开始新会话。",
+          "sessionLoadBusy": "这份历史正被从它分叉出来的会话占用。关掉那个会话，再重新加载即可打开。",
           "sessionArchived": "原会话已在 {agent} 侧归档，可在终端运行 {command} 找回历史后重载，或直接开始新会话。",
           "turnFailedRefusal": "{agent} 拒绝继续本轮回复，通常意味着后端或网关出错，请检查代理日志。",
           "turnFailedMaxTokens": "{agent} 已达到本轮回复的最大 Token 限制。",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
+        "forkFromHere": "从此处分叉",
         "copied": "已复制",
         "selectionActions": "选中内容操作",
         "selectionCopy": "复制文本",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "进入计划模式",
-          "planLabel": "计划",
           "reviewApproved": "已批准执行计划",
           "reviewKept": "保持在计划模式",
           "reviewPending": "等待计划决定",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "后台任务已完成",
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
+      },
+      "asyncTasks": {
+        "openOutput": "输出",
+        "stop": "停止",
+        "tokens": "{count} tokens",
+        "stopDeclined": "无法停止该任务，它可能已经结束。",
+        "stopFailed": "停止任务失败：{error}"
       },
       "proposedPlan": {
         "title": "计划提案",

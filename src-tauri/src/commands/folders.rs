@@ -7141,6 +7141,126 @@ mod tests {
         );
     }
 
+    /// A delegated child's `working_dir` is whatever the agent picked — a PR
+    /// checkout under /tmp, a throwaway worktree. It needs a folder row (the
+    /// conversation's `folder_id`, and the cwd a resume reads back), but it must
+    /// not become a project in the user's sidebar. Both cwd lookups ignore
+    /// `is_open`, so a closed row serves the delegation fully.
+    #[tokio::test]
+    async fn ensure_folder_for_path_creates_a_closed_row() {
+        let db = fresh_in_memory_db().await;
+        let entry = folder_service::ensure_folder_for_path(&db.conn, "/tmp/codeg-pr666")
+            .await
+            .expect("ensure folder");
+
+        let open = list_open_folder_details_core(&db).await.expect("open list");
+        assert!(
+            !open.iter().any(|f| f.id == entry.id),
+            "an agent's scratch cwd must not land in the workspace folder list"
+        );
+
+        // ...but it is still fully resolvable, which is all the delegation needs.
+        assert!(
+            folder_service::get_folder_by_id(&db.conn, entry.id)
+                .await
+                .expect("by id")
+                .is_some(),
+            "resume resolves the child's cwd through get_folder_by_id"
+        );
+        let all = list_all_folder_details_core(&db).await.expect("all list");
+        assert!(all.iter().any(|f| f.id == entry.id));
+    }
+
+    /// The overwhelmingly common case: the child runs in the same folder as its
+    /// parent. That folder is already open and must stay exactly as it was —
+    /// including `last_opened_at`, which orders the folder history and has no
+    /// business being bumped by a background delegation.
+    #[tokio::test]
+    async fn ensure_folder_for_path_leaves_an_open_folder_untouched() {
+        let db = fresh_in_memory_db().await;
+        let opened = open_folder_core(&db, "/tmp/codeg-ensure-open".into())
+            .await
+            .expect("open folder");
+
+        let entry = folder_service::ensure_folder_for_path(&db.conn, "/tmp/codeg-ensure-open")
+            .await
+            .expect("ensure folder");
+
+        assert_eq!(entry.id, opened.id, "the existing row is reused");
+        assert_eq!(
+            entry.last_opened_at, opened.last_opened_at,
+            "a background delegation must not reorder the folder history"
+        );
+        let open = list_open_folder_details_core(&db).await.expect("open list");
+        assert!(
+            open.iter().any(|f| f.id == opened.id),
+            "an already-open folder stays open"
+        );
+    }
+
+    /// The regression this replaced `add_folder` for: that helper flips
+    /// `is_open = true` on an existing row, so delegating into a folder the user
+    /// had closed put it back in their sidebar behind their back.
+    #[tokio::test]
+    async fn ensure_folder_for_path_does_not_reopen_a_closed_folder() {
+        let db = fresh_in_memory_db().await;
+        let opened = open_folder_core(&db, "/tmp/codeg-ensure-closed".into())
+            .await
+            .expect("open folder");
+        folder_service::set_folder_open(&db.conn, opened.id, false)
+            .await
+            .expect("close folder");
+
+        folder_service::ensure_folder_for_path(&db.conn, "/tmp/codeg-ensure-closed")
+            .await
+            .expect("ensure folder");
+
+        let open = list_open_folder_details_core(&db).await.expect("open list");
+        assert!(
+            !open.iter().any(|f| f.id == opened.id),
+            "a folder the user closed stays closed"
+        );
+    }
+
+    /// `deleted_at` is the one field that must be cleared: both cwd lookups
+    /// filter on it, so leaving a soft-deleted row deleted would break the very
+    /// resume the row is created for. Reviving it must still not open it.
+    #[tokio::test]
+    async fn ensure_folder_for_path_revives_a_soft_deleted_row_but_leaves_it_closed() {
+        let db = fresh_in_memory_db().await;
+        let opened = open_folder_core(&db, "/tmp/codeg-ensure-deleted".into())
+            .await
+            .expect("open folder");
+        remove_folder_from_history_core(&db, "/tmp/codeg-ensure-deleted".into())
+            .await
+            .expect("soft delete");
+        assert!(
+            folder_service::get_folder_by_id(&db.conn, opened.id)
+                .await
+                .expect("by id")
+                .is_none(),
+            "precondition: a soft-deleted row is invisible to cwd resolution"
+        );
+
+        let entry = folder_service::ensure_folder_for_path(&db.conn, "/tmp/codeg-ensure-deleted")
+            .await
+            .expect("ensure folder");
+
+        assert_eq!(entry.id, opened.id, "the same row is revived, not a new one");
+        assert!(
+            folder_service::get_folder_by_id(&db.conn, opened.id)
+                .await
+                .expect("by id")
+                .is_some(),
+            "cwd resolution works again"
+        );
+        let open = list_open_folder_details_core(&db).await.expect("open list");
+        assert!(
+            !open.iter().any(|f| f.id == opened.id),
+            "reviving the row must not put it back in the sidebar"
+        );
+    }
+
     #[tokio::test]
     async fn open_worktree_folder_core_records_parent_as_root() {
         let db = fresh_in_memory_db().await;

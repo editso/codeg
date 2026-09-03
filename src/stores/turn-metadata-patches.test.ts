@@ -63,6 +63,7 @@ describe("computeTurnMetadataPatches", () => {
         usage: usage(50),
         model: undefined,
         completed_at: undefined,
+        source_turn_id: "new",
       },
     ])
   })
@@ -97,6 +98,8 @@ describe("computeTurnMetadataPatches", () => {
         model: "gpt-x",
         // Completion time is the matched (last) sub-turn's, not aggregated.
         completed_at: "2026-01-01T00:05:00Z",
+        // Likewise the fork anchor: the LAST sub-turn, not the group's first.
+        source_turn_id: "s2",
       },
     ])
   })
@@ -126,6 +129,7 @@ describe("computeTurnMetadataPatches", () => {
         usage: usage(10),
         model: "m",
         completed_at: undefined,
+        source_turn_id: "n1",
       },
     ])
   })
@@ -173,6 +177,7 @@ describe("computeTurnMetadataPatches", () => {
         usage: usage(11),
         model: undefined,
         completed_at: undefined,
+        source_turn_id: "a1",
       },
       {
         index: 3,
@@ -180,6 +185,7 @@ describe("computeTurnMetadataPatches", () => {
         usage: usage(22),
         model: undefined,
         completed_at: undefined,
+        source_turn_id: "a2",
       },
     ])
   })
@@ -208,6 +214,33 @@ describe("computeTurnMetadataPatches", () => {
         usage: usage(11),
         model: undefined,
         completed_at: undefined,
+        source_turn_id: "a1",
+      },
+    ])
+  })
+
+  it("names a turn the parser recorded with no stats of its own", () => {
+    // The reported "fork from here" bug. A turn produced in this session is
+    // named `live-<conv>-<msg>`, which the backend cannot resolve against its
+    // own parse — so forking from it silently forked at the TAIL and the new
+    // session came out identical to its parent. The parser's name has to reach
+    // the local turn, and it has to reach it even when the parsed turn carries
+    // no usage/duration at all (a plain codex reply does not), or the guard
+    // that skips empty patches would drop the one field that matters.
+    const patches = computeTurnMetadataPatches({
+      localAssistantIndices: [1],
+      parsedAssistantTurns: [asst({ id: "turn-3" })],
+      persistedAssistantCount: 0,
+    })
+
+    expect(patches).toEqual([
+      {
+        index: 1,
+        duration_ms: undefined,
+        usage: undefined,
+        model: undefined,
+        completed_at: undefined,
+        source_turn_id: "turn-3",
       },
     ])
   })

@@ -1842,6 +1842,7 @@
       "forkSession": "セッションをフォーク",
       "forkSessionSuccess": "セッションのフォークに成功しました",
       "forkSessionFailed": "セッションのフォークに失敗しました：{error}",
+      "forkSessionBusy": "分岐に失敗しました: ターンの実行中です",
       "exportConversation": "会話をエクスポート",
       "exportImage": "画像",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "{agent} のダウンロードに失敗しました: {message}",
           "sessionLoadResourceNotFound": "{agent} セッションの読み込みに失敗しました。再読み込みして再試行するか、新しい会話を開始してください。",
           "sessionLoadUnavailable": "{agent} はこのセッションを復元できませんでした。セッションが終了したか、エージェントが停止した可能性があります。再読み込みして再試行するか、新しい会話を開始してください。",
+          "sessionLoadBusy": "この履歴は、そこから分岐したセッションが開いたままにしています。そのセッションを閉じてから再読み込みしてください。",
           "sessionArchived": "以前のセッションは {agent} 側でアーカイブされています。ターミナルで {command} を実行して復元してから再読み込みするか、新しい会話を開始してください。",
           "turnFailedRefusal": "{agent} がこのターンの続行を拒否しました。バックエンドまたはゲートウェイのエラーが原因の可能性があります。エージェントのログを確認してください。",
           "turnFailedMaxTokens": "{agent} がこのターンの最大トークン数に達しました。",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",
+        "forkFromHere": "ここから分岐",
         "copied": "コピー済み",
         "selectionActions": "選択範囲の操作",
         "selectionCopy": "テキストをコピー",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "計画モードを開始",
-          "planLabel": "計画",
           "reviewApproved": "計画を承認 — 実行します",
           "reviewKept": "プランモードを維持",
           "reviewPending": "計画の判断待ち",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "asyncTasks": {
+        "openOutput": "出力",
+        "stop": "停止",
+        "tokens": "{count} トークン",
+        "stopDeclined": "このタスクは停止できませんでした。すでに終了している可能性があります。",
+        "stopFailed": "タスクの停止に失敗しました: {error}"
       },
       "proposedPlan": {
         "title": "提案された計画",

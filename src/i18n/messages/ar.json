@@ -1842,6 +1842,7 @@
       "forkSession": "تفريع الجلسة",
       "forkSessionSuccess": "تم تفريع الجلسة بنجاح",
       "forkSessionFailed": "فشل في تفريع الجلسة: {error}",
+      "forkSessionBusy": "فشل التفريع: هناك دور قيد التنفيذ",
       "exportConversation": "تصدير المحادثة",
       "exportImage": "صورة",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "فشل تنزيل {agent}: {message}",
           "sessionLoadResourceNotFound": "فشل تحميل جلسة {agent}. أعد التحميل لإعادة المحاولة، أو ابدأ محادثة جديدة.",
           "sessionLoadUnavailable": "تعذّر على {agent} استعادة هذه الجلسة، فقد تكون انتهت أو توقّف الوكيل. أعد التحميل لإعادة المحاولة، أو ابدأ محادثة جديدة.",
+          "sessionLoadBusy": "هذا السجل مشغول بالجلسة المتفرّعة عنه. أغلق تلك الجلسة ثم أعد التحميل لفتحه.",
           "sessionArchived": "تمت أرشفة الجلسة السابقة من جهة {agent}. شغّل {command} في الطرفية لاستعادتها وإعادة تحميلها، أو ابدأ محادثة جديدة.",
           "turnFailedRefusal": "رفض {agent} متابعة هذه الجولة. يدل ذلك غالبًا على خطأ في الخلفية أو البوابة. يرجى مراجعة سجلات الوكيل.",
           "turnFailedMaxTokens": "بلغ {agent} الحد الأقصى للرموز المسموح بها في هذه الجولة.",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "لا توجد رسائل في هذه المحادثة.",
         "systemMessage": "رسالة النظام",
         "copyMessage": "نسخ",
+        "forkFromHere": "تفريع من هنا",
         "copied": "تم النسخ",
         "selectionActions": "إجراءات التحديد",
         "selectionCopy": "نسخ النص",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "تم بدء وضع التخطيط",
-          "planLabel": "الخطة",
           "reviewApproved": "تمت الموافقة على الخطة — جارٍ التنفيذ",
           "reviewKept": "الاستمرار في وضع الخطة",
           "reviewPending": "في انتظار قرار الخطة",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "اكتملت مهمة الخلفية",
         "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
         "cardResultPending": "لم تصل النتيجة بعد"
+      },
+      "asyncTasks": {
+        "openOutput": "المخرجات",
+        "stop": "إيقاف",
+        "tokens": "{count} رمز",
+        "stopDeclined": "تعذّر إيقاف هذه المهمة، ربما تكون قد انتهت بالفعل.",
+        "stopFailed": "فشل إيقاف المهمة: {error}"
       },
       "proposedPlan": {
         "title": "الخطة المقترحة",

@@ -538,6 +538,7 @@ function ActivityDetailRow({
   renderItem: ActivityItemRenderer
 }) {
   const t = useTranslations("Folder.chat.contentParts")
+  const tPlan = useTranslations("Folder.chat.proposedPlan")
   const active = isStreaming(item)
   const failed = hasError(item)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -552,7 +553,7 @@ function ActivityDetailRow({
     monospace,
   } = detailPresentation(item)
   const displaySubject =
-    subject ?? (item.type === "plan" ? t("planMode.planLabel") : null)
+    subject ?? (item.type === "plan" ? tPlan("title") : null)
 
   const iconClass = failed
     ? "text-destructive/85"

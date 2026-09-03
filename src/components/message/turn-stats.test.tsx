@@ -1,5 +1,6 @@
 import { type ReactNode } from "react"
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
 
@@ -50,5 +51,32 @@ describe("TurnStats jump-to-previous-user gating", () => {
       />
     )
     expect(screen.queryByLabelText(jumpLabel)).not.toBeInTheDocument()
+  })
+})
+
+const forkLabel = enMessages.Folder.chat.messageList.forkFromHere
+
+describe("TurnStats fork-from-here gating", () => {
+  it("hides the fork button when the surface passes no handler", () => {
+    // The affordance is the ONLY signal that forking is possible here, so it
+    // must not render on a disconnected session, an agent without
+    // `session/fork`, or a non-owning embed — all of which pass undefined.
+    renderStats(<TurnStats copyText="hello" />)
+    expect(screen.queryByLabelText(forkLabel)).not.toBeInTheDocument()
+  })
+
+  it("forks from this turn when clicked", async () => {
+    const onForkFromHere = vi.fn()
+    renderStats(<TurnStats copyText="hello" onForkFromHere={onForkFromHere} />)
+    await userEvent.click(screen.getByLabelText(forkLabel))
+    expect(onForkFromHere).toHaveBeenCalledTimes(1)
+  })
+
+  it("renders for a turn that has nothing else to show", () => {
+    // The row early-returns when it would be empty; forkability alone has to
+    // keep it open, or a turn with no usage/duration/copy text would silently
+    // lose its fork point.
+    renderStats(<TurnStats copyText="" onForkFromHere={vi.fn()} />)
+    expect(screen.getByLabelText(forkLabel)).toBeInTheDocument()
   })
 })

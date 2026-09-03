@@ -1842,6 +1842,7 @@
       "forkSession": "Dupliquer la session",
       "forkSessionSuccess": "Session dupliquée avec succès",
       "forkSessionFailed": "Échec de la duplication de la session : {error}",
+      "forkSessionBusy": "Échec de la bifurcation : un tour est en cours",
       "exportConversation": "Exporter la conversation",
       "exportImage": "Image",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "Échec du téléchargement de {agent} : {message}",
           "sessionLoadResourceNotFound": "Échec du chargement de la session de {agent}. Rechargez pour réessayer ou démarrez une nouvelle conversation.",
           "sessionLoadUnavailable": "{agent} n'a pas pu restaurer cette session ; elle a peut-être pris fin ou l'agent s'est arrêté. Rechargez pour réessayer ou démarrez une nouvelle conversation.",
+          "sessionLoadBusy": "Cet historique est occupé par la session qui en a été dérivée. Fermez cette session, puis rechargez pour l'ouvrir.",
           "sessionArchived": "La session précédente a été archivée côté {agent}. Exécutez {command} dans un terminal pour la restaurer et la recharger, ou démarrez une nouvelle conversation.",
           "turnFailedRefusal": "{agent} a refusé de poursuivre ce tour. Cela indique souvent une erreur de backend ou de passerelle. Vérifiez les journaux de l'agent.",
           "turnFailedMaxTokens": "{agent} a atteint la limite maximale de jetons pour ce tour.",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "Aucun message dans cette conversation.",
         "systemMessage": "Message système",
         "copyMessage": "Copier",
+        "forkFromHere": "Bifurquer d'ici",
         "copied": "Copié",
         "selectionActions": "Actions de sélection",
         "selectionCopy": "Copier le texte",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "Mode planification activé",
-          "planLabel": "Plan",
           "reviewApproved": "Plan approuvé — mise en œuvre",
           "reviewKept": "Reste en mode plan",
           "reviewPending": "En attente de la décision sur le plan",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "Tâche en arrière-plan terminée",
         "cardFinishedWithStatus": "Tâche en arrière-plan terminée ({status})",
         "cardResultPending": "Résultat pas encore reçu"
+      },
+      "asyncTasks": {
+        "openOutput": "Sortie",
+        "stop": "Arrêter",
+        "tokens": "{count} jetons",
+        "stopDeclined": "Impossible d'arrêter cette tâche : elle est peut-être déjà terminée.",
+        "stopFailed": "Échec de l'arrêt de la tâche : {error}"
       },
       "proposedPlan": {
         "title": "Plan proposé",

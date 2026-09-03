@@ -44,7 +44,8 @@ use crate::acp::terminal_runtime::{
     TerminalRuntime, TerminalRuntimeError, TerminalShellRuntimeConfig,
 };
 use crate::acp::types::{
-    AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokModelSpec,
+    AcpEvent, AsyncTaskDelta, AsyncTaskUsage, AvailableCommandInfo, ConnectionInfo,
+    ConnectionStatus, GrokModelSpec,
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
     SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
@@ -983,6 +984,10 @@ pub enum ConnectionCommand {
         option_id: String,
     },
     Fork {
+        /// Fork at a chosen message instead of the tail. `None` keeps the
+        /// tail-fork the fork-send composer has always done; see
+        /// [`crate::acp::fork::ForkPoint`] for how each agent resolves it.
+        fork_point: Option<crate::acp::fork::ForkPoint>,
         reply:
             tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     },
@@ -997,6 +1002,22 @@ pub enum ConnectionCommand {
     Steer {
         text: String,
         reply: tokio::sync::oneshot::Sender<Result<SteerOutcome, AcpError>>,
+    },
+    /// Stop one AIR async task (`_session/async_task/stop`; claude-agent-acp
+    /// 0.73+). Handled in BOTH loops on purpose: background work is normally
+    /// launched by — and outlives — a turn, so the user is as likely to reach
+    /// for the stop button mid-turn as between turns.
+    ///
+    /// The reply is the adapter's own `stopped` flag, not "did the request
+    /// succeed": it answers `false` for a task it will not stop (unknown,
+    /// already terminal, or a stop already in flight). The visible result
+    /// arrives on the normal channel either way — the adapter follows a
+    /// successful stop with an `async_task_state_update` and a transcript line
+    /// — so this is only what the caller needs to avoid claiming it stopped
+    /// something it didn't.
+    StopAsyncTask {
+        task_id: String,
+        reply: tokio::sync::oneshot::Sender<Result<bool, AcpError>>,
     },
     Disconnect,
 }
@@ -3605,6 +3626,37 @@ fn build_steer_params(session_id: &str, text: &str) -> serde_json::Value {
     })
 }
 
+/// Send `_session/async_task/stop` (the AIR async-task control) to stop one
+/// background task. Untyped for the same reason as `_session/steering`: an
+/// extension method the schema has no typed request for.
+///
+/// Returns the adapter's `stopped` flag. A missing/non-boolean field reads as
+/// `false` rather than raising: the adapter answers `{stopped:false}` for a task
+/// it declines to stop, so "no clear yes" and "no" call for the same handling,
+/// and a transport-level failure is already an `Err` on the path above.
+async fn send_stop_async_task_request(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    task_id: &str,
+) -> Result<bool, AcpError> {
+    let params = serde_json::json!({
+        "sessionId": session_id.0.as_ref(),
+        "asyncTaskId": task_id,
+    });
+    let untyped_req = UntypedMessage::new("_session/async_task/stop", params).map_err(|e| {
+        AcpError::protocol(format!("Failed to build async task stop request: {e}"))
+    })?;
+    let raw = cx
+        .send_request_to(Agent, untyped_req)
+        .block_task()
+        .await
+        .map_err(|e| AcpError::protocol(format!("Async task stop request failed: {e}")))?;
+    Ok(raw
+        .get("stopped")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false))
+}
+
 /// Parse a `_session/steering` response's top-level `outcome`. Strict on
 /// unknowns: a missing or unrecognized outcome is a protocol error, NOT a
 /// silent success — the caller must know whether the content was consumed
@@ -4144,9 +4196,25 @@ fn build_client_capabilities(
     if agent_type == AgentType::ClaudeCode {
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
     }
-    // The capabilities array is deliberately "sessionFailure" ONLY.
-    // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added a second AIR
-    // capability, "agentFileChangeReport": advertise it and every prompt may
+    // claude-agent-acp 0.73.0 added "asyncTasks", and it is advertised — to
+    // claude ONLY, because codex-acp 1.8.0 does not implement the channel
+    // (its bundle contains no `asyncTasks` string at all). It publishes the
+    // lifecycle of Claude's NON-AGENT background work (background shells,
+    // workflows, monitors) as `async_task_spawned` / `_progress` /
+    // `_state_update`, all on the parent session id. Unlike the two capabilities
+    // below, this one adds something codeg cannot get anywhere else: the
+    // transcript watcher (`background_watch`) can see that a task was launched
+    // but explicitly CANNOT tell a still-running task from one whose CLI died,
+    // it never sees workflow/monitor tasks at all (they produce no tool call),
+    // and there is no way to stop a task from outside. This channel carries a
+    // real terminal edge, a liveness boundary, an output file path, and the
+    // `_session/async_task/stop` control. Sub-agent tasks stay out of it by the
+    // adapter's own filter (`taskType: "local_agent"` is marked ignored), so
+    // advertising this does not disturb the sub-agent surfaces.
+    //
+    // The remaining two AIR capabilities are deliberately still out.
+    // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added
+    // "agentFileChangeReport": advertise it and every prompt may
     // carry `_meta.jetbrains.air.agentFileChangeReportRequest = {version: 1,
     // requestId}`, after which the agent runs an EXTRA model round-trip at the
     // end of the turn (claude: a Stop hook plus a hidden continuation calling
@@ -4165,25 +4233,49 @@ fn build_client_capabilities(
     // release depends on it, and both adapters no-op without the
     // advertisement, so staying out costs us nothing.
     //
-    // codex-acp 1.7.0 added a third, "nativeSubagentSessions" (the draft ACP
-    // subagent RFD; the canonical gate is a `clientCapabilities.subagents: {}`
-    // field, with this AIR key as the fallback for SDKs that strip it). It must
-    // stay out for a harder reason than cost: `agent-client-protocol-schema`
-    // 0.11.7 cannot RECEIVE the result. Its `SessionUpdate` is an
-    // internally-tagged enum with no catch-all arm, so the `subagent_spawned` /
-    // `subagent_state_update` notifications would fail to deserialize — and
-    // since the adapter switches child messages, thoughts, tools and
-    // permissions onto a child session id announced only in that first
-    // notification, opting in would make subagent work vanish from the timeline
-    // rather than render better. Without the advertisement the lifecycle stays
-    // the legacy `subAgentActivity` tool call codeg already renders, whose
-    // shape is unchanged from 1.4.0. Revisit when the schema crate ships both
-    // the capability field and the update variants.
+    // codex-acp 1.7.0 and claude-agent-acp 0.73.0 have a third,
+    // "nativeSubagentSessions" (the draft ACP subagent RFD; the canonical gate
+    // is a `clientCapabilities.subagents: {}` field, with this AIR key as the
+    // fallback for SDKs that strip it). It stays out — and the reason is no
+    // longer "the schema crate can't deserialize it". `air_async_task_delta`
+    // proves a raw pre-dispatch reader gets around that for any variant. The
+    // reason is that advertising DELETES the frame codeg renders subagents
+    // from, and replaces it with strictly less:
+    //
+    // * The adapter suppresses the `Agent`/`Task` tool call outright once the
+    //   capability is on — `NativeSubagentRuntime.route()` returns null for it,
+    //   commented "Native Agent/Task control calls are intentionally not
+    //   transcript tools". codex does the same to its `subAgentActivity` item.
+    // * That tool call is codeg's whole anchor. `conversation-runtime-store`
+    //   registers its id as an "agent" capsule, nests the child's tool calls
+    //   under it by `meta.claudeCode.parentToolUseId`, and attaches the child's
+    //   prose to it as `agent_transcript`.
+    // * `subagent_spawned` cannot replace it: it carries `subagentSessionId`,
+    //   `name`, `task` and an empty `capabilities` — and NO `parentToolUseId`.
+    //   The child's own updates keep theirs, but it names the tool call that
+    //   was just suppressed, so every one of them would arrive as an orphan.
+    // * The child's output is not new information either. `route()` rewrites
+    //   only `sessionId`; the `_meta.claudeCode.parentToolUseId` codeg already
+    //   routes on rides through untouched. So opting in would move the same
+    //   content onto a session id codeg would then have to map back — to a
+    //   capsule it no longer receives.
+    //
+    // Net: the advertisement trades a precise rendering for a poorer one plus a
+    // connection-level session router, against a spec that is still an
+    // UNMERGED draft (agent-client-protocol#1992) whose adapter file calls
+    // itself "Temporary typed surface … replaced by SDK exports when the draft
+    // ships". Revisit when the draft lands and the announcement carries enough
+    // to rebuild the capsule — a parent tool-use id, or the child tool calls
+    // arriving with one codeg has seen.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
+        let mut capabilities = vec!["sessionFailure"];
+        if agent_type == AgentType::ClaudeCode {
+            capabilities.push("asyncTasks");
+        }
         meta.insert(
             "jetbrains".to_string(),
             serde_json::json!({
-                "air": { "version": 1, "capabilities": ["sessionFailure"] }
+                "air": { "version": 1, "capabilities": capabilities }
             }),
         );
     }
@@ -5782,6 +5874,15 @@ async fn run_connection(
                                 let h = emitter_clone.clone();
                                 let st = Arc::clone(&state);
                                 let dispatch = fix_usage_update_nulls(dispatch);
+                                // Historical replay: a task announced in a past
+                                // session is not running now, and its terminal
+                                // edge may never have been recorded. Drop rather
+                                // than seed the live strip with zombie rows —
+                                // but drop HERE, so it isn't counted as an
+                                // update codeg failed to read.
+                                if air_async_task_delta(&dispatch).is_some() {
+                                    continue;
+                                }
                                 let _ = MatchDispatch::new(dispatch)
                                     .if_notification(async |notif: SessionNotification| {
                                         if recording {
@@ -8068,6 +8169,19 @@ fn classify_session_load_failure(
     if message.contains("is archived") {
         return Some("session_archived");
     }
+    // codex holds a per-thread writer lock, and `session/fork` releases only the
+    // CHILD's (`threadUnsubscribe({threadId: response.thread.id})` in codex-acp
+    // 1.8.0) — the parent stays open in the forking process. Opening the sibling
+    // row codeg creates to keep the pre-fork history therefore lands here with
+    // "thread <id> already has an active writer".
+    //
+    // Nothing is lost and nothing is broken: the session is busy, not gone. That
+    // is why it must never fall through to `session/new` — doing so rebinds that
+    // row to a fresh empty session and destroys the only pointer to the history
+    // it exists to preserve. Closing the forked session frees the lock.
+    if message.contains("already has an active writer") {
+        return Some("session_busy");
+    }
     // Upstream signals for an unrecoverable session (claude-agent-acp 0.58.1):
     //  - "process exited"    → "Claude Code process exited with code 1",
     //                          "The Claude Agent process exited unexpectedly…"
@@ -8095,7 +8209,15 @@ fn classify_session_load_failure(
 /// `classified` is [`classify_session_load_failure`]'s verdict; `None` (an
 /// unexpected failure) is never recovered here — it keeps the existing
 /// emit-then-fall-back-to-`session/new` behaviour.
+///
+/// `session_busy` is excluded outright, for ANY agent. Every other verdict means
+/// the session is gone, so opening a fresh one and linking the history forward
+/// loses nothing; a busy session is still there, and starting over would replace
+/// a live history with an empty session for a lock that clears on its own.
 fn recovers_load_failure_locally(agent_type: AgentType, classified: Option<&'static str>) -> bool {
+    if classified == Some("session_busy") {
+        return false;
+    }
     classified.is_some() && transcript_dir_for(agent_type).is_some()
 }
 
@@ -8593,6 +8715,12 @@ async fn run_conversation_loop<'a>(
                             let st = Arc::clone(state);
                             let cwd_opt = Some(cwd);
                             let dispatch = fix_usage_update_nulls(dispatch);
+                            // Background work outlives the turn that started it,
+                            // so these frames arrive on the IDLE loop as often
+                            // as inside one.
+                            if let Some(delta) = air_async_task_delta(&dispatch) {
+                                emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
+                            } else {
                             let _ = MatchDispatch::new(dispatch)
                                 .if_notification(
                                     async |notif: SessionNotification| {
@@ -8616,6 +8744,7 @@ async fn run_conversation_loop<'a>(
                                     Ok(())
                                 })
                                 .await;
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -8868,7 +8997,27 @@ async fn run_conversation_loop<'a>(
                                         )
                                         .await;
                                     }
-                                    if let Err(e) = MatchDispatch::new(dispatch)
+                                    // Consumed before the typed pipeline (see
+                                    // `air_async_task_delta`). Only a SPAWN
+                                    // counts as this turn's output: a turn whose
+                                    // only visible result is "I launched a
+                                    // background job" is not an empty turn, but
+                                    // a progress/state tick from a task an
+                                    // EARLIER turn started is not this turn's
+                                    // work — background frames arrive inside
+                                    // later turns as a matter of course, and
+                                    // letting them set the flag would silence
+                                    // the empty-turn diagnosis for a prompt the
+                                    // agent really did answer with nothing.
+                                    if let Some(delta) = air_async_task_delta(&dispatch) {
+                                        probe.saw_agent_output |= delta.spawned;
+                                        emit_with_state(
+                                            &st,
+                                            &h,
+                                            AcpEvent::AsyncTask { delta },
+                                        )
+                                        .await;
+                                    } else if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
                                                 // Body lives in a named `-> ()`
@@ -9280,6 +9429,20 @@ async fn run_conversation_loop<'a>(
                                     }
                                     let _ = reply.send(outcome);
                                 }
+                                Some(ConnectionCommand::StopAsyncTask {
+                                    task_id,
+                                    reply,
+                                }) => {
+                                    // Mid-turn is the COMMON case: a background
+                                    // task is usually launched by the turn that
+                                    // is still running. Awaited inline like
+                                    // Steer above — sacp pumps I/O on its own
+                                    // task, so this defers other queued
+                                    // commands, not the turn's updates.
+                                    let _ = reply.send(
+                                        send_stop_async_task_request(&cx, &sid, &task_id).await,
+                                    );
+                                }
                                 Some(ConnectionCommand::Cancel) => {
                                     // Send CancelNotification to agent to stop the current turn
                                     let _ = cx.send_notification_to(
@@ -9539,6 +9702,14 @@ async fn run_conversation_loop<'a>(
                 // same reroute the frontend already has for a turn-end race).
                 let _ = reply.send(Err(AcpError::NoActiveTurn));
             }
+            Some(ConnectionCommand::StopAsyncTask { task_id, reply }) => {
+                // Unlike Steer, this is NOT turn-scoped: background work
+                // outlives the turn that launched it, and stopping it between
+                // turns is exactly what the button is for.
+                let cx = session.connection();
+                let sid = session.session_id().clone();
+                let _ = reply.send(send_stop_async_task_request(&cx, &sid, &task_id).await);
+            }
             Some(ConnectionCommand::Cancel) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
@@ -9572,7 +9743,7 @@ async fn run_conversation_loop<'a>(
                     inj.broker.cancel_by_parent_turn(conn_id).await;
                 }
             }
-            Some(ConnectionCommand::Fork { reply }) => {
+            Some(ConnectionCommand::Fork { fork_point, reply }) => {
                 if !supports_fork {
                     let _ = reply.send(Err(AcpError::protocol(
                         "This agent does not support session/fork".to_string(),
@@ -9582,10 +9753,13 @@ async fn run_conversation_loop<'a>(
                 let cx = session.connection();
                 let sid = session.session_id().clone();
                 tracing::info!(
-                    "[ACP] Sending session/fork for session_id={} cwd={}",
-                    sid.0, cwd
+                    "[ACP] Sending session/fork for session_id={} cwd={} fork_point={:?}",
+                    sid.0,
+                    cwd,
+                    fork_point.as_ref().map(|p| &p.message_id)
                 );
-                let result = crate::acp::fork::fork_session(&cx, &sid, cwd).await;
+                let result =
+                    crate::acp::fork::fork_session(&cx, &sid, cwd, fork_point.as_ref()).await;
                 match result {
                     Ok((fork_response, fork_models_raw)) => {
                         tracing::info!(
@@ -10783,8 +10957,17 @@ fn is_codex_plan_review(
 /// `_meta.permission = {version: 1, title, description?}`. The title is now one
 /// of four fixed strings and the reason lives only in `description`, so a card
 /// built from the tool call alone would read "Edit files" where it used to
-/// explain WHY the edit needs approval. claude-agent-acp does not send this
-/// block; nothing changes for it.
+/// explain WHY the edit needs approval.
+///
+/// claude-agent-acp 0.73.0 made the same move, which is why this must stay
+/// UNGATED. There it is not merely load-bearing but the ONLY source of a
+/// heading: its rebuilt `permissions/` layer emits exactly one `_meta` in the
+/// whole subtree — this request-level block, whose `description` is
+/// `Reason: <decisionReason>` — and the permission tool call it pairs with is
+/// built from `toolInfoFromToolUse`, which returns `{title, kind, content}` and
+/// no `_meta.claudeCode` at all. So the dialog's preferred
+/// `_meta.claudeCode.title` is absent on 0.73.0 cards and falls through to what
+/// this hoists.
 ///
 /// Hoisting rather than adding an event field is deliberate: the tool call is
 /// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
@@ -10792,7 +10975,8 @@ fn is_codex_plan_review(
 /// reason survives a reconnect and a snapshot restore for free. `_meta` is
 /// namespaced by producer, and `permission` is unclaimed at tool-call level —
 /// codex's permission tool calls carry no `_meta` at all, and claude's carries
-/// only `claudeCode`. An existing `_meta.permission` is therefore never
+/// only `claudeCode` (nothing at all since 0.73.0). An existing
+/// `_meta.permission` is therefore never
 /// overwritten: the insert is skipped if the key is already present.
 fn hoist_request_permission_meta(
     tool_call: &mut serde_json::Value,
@@ -12162,6 +12346,82 @@ fn fix_usage_update_nulls(mut dispatch: Dispatch) -> Dispatch {
         }
     }
     dispatch
+}
+
+/// Read one AIR async-task frame out of a raw `session/update` dispatch.
+///
+/// This runs BEFORE `MatchDispatch` on purpose, and consuming the frame here is
+/// not an optimization — it is the only way to see it at all.
+/// `MatchDispatch::if_notification` matches on the METHOD first and then hard-
+/// errors when the params don't parse, so it never reaches `.otherwise()`; and
+/// `agent-client-protocol-schema` 0.11.7's `SessionUpdate` is an
+/// internally-tagged enum with no catch-all arm, so these three variants cannot
+/// deserialize. Left alone they would land on the dropped-update path, which
+/// also feeds the empty-turn diagnosis — a turn that only ran background work
+/// would be reported as an agent that said nothing. Same raw-rewrite seam as
+/// [`fix_usage_update_nulls`].
+///
+/// Deliberately NOT gated on `agent_type`. Only claude-agent-acp is offered the
+/// `asyncTasks` capability today (see `build_client_capabilities`), so nothing
+/// else should send these — but if something does, reading the frame is
+/// strictly better than dropping it, and both adapters implement the same AIR
+/// vocabulary.
+fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    // Method-checked as well as shape-checked. These frames only ever ride on
+    // `session/update`, and claiming a dispatch before the typed pipeline is
+    // destructive — nothing downstream gets a second look at it — so a future
+    // extension method that happens to nest an `update.sessionUpdate` must not
+    // be swallowed here. (Session scoping is already settled upstream: this
+    // dispatch came off an `ActiveSession` read, which only yields frames whose
+    // session id matches.)
+    if msg.method() != "session/update" {
+        return None;
+    }
+    let update = msg.params.get("update")?;
+    let spawned = match update.get("sessionUpdate").and_then(|v| v.as_str())? {
+        "async_task_spawned" => true,
+        "async_task_progress" | "async_task_state_update" => false,
+        _ => return None,
+    };
+    let field = |key: &str| air_task_str(update.get(key));
+    let task_id = field("asyncTaskId")?;
+    Some(AsyncTaskDelta {
+        task_id,
+        spawned,
+        name: field("name"),
+        task_type: field("taskType"),
+        description: field("description"),
+        show_in_transcript: update.get("showInTranscript").and_then(|v| v.as_bool()),
+        can_stop: update.get("canStop").and_then(|v| v.as_bool()),
+        state: field("state"),
+        summary: field("summary"),
+        last_tool_name: field("lastToolName"),
+        usage: air_task_usage(update.get("usage")),
+        output_file_path: field("outputFilePath"),
+        tool_call_id: field("toolCallId"),
+    })
+}
+
+/// A trimmed non-blank string field, or `None`. Blank is treated as absent so a
+/// whitespace-only summary can't blank out a good one during the merge.
+fn air_task_str(value: Option<&serde_json::Value>) -> Option<String> {
+    let s = value?.as_str()?.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// All-or-nothing, matching the adapter: it drops a `usage` object that is
+/// missing any of the three counters rather than publishing a partial one.
+fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
+    let usage = value?;
+    let n = |key: &str| usage.get(key).and_then(serde_json::Value::as_u64);
+    Some(AsyncTaskUsage {
+        total_tokens: n("totalTokens")?,
+        tool_uses: n("toolUses")?,
+        duration_ms: n("durationMs")?,
+    })
 }
 
 /// Convert a SessionUpdate into AcpEvent(s) and emit to frontend.
@@ -13968,20 +14228,31 @@ mod tests {
             assert!(capabilities
                 .iter()
                 .any(|v| v.as_str() == Some("sessionFailure")));
-            // And nothing else. Adding a capability here is not free — it is
-            // what turns the corresponding behavior on, and neither of the two
-            // that exist is wanted: "agentFileChangeReport"
+            // And exactly this much. Adding a capability here is not free — it
+            // is what turns the corresponding behavior on.
+            //
+            // "asyncTasks" (claude-agent-acp 0.73.0) IS wanted, and only claude
+            // has it: codex-acp 1.8.0 contains no async-task code at all, so
+            // advertising it there would be a promise about a channel that
+            // cannot answer.
+            //
+            // The other two stay out. "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
             // the `workspace_state` watcher already sees, and
-            // "nativeSubagentSessions" (codex-acp 1.7.0) would move subagent
-            // output onto child session ids carried by `SessionUpdate` variants
-            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all.
-            // See the reasoning at the advertisement site before relaxing this.
+            // "nativeSubagentSessions" would make both adapters SUPPRESS the
+            // `Agent`/`Task` tool call that codeg builds its whole subagent
+            // rendering around, replacing it with an announcement that carries
+            // no parent tool-use id to rebuild it from. See the reasoning at
+            // the advertisement site before relaxing this.
+            let expected: Vec<serde_json::Value> = if agent == AgentType::ClaudeCode {
+                vec!["sessionFailure".into(), "asyncTasks".into()]
+            } else {
+                vec!["sessionFailure".into()]
+            };
             assert_eq!(
-                capabilities,
-                &vec![serde_json::Value::String("sessionFailure".to_string())],
-                "{agent:?} must advertise ONLY sessionFailure"
+                capabilities, &expected,
+                "{agent:?} advertises an unexpected AIR capability set"
             );
         }
         // Claude keeps its subagent-transcript flag alongside.
@@ -14472,6 +14743,35 @@ mod tests {
             custom,
             Some("session_archived")
         ));
+    }
+
+    /// After a codex fork, the sibling row codeg creates to keep the pre-fork
+    /// history points at the PARENT thread — whose writer the forking process
+    /// still holds, because `session/fork` only unsubscribes the child. Opening
+    /// it must stop with a banner, never fall through to `session/new`: that
+    /// rebinds the row to a fresh empty session and destroys the only pointer to
+    /// the history the row exists for. The lock clears when the fork is closed.
+    #[test]
+    fn classify_load_failure_names_a_session_another_client_holds() {
+        let busy = "Internal error: {\n  \"details\": \"thread \
+             01a0626c-c601-78f1-a13d-2b26dd168501 already has an active \
+             writer\"\n}";
+        assert_eq!(
+            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, busy),
+            Some("session_busy"),
+        );
+
+        assert!(!recovers_load_failure_locally(
+            AgentType::Codex,
+            Some("session_busy")
+        ));
+        // Unlike every other verdict, this one is refused for a custom agent
+        // too: the others mean the session is GONE, so opening a fresh one and
+        // linking the transcript forward loses nothing. A busy session is still
+        // there, and starting over would trade a live history for an empty
+        // session to work around a lock that clears on its own.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(!recovers_load_failure_locally(custom, Some("session_busy")));
     }
 
     #[test]
@@ -16377,6 +16677,125 @@ mod tests {
             &notif("auto_compact_completed"),
             AgentType::Codex
         ));
+    }
+
+    /// Helper mirroring what claude-agent-acp puts on the wire: a plain
+    /// `session/update` notification carrying one AIR async-task frame.
+    fn async_task_notif(update: serde_json::Value) -> Dispatch {
+        Dispatch::Notification(
+            UntypedMessage::new(
+                "session/update",
+                serde_json::json!({ "sessionId": "s", "update": update }),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The spawn frame is the only one carrying the task's identity, so every
+    /// field of it has to survive the raw read — the merge downstream can only
+    /// revise what this captured.
+    #[test]
+    fn async_task_spawn_frame_is_read_whole() {
+        let delta = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_spawned",
+            "asyncTaskId": "t1",
+            "name": "pnpm test",
+            "taskType": "shell",
+            "description": "pnpm test --watch",
+            "showInTranscript": false,
+            "canStop": true,
+            "outputFilePath": "/tmp/tasks/t1.output",
+            "toolCallId": "tool-9",
+        })))
+        .expect("spawn frame");
+        assert!(delta.spawned);
+        assert_eq!(delta.task_id, "t1");
+        assert_eq!(delta.name.as_deref(), Some("pnpm test"));
+        assert_eq!(delta.task_type.as_deref(), Some("shell"));
+        assert_eq!(delta.description.as_deref(), Some("pnpm test --watch"));
+        assert_eq!(delta.show_in_transcript, Some(false));
+        assert_eq!(delta.can_stop, Some(true));
+        assert_eq!(
+            delta.output_file_path.as_deref(),
+            Some("/tmp/tasks/t1.output")
+        );
+        assert_eq!(delta.tool_call_id.as_deref(), Some("tool-9"));
+    }
+
+    /// Progress and state frames revise an announced task. They must NOT read as
+    /// creates — `spawned` is what lets `apply_event` refuse to invent a row for
+    /// an announcement codeg failed to read.
+    #[test]
+    fn async_task_progress_and_state_frames_are_not_creates() {
+        let progress = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_progress",
+            "asyncTaskId": "t1",
+            "lastToolName": "Bash",
+            "usage": { "totalTokens": 1200, "toolUses": 3, "durationMs": 4500 },
+        })))
+        .expect("progress frame");
+        assert!(!progress.spawned);
+        assert_eq!(progress.last_tool_name.as_deref(), Some("Bash"));
+        assert_eq!(
+            progress.usage,
+            Some(AsyncTaskUsage {
+                total_tokens: 1200,
+                tool_uses: 3,
+                duration_ms: 4500,
+            })
+        );
+        // Absent fields stay absent — the merge must not blank a stored value.
+        assert!(progress.name.is_none());
+        assert!(progress.state.is_none());
+
+        let state = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_state_update",
+            "asyncTaskId": "t1",
+            "state": "completed",
+            "summary": "3 files changed",
+        })))
+        .expect("state frame");
+        assert!(!state.spawned);
+        assert_eq!(state.state.as_deref(), Some("completed"));
+        assert_eq!(state.summary.as_deref(), Some("3 files changed"));
+    }
+
+    /// The interceptor sits in front of EVERY dispatch, so a false positive
+    /// would silently swallow ordinary session updates.
+    #[test]
+    fn async_task_reader_claims_only_its_own_three_variants() {
+        for other in ["agent_message_chunk", "tool_call", "usage_update", "plan"] {
+            assert!(
+                air_async_task_delta(&async_task_notif(serde_json::json!({
+                    "sessionUpdate": other,
+                    "asyncTaskId": "t1",
+                })))
+                .is_none(),
+                "{other} must reach the typed pipeline"
+            );
+        }
+        // A frame with no usable id identifies no row, so there is nothing to
+        // merge it into — leave it to the normal drop accounting.
+        assert!(air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_spawned",
+            "asyncTaskId": "   ",
+            "name": "orphan",
+        })))
+        .is_none());
+    }
+
+    /// The adapter drops a `usage` object missing any of its three counters
+    /// rather than publishing a partial one; a half-read usage would render as
+    /// a task that used 0 tokens.
+    #[test]
+    fn async_task_usage_is_all_or_nothing() {
+        let delta = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_progress",
+            "asyncTaskId": "t1",
+            "usage": { "totalTokens": 10, "toolUses": 1 },
+        })))
+        .expect("progress frame");
+        assert!(delta.usage.is_none());
     }
 
     /// The `session/load` replay drains a PAST session, so anything that would

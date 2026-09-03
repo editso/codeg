@@ -82,6 +82,7 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
+  acpStopAsyncTask,
   createChatConversation,
   createChatDir,
   createConversation,
@@ -370,6 +371,7 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [isActive]
   )
+  const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -1582,6 +1584,92 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
+  // "Fork from here": fork at a rendered assistant turn instead of at the tail,
+  // and DON'T send anything. Unlike fork-send there is no draft to protect, so a
+  // failure is just reported — the session is untouched, and the same click can
+  // be retried or aimed at a different turn.
+  //
+  // Which turns the agent can actually name is the backend's call
+  // (`resolve_fork_point`): a turn it cannot name forks at the tail rather than
+  // failing, so this never has to reason about per-agent identity.
+  const handleForkFromTurn = useCallback(
+    async (turnId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId || connStatus !== "connected") return
+      try {
+        const { forkedSessionId } = await acpFork(
+          connectionId,
+          dbConvIdRef.current,
+          folderId,
+          turnId
+        )
+        sessionIdRef.current = forkedSessionId
+        setExternalId(effectiveConversationId, forkedSessionId)
+        // Same two-row reshuffle as fork-send: the current row now points at
+        // S2 and a sibling preserves S1.
+        refreshConversations()
+        // Unlike fork-send, this row's HISTORY just changed: the whole point is
+        // that S2 ends at the chosen turn. The turns rendered right now came
+        // from S1 — the persisted detail plus every turn this session streamed
+        // — so leaving them would show the fork with the parent's full history
+        // until the tab is closed and reopened. The default (no `preserveLive`)
+        // drops the live buffers and re-reads the row, which now resolves to
+        // S2. Nothing is in flight to protect: the backend refuses a fork while
+        // a turn is running.
+        refetchDetail(effectiveConversationId)
+      } catch (err) {
+        // A turn in flight is transient here, not a failure to report as one —
+        // there is no draft to re-queue, so say so and let the user retry.
+        toast.error(
+          err instanceof TurnBusyError
+            ? t("forkSessionBusy")
+            : t("forkSessionFailed", {
+                error:
+                  err instanceof Error
+                    ? err.message
+                    : typeof err === "object" && err !== null
+                      ? JSON.stringify(err)
+                      : String(err),
+              })
+        )
+      }
+    },
+    [
+      conn.connectionId,
+      connStatus,
+      effectiveConversationId,
+      folderId,
+      refetchDetail,
+      refreshConversations,
+      setExternalId,
+      t,
+    ]
+  )
+
+  /** Stop one AIR async task. Returns the adapter's verdict so the strip can
+   *  release its button; `false` (the adapter declined) is reported, because
+   *  nothing else would tell the user their click did nothing — a successful
+   *  stop announces itself by the row disappearing. */
+  const handleStopAsyncTask = useCallback(
+    async (taskId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId) return false
+      try {
+        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        if (!stopped) toast.warning(tAsyncTasks("stopDeclined"))
+        return stopped
+      } catch (err) {
+        toast.error(
+          tAsyncTasks("stopFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        )
+        return false
+      }
+    },
+    [conn.connectionId, tAsyncTasks]
+  )
+
   const handleOpenAgentsSettings = useCallback(() => {
     openSettingsWindow("agents", { agentType: selectedAgent }).catch((err) => {
       console.error(
@@ -2192,6 +2280,17 @@ const ConversationTabView = memo(function ConversationTabView({
         // rather than a usable composer here — a transcript whose composer is
         // blocked (session/load failure) can still spawn the question elsewhere.
         onAskSelection={canAskSelection ? handleAskSelection : undefined}
+        // Same three preconditions as fork-send, minus the queue guard: this
+        // fork carries no draft, so a non-empty queue is not at risk of being
+        // jumped. A turn in flight is still rejected — by the backend, which is
+        // the only place that can see it without racing.
+        onForkFromTurn={
+          connStatus === "connected" &&
+          hasPersistedConversation &&
+          conn.supportsFork
+            ? handleForkFromTurn
+            : undefined
+        }
       />
     </GoalControlProvider>
   )
@@ -2248,6 +2347,25 @@ const ConversationTabView = memo(function ConversationTabView({
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}
       agentName={getAgentLabel(selectedAgent)}
+      error={conn.error}
+      claudeApiRetry={conn.claudeApiRetry}
+      sessionFailures={conn.sessionFailures}
+      onSessionFailureAction={
+        // Owners of a live connection only — mirrors the goal-control gate:
+        // viewers must see the strips but not drive recovery.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleSessionFailureAction
+          : undefined
+      }
+      onSessionFailureDismiss={handleSessionFailureDismiss}
+      asyncTasks={conn.asyncTasks}
+      onStopAsyncTask={
+        // Owners of a live connection only — same gate as the failure actions:
+        // a viewer has no connection to send the stop on.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleStopAsyncTask
+          : undefined
+      }
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}

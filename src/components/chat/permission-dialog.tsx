@@ -59,8 +59,12 @@ export function PermissionDialog({
     [permission?.tool_call]
   )
   // What each option would actually grant, keyed by option id. Empty for every
-  // agent that ships no `_meta.permission` (i.e. everything but codex ≥1.1.8
-  // and claude ≥0.64.1).
+  // agent that ships no option-level `_meta.permission` — which, on the pinned
+  // adapter versions, is ALL of them: codex dropped `changes[]` in 1.7.0 and
+  // claude in 0.73.0, both moving the grant text into the option name and the
+  // reason into a request-level block (hoisted onto the tool call by the
+  // backend, and read as `_meta.permission.title` below). Non-empty only for a
+  // user-pinned codex 1.1.8–1.6.2 or claude 0.64.1–0.72.0.
   const optionChanges = useMemo(() => {
     const out: Record<string, PermissionOptionChange[]> = {}
     for (const opt of permission?.options ?? []) {

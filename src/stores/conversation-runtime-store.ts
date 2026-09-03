@@ -438,13 +438,7 @@ type Action =
   | {
       type: "PATCH_TURN_METADATA"
       conversationId: number
-      turnPatches: Array<{
-        index: number
-        usage?: TurnUsage | null
-        duration_ms?: number | null
-        model?: string | null
-        completed_at?: string | null
-      }>
+      turnPatches: TurnMetadataPatch[]
       sessionStats?: SessionStats | null
     }
   | {
@@ -1592,6 +1586,12 @@ export interface TurnMetadataPatch {
   duration_ms?: number | null
   model?: string | null
   completed_at?: string | null
+  /** The id the PARSER gave this turn (`turn-3`). A turn produced in this
+   *  session is named `live-<conversationId>-<liveMessageId>` and the backend
+   *  has never heard of that id, so anything asking the backend to act on "this
+   *  turn" — "fork from here" is the one today — has to send the parser's name
+   *  instead. See `MessageTurn.source_turn_id`. */
+  source_turn_id?: string | null
 }
 
 /**
@@ -1662,6 +1662,11 @@ export function computeTurnMetadataPatches(params: {
     // rolled-in parsed turns precede it in time, so we don't aggregate
     // completion timestamps.
     let completedAtToApply: string | null | undefined
+    // The parser's name for this turn. Deliberately the MATCHED sub-turn and
+    // not the first of a rolled-in group: the stats above are summed across the
+    // group, but a fork point is a position, and "keep everything up to and
+    // including this reply" means the last sub-turn of it.
+    let sourceTurnIdToApply: string | null | undefined
 
     if (parsedIdx >= 0 && parsedIdx < sessionParsedTurns.length) {
       const pt = sessionParsedTurns[parsedIdx]
@@ -1669,6 +1674,7 @@ export function computeTurnMetadataPatches(params: {
       durationToApply = pt.duration_ms
       modelToApply = pt.model
       completedAtToApply = pt.completed_at
+      sourceTurnIdToApply = pt.id
     }
 
     // When the parser splits the response into more sub-turns than the live
@@ -1706,11 +1712,16 @@ export function computeTurnMetadataPatches(params: {
       }
     }
 
+    // `source_turn_id` counts as something worth emitting on its own: a turn
+    // the parser recorded with no stats at all (a plain codex reply carries no
+    // per-turn usage) still needs its name, or "fork from here" on it silently
+    // degrades to a tail fork.
     if (
       !usageToApply &&
       !durationToApply &&
       !modelToApply &&
-      !completedAtToApply
+      !completedAtToApply &&
+      !sourceTurnIdToApply
     )
       continue
     patches.push({
@@ -1719,6 +1730,7 @@ export function computeTurnMetadataPatches(params: {
       duration_ms: durationToApply,
       model: modelToApply,
       completed_at: completedAtToApply,
+      source_turn_id: sourceTurnIdToApply,
     })
   }
 
@@ -2536,11 +2548,13 @@ function reducer(
         const newDuration = turn.duration_ms ?? patch.duration_ms
         const newModel = turn.model ?? patch.model
         const newCompletedAt = turn.completed_at ?? patch.completed_at
+        const newSourceTurnId = turn.source_turn_id ?? patch.source_turn_id
         if (
           newUsage !== turn.usage ||
           newDuration !== turn.duration_ms ||
           newModel !== turn.model ||
-          newCompletedAt !== turn.completed_at
+          newCompletedAt !== turn.completed_at ||
+          newSourceTurnId !== turn.source_turn_id
         ) {
           patchedTurns[patch.index] = {
             ...turn,
@@ -2548,6 +2562,7 @@ function reducer(
             duration_ms: newDuration,
             model: newModel,
             completed_at: newCompletedAt,
+            source_turn_id: newSourceTurnId,
           }
           changed = true
         }

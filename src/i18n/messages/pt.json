@@ -1842,6 +1842,7 @@
       "forkSession": "Bifurcar sessão",
       "forkSessionSuccess": "Sessão bifurcada com sucesso",
       "forkSessionFailed": "Falha ao bifurcar a sessão: {error}",
+      "forkSessionBusy": "Falha ao bifurcar: há um turno em andamento",
       "exportConversation": "Exportar conversa",
       "exportImage": "Imagem",
       "exportMarkdown": "Markdown",
@@ -2777,6 +2778,7 @@
           "downloadFailed": "Falha no download de {agent}: {message}",
           "sessionLoadResourceNotFound": "Falha ao carregar a sessão de {agent}. Recarregue para tentar novamente ou inicie uma nova conversa.",
           "sessionLoadUnavailable": "{agent} não conseguiu restaurar esta sessão; ela pode ter terminado ou o agente parou. Recarregue para tentar novamente ou inicie uma nova conversa.",
+          "sessionLoadBusy": "Este histórico está sendo mantido aberto pela sessão bifurcada a partir dele. Feche essa sessão e recarregue para abri-lo.",
           "sessionArchived": "A sessão anterior foi arquivada pelo {agent}. Execute {command} num terminal para restaurá-la e recarregá-la, ou inicie uma nova conversa.",
           "turnFailedRefusal": "{agent} recusou continuar este turno. Costuma indicar um erro de backend ou gateway. Confira os logs do agente.",
           "turnFailedMaxTokens": "{agent} atingiu o limite máximo de tokens para este turno.",
@@ -3169,6 +3171,7 @@
         "emptyConversation": "Nenhuma mensagem nesta conversa.",
         "systemMessage": "Mensagem do sistema",
         "copyMessage": "Copiar",
+        "forkFromHere": "Bifurcar a partir daqui",
         "copied": "Copiado",
         "selectionActions": "Ações de seleção",
         "selectionCopy": "Copiar texto",
@@ -3440,7 +3443,6 @@
         },
         "planMode": {
           "entered": "Modo de planejamento iniciado",
-          "planLabel": "Plano",
           "reviewApproved": "Plano aprovado — implementando",
           "reviewKept": "Mantido no modo de plano",
           "reviewPending": "Aguardando decisão sobre o plano",
@@ -3630,6 +3632,13 @@
         "cardCompleted": "Tarefa em segundo plano concluída",
         "cardFinishedWithStatus": "Tarefa em segundo plano encerrada ({status})",
         "cardResultPending": "Resultado ainda não retornou"
+      },
+      "asyncTasks": {
+        "openOutput": "Saída",
+        "stop": "Parar",
+        "tokens": "{count} tokens",
+        "stopDeclined": "Não foi possível parar essa tarefa — ela pode já ter terminado.",
+        "stopFailed": "Falha ao parar a tarefa: {error}"
       },
       "proposedPlan": {
         "title": "Plano proposto",
