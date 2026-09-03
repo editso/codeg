@@ -14,9 +14,8 @@ use crate::acp::agent_mentions::{
 use crate::models::*;
 use crate::parsers::codex_code_mode::{
     extract_chunk_ids, extract_shell_session_ids, is_code_mode_call, parse_code_mode_script,
-    script_card_input,
-    split_code_mode_output, with_note, CodeModeCall, CodeModeOutput, CodeModeScript, ScriptStatus,
-    Separator, CODEX_SCRIPT_TOOL_NAME,
+    script_card_input, split_code_mode_output, with_note, CodeModeCall, CodeModeOutput,
+    CodeModeScript, ScriptStatus, Separator, CODEX_SCRIPT_TOOL_NAME,
 };
 use crate::parsers::{
     folder_name_from_path, title_from_user_text, truncate_str, AgentParser, ParseError,
@@ -65,67 +64,6 @@ impl CodexParser {
         Self { base_dir }
     }
 
-    /// Read a child rollout for the Agent activity UI.
-    ///
-    /// Codex's native team-of-agents implementation forks a child rollout by
-    /// copying the parent's existing records into its head. A regular
-    /// `get_conversation` intentionally keeps that full history: a user can
-    /// create an ordinary fork and expects to read its inherited context.
-    /// This method is deliberately separate because an Agent activity panel
-    /// needs the opposite view: only work produced after the child fork.
-    pub fn get_subagent_conversation(
-        &self,
-        conversation_id: &str,
-    ) -> Result<ConversationDetail, ParseError> {
-        let child_path = self
-            .find_conversation_path(conversation_id)
-            .ok_or_else(|| ParseError::ConversationNotFound(conversation_id.to_string()))?;
-        let mut child = self.parse_conversation_detail(&child_path, conversation_id)?;
-        if let Some(title) = self.load_thread_name_index().get(conversation_id) {
-            child.summary.title = Some(title.clone());
-        }
-
-        let declared_parent_id = forked_parent_thread_id(&child_path);
-        let parent_resolution = declared_parent_id
-            .as_deref()
-            .filter(|parent_id| *parent_id != conversation_id)
-            .and_then(|parent_id| {
-                self.find_conversation_path_by_thread_id(parent_id, &child_path)
-                    .map(|path| (path, parent_id.to_string()))
-            })
-            .or_else(|| {
-                // Older native-team rollouts identify the relationship only
-                // from the parent's sub_agent_activity event. Keep this
-                // fallback scoped to the explicit child transcript endpoint.
-                self.find_parent_path_by_child_activity(conversation_id, &child_path)
-                    .map(|path| {
-                        let parent_id = rollout_thread_identity(&path)
-                            .or_else(|| {
-                                path.file_stem()
-                                    .map(|stem| stem.to_string_lossy().into_owned())
-                            })
-                            .unwrap_or_else(|| conversation_id.to_string());
-                        (path, parent_id)
-                    })
-            });
-        let Some((parent_path, parent_id)) = parent_resolution else {
-            return Ok(child);
-        };
-        let Ok(parent) = self.parse_conversation_detail(&parent_path, &parent_id) else {
-            return Ok(child);
-        };
-
-        // The parsed turn representation is intentionally lossy. For example,
-        // response_item messages are promoted only after the whole rollout has
-        // been read, so the still-growing parent can group a copied prefix
-        // differently from the already-forked child. Prefer the raw fork
-        // boundary for those cases, with the parsed-turn LCP as a compatibility
-        // fallback when the rollout shape cannot be recognized.
-        let raw_prefix = copied_parent_record_prefix(&child_path, &parent_path);
-        trim_copied_parent_turn_prefix(&mut child, &parent, raw_prefix.as_ref());
-        Ok(child)
-    }
-
     /// Locate the file using the same compatibility rule as the legacy
     /// `AgentParser::get_conversation` implementation. Codex rollout filenames
     /// contain the thread id, including native child rollouts that are hidden
@@ -172,9 +110,9 @@ impl CodexParser {
     }
 
     /// Resolve a parent only when its opening session header names this exact
-    /// thread. Unlike the legacy filename lookup above, this is used solely by
-    /// the child-only crop path, where an ambiguous match must safely fall back
-    /// to the complete child transcript.
+    /// thread. Unlike the legacy filename lookup above, this is used by the
+    /// native child statistics path, where an ambiguous match must not credit
+    /// the wrong parent with the child's tool calls.
     fn find_conversation_path_by_thread_id(
         &self,
         conversation_id: &str,
@@ -222,8 +160,8 @@ impl CodexParser {
 
     /// Resolve a native-team parent from the parent's activity record when a
     /// Codex version does not persist `parent_thread_id` on the child header.
-    /// This is deliberately a fallback for the child-only view: ordinary
-    /// conversation lookup must continue to work from the child file alone.
+    /// This is a fallback for native child statistics; ordinary conversation
+    /// lookup must continue to work from the child file alone.
     fn find_parent_path_by_child_activity(
         &self,
         child_id: &str,
@@ -416,10 +354,7 @@ impl CodexParser {
         titles
     }
 
-    fn parse_jsonl_summary(
-        &self,
-        path: &Path,
-    ) -> Result<Option<ConversationSummary>, ParseError> {
+    fn parse_jsonl_summary(&self, path: &Path) -> Result<Option<ConversationSummary>, ParseError> {
         let lines = self.rollout_lines(path)?;
 
         let mut conversation_id: Option<String> = None;
@@ -747,9 +682,7 @@ impl CodexParser {
                                         pending_promotions.push((
                                             is_user,
                                             is_user
-                                                .then(|| {
-                                                    extract_codex_title_candidate(&text, true)
-                                                })
+                                                .then(|| extract_codex_title_candidate(&text, true))
                                                 .flatten(),
                                         ));
                                     }
@@ -2455,12 +2388,7 @@ fn first_rollout_record(path: &Path) -> Option<serde_json::Value> {
 /// child's body for Codex's `fork_turns: "all"` rollout shape.
 #[derive(Debug)]
 struct RawForkPrefix {
-    /// Index in the parent rollout where the copied records begin. Most
-    /// rollouts copy from record zero; fork implementations that omit the
-    /// parent's session header or compacted prefix start later.
-    parent_record_start: usize,
     copied_records: usize,
-    child_body_records: usize,
 }
 
 fn rollout_records(path: &Path) -> Option<Vec<serde_json::Value>> {
@@ -2500,10 +2428,7 @@ fn rollout_mentions_child_activity(path: &Path, child_id: &str) -> bool {
             ]
             .iter()
             .any(|pointer| {
-                record
-                    .pointer(pointer)
-                    .and_then(|value| value.as_str())
-                    == Some(child_id)
+                record.pointer(pointer).and_then(|value| value.as_str()) == Some(child_id)
             })
     })
 }
@@ -2517,7 +2442,6 @@ fn copied_parent_record_prefix(child_path: &Path, parent_path: &Path) -> Option<
     // suffix), so search for the longest exact child-prefix match at every
     // parent offset instead of assuming it starts at record zero.
     let child_body = child_records.get(1..)?;
-    let mut best_start = 0;
     let mut copied_records = 0;
     for parent_start in 0..parent_records.len() {
         let matched = child_body
@@ -2526,7 +2450,6 @@ fn copied_parent_record_prefix(child_path: &Path, parent_path: &Path) -> Option<
             .take_while(|(child, parent)| child == parent)
             .count();
         if matched > copied_records {
-            best_start = parent_start;
             copied_records = matched;
         }
     }
@@ -2535,135 +2458,7 @@ fn copied_parent_record_prefix(child_path: &Path, parent_path: &Path) -> Option<
         return None;
     }
 
-    Some(RawForkPrefix {
-        parent_record_start: best_start,
-        copied_records,
-        child_body_records: child_body.len(),
-    })
-}
-
-/// Flatten a parsed transcript to the user-visible block sequence. A native
-/// child can append its first tool call to the same assistant turn that ends
-/// the copied parent prefix, so turn-level comparison is too coarse for the
-/// child-only view. Keep the role beside each block: a matching tool result
-/// from another role must never count as copied history.
-fn turn_blocks_fingerprint(
-    turns: &[MessageTurn],
-) -> Vec<(TurnRole, serde_json::Value)> {
-    turns
-        .iter()
-        .flat_map(|turn| {
-            turn.blocks.iter().map(|block| {
-                let mut block = block.clone();
-                if let ContentBlock::ToolResult { agent_stats, .. } = &mut block {
-                    *agent_stats = None;
-                }
-                (turn.role.clone(), serde_json::to_value(block).expect("serializable block"))
-            })
-        })
-        .collect()
-}
-
-/// Remove exactly `count` leading blocks from a parsed child transcript while
-/// retaining the turn that contains the first child-owned block. This is the
-/// important distinction from draining whole turns by timestamp: a copied
-/// assistant message and a child tool call can share one parsed turn.
-fn drain_leading_blocks(turns: &mut Vec<MessageTurn>, count: usize) {
-    let mut remaining = count;
-    for turn in turns.iter_mut() {
-        if remaining == 0 {
-            break;
-        }
-        if remaining >= turn.blocks.len() {
-            remaining -= turn.blocks.len();
-            turn.blocks.clear();
-        } else {
-            turn.blocks.drain(..remaining);
-            remaining = 0;
-        }
-    }
-    turns.retain(|turn| !turn.blocks.is_empty());
-}
-
-/// Remove the exact common block prefix of a native Codex child and its parent.
-///
-/// A parent can keep working after the child is spawned, which is why this is
-/// a longest-common-prefix comparison rather than a count based on the
-/// parent's current length. If the formats do not line up at the first block,
-/// keep the complete child transcript: showing a little extra is safer than
-/// silently erasing an unfamiliar rollout format.
-fn trim_copied_parent_turn_prefix(
-    child: &mut ConversationDetail,
-    parent: &ConversationDetail,
-    raw_prefix: Option<&RawForkPrefix>,
-) {
-    if let Some(raw_prefix) = raw_prefix {
-        if raw_prefix.copied_records == raw_prefix.child_body_records {
-            child.turns.clear();
-        } else {
-            let child_blocks = turn_blocks_fingerprint(&child.turns);
-            let parent_blocks = turn_blocks_fingerprint(&parent.turns);
-            let copied_blocks = if raw_prefix.parent_record_start == 0 {
-                child_blocks
-                    .iter()
-                    .zip(&parent_blocks)
-                    .take_while(|(child_block, parent_block)| child_block == parent_block)
-                    .count()
-            } else {
-                // When the raw match starts in the middle of the parent
-                // rollout, the corresponding visible block also starts after
-                // an unknown number of non-visible records. Try each parent
-                // block boundary and retain the longest proven content prefix.
-                (0..parent_blocks.len())
-                    .map(|start| {
-                        child_blocks
-                            .iter()
-                            .zip(parent_blocks[start..].iter())
-                            .take_while(|(child_block, parent_block)| {
-                                child_block == parent_block
-                            })
-                            .count()
-                    })
-                    .max()
-                    .unwrap_or(0)
-            };
-            if copied_blocks == 0 {
-                // The raw boundary proves that this is a fork, but the parsed
-                // representation is unfamiliar (or still incomplete). Keep
-                // the readable child transcript rather than deleting a turn
-                // based on an unreliable timestamp.
-                return;
-            }
-            drain_leading_blocks(&mut child.turns, copied_blocks);
-        }
-        child.summary.message_count = child.turns.len() as u32;
-        if let Some(first_turn) = child.turns.first() {
-            child.summary.started_at = first_turn.timestamp;
-        }
-        child.session_stats = super::compute_session_stats(&child.turns);
-        return;
-    }
-
-    let child_blocks = turn_blocks_fingerprint(&child.turns);
-    let parent_blocks = turn_blocks_fingerprint(&parent.turns);
-    let copied_blocks = child_blocks
-        .iter()
-        .zip(&parent_blocks)
-        .take_while(|(child_block, parent_block)| child_block == parent_block)
-        .count();
-    if copied_blocks == 0 {
-        return;
-    }
-
-    drain_leading_blocks(&mut child.turns, copied_blocks);
-    child.summary.message_count = child.turns.len() as u32;
-    if let Some(first_turn) = child.turns.first() {
-        child.summary.started_at = first_turn.timestamp;
-    }
-    // The full child session aggregate includes the replayed parent's turns.
-    // This route is used solely for the child activity view, so make its
-    // aggregate describe the same filtered turn list.
-    child.session_stats = super::compute_session_stats(&child.turns);
+    Some(RawForkPrefix { copied_records })
 }
 
 fn parse_codex_subagent_stats(
@@ -2700,9 +2495,7 @@ fn parse_codex_subagent_stats(
             }
             let parent_path = parser
                 .find_conversation_path_by_thread_id(parent_id, &session_file)
-                .or_else(|| {
-                    parser.find_parent_path_by_child_activity(agent_id, &session_file)
-                })?;
+                .or_else(|| parser.find_parent_path_by_child_activity(agent_id, &session_file))?;
             let raw_prefix = copied_parent_record_prefix(&session_file, &parent_path)?;
             1 + raw_prefix.copied_records
         }
@@ -3255,10 +3048,7 @@ impl CodexParser {
                                         path.rsplit('/').find(|segment| !segment.is_empty())
                                     });
                                 let mapped_call_ids: HashSet<String> =
-                                    agent_id_to_spawn_call_id
-                                        .values()
-                                        .cloned()
-                                        .collect();
+                                    agent_id_to_spawn_call_id.values().cloned().collect();
                                 let call_id = event_call_id
                                     .or_else(|| {
                                         activity_name.and_then(|name| {
@@ -3274,9 +3064,7 @@ impl CodexParser {
                                     .or_else(|| {
                                         let mut candidates = spawn_agent_call_ids
                                             .iter()
-                                            .filter(|call_id| {
-                                                !mapped_call_ids.contains(*call_id)
-                                            });
+                                            .filter(|call_id| !mapped_call_ids.contains(*call_id));
                                         let candidate = candidates.next()?.clone();
                                         (candidates.next().is_none()).then_some(candidate)
                                     });
@@ -3391,7 +3179,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                             }
                             "agent_message" => {
@@ -3421,7 +3209,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                             }
                             "thread_goal_updated" => {
@@ -3501,7 +3289,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 }
                             }
@@ -3575,10 +3363,8 @@ impl CodexParser {
                                 // ONE 思考 card (live parity) instead of one card per
                                 // section, and if no grouped summary arrives
                                 // (interrupted/older rollouts) nothing is lost.
-                                let text = payload
-                                    .get("text")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("");
+                                let text =
+                                    payload.get("text").and_then(|t| t.as_str()).unwrap_or("");
                                 if !text.trim().is_empty() {
                                     pending_reasoning.push(text.to_string());
                                     pending_reasoning_ts = Some(timestamp);
@@ -3631,7 +3417,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                                 if !call_id.is_empty() {
                                     emitted_image_ids.insert(call_id);
@@ -3828,9 +3614,7 @@ impl CodexParser {
                                     .map(|parts| {
                                         parts
                                             .iter()
-                                            .filter_map(|p| {
-                                                p.get("text").and_then(|t| t.as_str())
-                                            })
+                                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                                             .filter(|t| !t.trim().is_empty())
                                             .collect::<Vec<_>>()
                                             .join("\n\n")
@@ -3914,7 +3698,8 @@ impl CodexParser {
                                             if let Some(task_name) = args
                                                 .as_ref()
                                                 .and_then(|a| {
-                                                    a.get("task_name").or_else(|| a.get("agent_type"))
+                                                    a.get("task_name")
+                                                        .or_else(|| a.get("agent_type"))
                                                 })
                                                 .and_then(|value| value.as_str())
                                                 .map(str::trim)
@@ -3962,7 +3747,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                     "wait_agent" => {
@@ -4025,7 +3810,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                     _ => {
@@ -4099,7 +3884,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                 }
@@ -4209,7 +3994,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 } else if is_spawn {
                                     if let Some(output_obj) = parse_codex_json_output(payload) {
@@ -4236,37 +4021,39 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 } else if is_wait {
                                     // Emit one `collab_agent` capsule per wait,
                                     // routed through the same CollabAgentCard as
                                     // the live wait capsule. Two output shapes —
                                     // see `native_team_wait_input`.
-                                    let capsule = parse_codex_json_output(payload).and_then(
-                                        |output_obj| match output_obj
-                                            .get("status")
-                                            .and_then(|s| s.as_object())
-                                        {
-                                            Some(status) => {
-                                                // Mark returned agents so the spawn
-                                                // capsule won't also show their
-                                                // result, and record per-agent error
-                                                // state so the execution capsule can
-                                                // render failed (live parity).
-                                                for (agent_id, value) in status {
-                                                    agent_waited.insert(agent_id.clone());
-                                                    let (st, _) = extract_wait_agent_status(value);
-                                                    if is_error_collab_status(&st) {
-                                                        agent_errored.insert(agent_id.clone());
+                                    let capsule =
+                                        parse_codex_json_output(payload).and_then(|output_obj| {
+                                            match output_obj
+                                                .get("status")
+                                                .and_then(|s| s.as_object())
+                                            {
+                                                Some(status) => {
+                                                    // Mark returned agents so the spawn
+                                                    // capsule won't also show their
+                                                    // result, and record per-agent error
+                                                    // state so the execution capsule can
+                                                    // render failed (live parity).
+                                                    for (agent_id, value) in status {
+                                                        agent_waited.insert(agent_id.clone());
+                                                        let (st, _) =
+                                                            extract_wait_agent_status(value);
+                                                        if is_error_collab_status(&st) {
+                                                            agent_errored.insert(agent_id.clone());
+                                                        }
                                                     }
+                                                    (!status.is_empty())
+                                                        .then(|| build_collab_wait_input(status))
                                                 }
-                                                (!status.is_empty())
-                                                    .then(|| build_collab_wait_input(status))
+                                                None => native_team_wait_input(&output_obj),
                                             }
-                                            None => native_team_wait_input(&output_obj),
-                                        },
-                                    );
+                                        });
                                     if let Some((collab_input, is_error)) = capsule {
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-{}", messages.len()),
@@ -4283,7 +4070,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-result-{}", messages.len()),
@@ -4300,7 +4087,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                 } else if is_close {
@@ -4314,11 +4101,8 @@ impl CodexParser {
                                             // just `completed`): an errored/notFound
                                             // close with no wait must not lose its
                                             // message or its error state.
-                                            if let Some(prev) =
-                                                output_obj.get("previous_status")
-                                            {
-                                                let (st, msg) =
-                                                    extract_wait_agent_status(prev);
+                                            if let Some(prev) = output_obj.get("previous_status") {
+                                                let (st, msg) = extract_wait_agent_status(prev);
                                                 if let Some(text) = msg {
                                                     agent_fallback_results
                                                         .entry(agent_id.clone())
@@ -4369,21 +4153,21 @@ impl CodexParser {
                                             &mut shell_sessions,
                                         );
                                     }
-                                    let (raw_output, envelope_error) =
-                                        if envelope.status != ScriptStatus::Unknown
-                                            || output_value.is_some_and(|v| v.is_array())
-                                        {
-                                            (
-                                                with_note(
-                                                    Some(envelope.joined()),
-                                                    envelope.note.as_deref(),
-                                                )
-                                                .filter(|s| !s.is_empty()),
-                                                envelope.is_error(),
+                                    let (raw_output, envelope_error) = if envelope.status
+                                        != ScriptStatus::Unknown
+                                        || output_value.is_some_and(|v| v.is_array())
+                                    {
+                                        (
+                                            with_note(
+                                                Some(envelope.joined()),
+                                                envelope.note.as_deref(),
                                             )
-                                        } else {
-                                            (value_to_preview(output_value), false)
-                                        };
+                                            .filter(|s| !s.is_empty()),
+                                            envelope.is_error(),
+                                        )
+                                    } else {
+                                        (value_to_preview(output_value), false)
+                                    };
                                     // A poll about to be folded into the card of
                                     // the command it is collecting for: its
                                     // envelope has to go, and an envelope that
@@ -4422,7 +4206,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 }
                             }
@@ -4461,7 +4245,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                         continue;
                                     }
@@ -4522,7 +4306,10 @@ impl CodexParser {
                                             Some(existing) => existing.content = blocks,
                                             None => {
                                                 messages.push(UnifiedMessage {
-                                                    id: format!("assistant-plan-{}", messages.len()),
+                                                    id: format!(
+                                                        "assistant-plan-{}",
+                                                        messages.len()
+                                                    ),
                                                     role: MessageRole::Assistant,
                                                     content: blocks,
                                                     timestamp,
@@ -4616,7 +4403,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                                 if !id.is_empty() {
                                     emitted_image_ids.insert(id);
@@ -4787,7 +4574,7 @@ impl CodexParser {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(pending.timestamp),
-                agent_message_id: None,
+                    agent_message_id: None,
                 })
                 .collect();
             messages.splice(insert_at..insert_at, group);
@@ -4843,7 +4630,7 @@ impl CodexParser {
                         duration_ms: None,
                         model: None,
                         completed_at: first_timestamp,
-                    agent_message_id: None,
+                        agent_message_id: None,
                     },
                 );
             }
@@ -5068,7 +4855,9 @@ fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
         .fold(TurnUsage::default(), |acc, u| codex_usage_add(&acc, u));
 
     let missing = TurnUsage {
-        input_tokens: recorded.input_tokens.saturating_sub(attributed.input_tokens),
+        input_tokens: recorded
+            .input_tokens
+            .saturating_sub(attributed.input_tokens),
         output_tokens: recorded
             .output_tokens
             .saturating_sub(attributed.output_tokens),
@@ -5086,10 +4875,11 @@ fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
     // Prefer a turn that already reports usage — it is one the transcript
     // itself tied to a model call, so the recovered tokens land beside spend
     // that really happened rather than on an unrelated bubble.
-    let target = turns
-        .iter()
-        .rposition(|t| t.usage.is_some())
-        .or_else(|| turns.iter().rposition(|t| matches!(t.role, TurnRole::Assistant)));
+    let target = turns.iter().rposition(|t| t.usage.is_some()).or_else(|| {
+        turns
+            .iter()
+            .rposition(|t| matches!(t.role, TurnRole::Assistant))
+    });
     if let Some(turn) = target.and_then(|i| turns.get_mut(i)) {
         turn.usage = Some(match turn.usage {
             Some(ref existing) => codex_usage_add(existing, &missing),
@@ -5226,7 +5016,7 @@ fn flush_pending_reasoning(
         duration_ms: None,
         model: None,
         completed_at: Some(timestamp),
-    agent_message_id: None,
+        agent_message_id: None,
     });
 }
 
@@ -5563,7 +5353,10 @@ impl UserTurnFingerprint {
     /// Mirrors the detail parser's `event_msg`/`user_message` arm.
     fn from_event_message(payload: &serde_json::Value) -> Self {
         let text = strip_blocked_resource_mentions(
-            payload.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+            payload
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or(""),
         );
         let images = payload
             .get("images")
@@ -5971,9 +5764,9 @@ fn response_item_user_has_image(payload: &serde_json::Value) -> bool {
         .get("content")
         .and_then(|c| c.as_array())
         .is_some_and(|items| {
-            items.iter().any(|item| {
-                item.get("type").and_then(|v| v.as_str()) == Some("input_image")
-            })
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(|v| v.as_str()) == Some("input_image"))
         })
 }
 
@@ -6062,7 +5855,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -6075,7 +5868,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else {
@@ -6116,7 +5909,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }
@@ -6308,32 +6101,29 @@ mod tests {
 
     use std::collections::HashMap;
 
+    use super::codex_parent_thread_id;
     use super::extract_codex_title_candidate;
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
-    use super::copied_parent_record_prefix;
-    use super::codex_parent_thread_id;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
-    use super::native_team_wait_input;
     use super::merge_codex_total_usage_stats;
+    use super::native_team_wait_input;
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
-    use super::CODEX_PLAN_APPROVAL_PROMPT;
-    use super::CODEX_PLAN_APPROVED_OUTPUT;
-    use super::CODEX_SUBAGENT_LAUNCH_KEY;
-    use super::COLLAB_OP_KEY;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
-    use super::{trim_copied_parent_turn_prefix, RawForkPrefix};
     use super::AgentParser;
     use super::CodexParser;
+    use super::CODEX_PLAN_APPROVAL_PROMPT;
+    use super::CODEX_PLAN_APPROVED_OUTPUT;
     use super::CODEX_SCRIPT_TOOL_NAME;
+    use super::CODEX_SUBAGENT_LAUNCH_KEY;
+    use super::COLLAB_OP_KEY;
     use crate::models::{
-        AgentExecutionStats, ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole,
-        TurnUsage, UnifiedMessage,
+        ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };
     use chrono::{DateTime, Duration, Utc};
     use std::env;
@@ -6477,9 +6267,9 @@ mod tests {
                 ),
             ];
             fs::write(
-                temp_dir
-                    .path()
-                    .join(format!("rollout-2026-08-28T10-00-00-{conversation_id}.jsonl")),
+                temp_dir.path().join(format!(
+                    "rollout-2026-08-28T10-00-00-{conversation_id}.jsonl"
+                )),
                 format!("{}\n", lines.join("\n")),
             )
             .expect("write rollout");
@@ -6991,7 +6781,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: Some(now),
-        agent_message_id: None,
+            agent_message_id: None,
         }];
 
         assert!(should_skip_duplicate_user_message(
@@ -7200,13 +6990,19 @@ mod tests {
             .iter()
             .filter_map(|t| t.usage.as_ref())
             .map(|u| {
-                u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+                u.input_tokens
+                    + u.output_tokens
+                    + u.cache_creation_input_tokens
                     + u.cache_read_input_tokens
             })
             .sum()
     }
 
-    fn parse_rollout(label: &str, content: &str, session_id: &str) -> crate::models::ConversationDetail {
+    fn parse_rollout(
+        label: &str,
+        content: &str,
+        session_id: &str,
+    ) -> crate::models::ConversationDetail {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
@@ -7326,7 +7122,10 @@ mod tests {
         );
         let detail = parse_rollout("toolonly", content, "toolonly-1");
         assert!(
-            !detail.turns.iter().any(|t| matches!(t.role, TurnRole::Assistant)),
+            !detail
+                .turns
+                .iter()
+                .any(|t| matches!(t.role, TurnRole::Assistant)),
             "precondition: this rollout has no assistant turn"
         );
         let total = detail
@@ -7589,8 +7388,7 @@ mod tests {
 
         // active → create_goal, objective + status carried in the tool_result.
         let create_id = find("create_goal");
-        let create_out: serde_json::Value =
-            serde_json::from_str(&outputs[&create_id]).unwrap();
+        let create_out: serde_json::Value = serde_json::from_str(&outputs[&create_id]).unwrap();
         assert_eq!(create_out["goal"]["status"], "active");
         assert_eq!(create_out["goal"]["objective"], "Refactor the auth module");
         // Distinct goal events get distinct (occurrence-addressed) ids.
@@ -7598,8 +7396,7 @@ mod tests {
 
         // budgetLimited → update_goal with the status normalized to snake_case.
         let update_id = find("update_goal");
-        let update_out: serde_json::Value =
-            serde_json::from_str(&outputs[&update_id]).unwrap();
+        let update_out: serde_json::Value = serde_json::from_str(&outputs[&update_id]).unwrap();
         assert_eq!(update_out["goal"]["status"], "budget_limited");
         assert_eq!(update_out["goal"]["tokensUsed"], 5200);
         let update_in: serde_json::Value = serde_json::from_str(&inputs[&update_id]).unwrap();
@@ -7753,8 +7550,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaltext-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goaltext-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"/goal Analyze the README\"}}\n",
@@ -7772,7 +7568,10 @@ mod tests {
             .iter()
             .filter(|t| matches!(t.role, TurnRole::User))
             .count();
-        assert_eq!(user_turns, 1, "real user_message not duplicated by synthesis");
+        assert_eq!(
+            user_turns, 1,
+            "real user_message not duplicated by synthesis"
+        );
         let user_text = detail
             .turns
             .iter()
@@ -7801,8 +7600,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaldup-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goaldup-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gd-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Investigate auth\",\"status\":\"active\"}}}\n",
@@ -7850,8 +7648,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goalconfirm-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goalconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -7919,8 +7716,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumconfirm-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -7955,8 +7751,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumgoal-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumgoal-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sg-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -7972,10 +7767,7 @@ mod tests {
             .expect("summary present");
 
         // Objective wins as title; the internal-context text never leaks in.
-        assert_eq!(
-            summary.title.as_deref(),
-            Some("Build a static test page")
-        );
+        assert_eq!(summary.title.as_deref(), Some("Build a static test page"));
         // The synthesized user turn (+1) plus the agent_message (+1).
         assert_eq!(summary.message_count, 2);
 
@@ -7990,8 +7782,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumname-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumname-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sn-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -8022,8 +7813,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumimg-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumimg-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do the thing\",\"status\":\"active\"}}}\n",
@@ -8143,8 +7933,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumnull-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumnull-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"snl-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":null}}\n",
@@ -8176,8 +7965,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-gtxt-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-gtxt-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt2-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do X\",\"status\":\"active\"}}}\n",
@@ -8229,8 +8017,7 @@ mod tests {
             .as_nanos();
 
         // (a) terminal-only goal → no capture, no synthetic count/title.
-        let path_a: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-term-{nanos}.jsonl"));
+        let path_a: PathBuf = env::temp_dir().join(format!("codeg-codex-term-{nanos}.jsonl"));
         fs::write(
             &path_a,
             concat!(
@@ -8246,13 +8033,15 @@ mod tests {
             .expect("ok")
             .expect("present");
         assert_eq!(summary_a.title, None, "terminal goal is not a title");
-        assert_eq!(summary_a.message_count, 1, "no synthetic user for terminal goal");
+        assert_eq!(
+            summary_a.message_count, 1,
+            "no synthetic user for terminal goal"
+        );
         let _ = fs::remove_file(&path_a);
 
         // (b) terminal THEN active → the active objective is captured (not the
         // terminal one), matching the detail parser's first-create_goal capture.
-        let path_b: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-termact-{nanos}.jsonl"));
+        let path_b: PathBuf = env::temp_dir().join(format!("codeg-codex-termact-{nanos}.jsonl"));
         fs::write(
             &path_b,
             concat!(
@@ -9147,7 +8936,11 @@ mod tests {
                 serde_json::json!({"agent_b":{"completed":"B_RESULT_TOKEN"}}),
             ),
             narration("2026-06-27T10:00:09Z", "NARRATION_MID B back waiting A"),
-            wait("2026-06-27T10:00:10Z", "wait_2", serde_json::json!(["agent_a"])),
+            wait(
+                "2026-06-27T10:00:10Z",
+                "wait_2",
+                serde_json::json!(["agent_a"]),
+            ),
             wait_out(
                 "2026-06-27T10:00:11Z",
                 "wait_2",
@@ -9541,8 +9334,7 @@ mod tests {
                 _ => None,
             })
             .expect("spawn Agent capsule present");
-        let parsed: serde_json::Value =
-            serde_json::from_str(input).expect("spawn input is JSON");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("spawn input is JSON");
         assert_eq!(
             parsed.get("agent_id").and_then(|v| v.as_str()),
             Some("AGENT_UUID_X"),
@@ -9641,7 +9433,9 @@ mod tests {
         // 0.147 emits no wait/close capsule, so this card stands for the LAUNCH
         // only and must say so rather than read as "the sub-agent finished".
         assert_eq!(
-            parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).and_then(|v| v.as_bool()),
+            parsed
+                .get(CODEX_SUBAGENT_LAUNCH_KEY)
+                .and_then(|v| v.as_bool()),
             Some(true)
         );
 
@@ -9755,7 +9549,10 @@ mod tests {
             })
             .expect("spawn input");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("spawn input JSON");
-        assert_eq!(parsed.get("agent_id").and_then(|value| value.as_str()), Some(child_id));
+        assert_eq!(
+            parsed.get("agent_id").and_then(|value| value.as_str()),
+            Some(child_id)
+        );
 
         let stats = detail
             .turns
@@ -9814,7 +9611,10 @@ mod tests {
             })
             .expect("spawn Agent capsule present");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
-        assert_eq!(parsed.get("subagent_type").and_then(|v| v.as_str()), Some("worker"));
+        assert_eq!(
+            parsed.get("subagent_type").and_then(|v| v.as_str()),
+            Some("worker")
+        );
         assert_eq!(parsed.get("prompt").and_then(|v| v.as_str()), Some("do it"));
         assert!(parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).is_none());
 
@@ -9877,7 +9677,10 @@ mod tests {
     fn redaction_leaves_ordinary_arguments_untouched() {
         let mut args = serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000});
         assert!(!redact_encrypted_args(&mut args));
-        assert_eq!(args, serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000}));
+        assert_eq!(
+            args,
+            serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000})
+        );
         // Nested and array positions are reached.
         let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
         let mut nested = serde_json::json!({"outer":{"list":[sealed.clone(),"keep me"]}});
@@ -9960,14 +9763,17 @@ mod tests {
             })
             .expect("wait capsule present");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
-        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("wait"));
-        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("completed"));
+        assert_eq!(
+            parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()),
+            Some("wait")
+        );
+        assert_eq!(
+            parsed.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
         // No agents and no prompt — the card renders as a bare pill, exactly
         // what the live `collabAgentToolCall` produces for this output.
-        assert_eq!(
-            parsed.get("agentsStates"),
-            Some(&serde_json::json!({}))
-        );
+        assert_eq!(parsed.get("agentsStates"), Some(&serde_json::json!({})));
         let errored = detail
             .turns
             .iter()
@@ -9981,7 +9787,9 @@ mod tests {
     #[test]
     fn native_team_wait_shape_gate_and_timeout() {
         // `timed_out` is the shape gate: only the native-team output has it.
-        assert!(native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none());
+        assert!(
+            native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none()
+        );
         assert!(native_team_wait_input(&serde_json::json!({})).is_none());
         // A timeout is a real outcome — flag the capsule failed.
         let (input, is_error) =
@@ -9989,7 +9797,10 @@ mod tests {
                 .expect("native shape");
         assert!(is_error);
         let parsed: serde_json::Value = serde_json::from_str(&input).expect("JSON");
-        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("failed"));
+        assert_eq!(
+            parsed.get("status").and_then(|v| v.as_str()),
+            Some("failed")
+        );
     }
 
     #[test]
@@ -10218,11 +10029,9 @@ mod tests {
     }
 
     #[test]
-    fn subagent_detail_removes_only_the_copied_parent_prefix() {
-        // Native teams fork a complete parent rollout. The parent can keep
-        // working after the fork, so using the parent's current length would
-        // remove the child's work. The child-only view must stop at the actual
-        // longest shared prefix instead.
+    fn forked_child_keeps_inherited_parent_history() {
+        // Native teams fork a complete parent rollout. Ordinary conversation
+        // reads must retain that inherited history.
         let parent_id = "parent-thread";
         // Some rollout versions carry the parent reference using the root
         // session id, while `payload.id` remains the individual thread id.
@@ -10399,446 +10208,6 @@ mod tests {
                     ..
                 } if id == "parent-tool"
             )));
-
-        let child = parser
-            .get_subagent_conversation(child_id)
-            .expect("child-only transcript");
-        assert_eq!(child.turns.len(), 3);
-        assert_eq!(child.summary.message_count, 3);
-        assert!(matches!(child.turns[0].role, TurnRole::Assistant));
-        assert!(matches!(child.turns[1].role, TurnRole::User));
-        assert!(matches!(child.turns[2].role, TurnRole::Assistant));
-        assert!(child.turns[0].blocks.iter().any(|block| matches!(
-            block,
-            ContentBlock::ToolUse {
-                tool_use_id: Some(id),
-                tool_name,
-                ..
-            } if id == "child-read" && tool_name == "read_file"
-        )));
-        assert_eq!(
-            child.turns[1].timestamp,
-            DateTime::parse_from_rfc3339("2026-08-24T00:00:03Z")
-                .expect("timestamp")
-                .with_timezone(&Utc)
-        );
-        assert_eq!(child.summary.started_at, child.turns[0].timestamp);
-
-        let visible_text: Vec<&str> = child
-            .turns
-            .iter()
-            .flat_map(|turn| turn.blocks.iter())
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            visible_text,
-            vec![
-                "Child kickoff: inspect tests.",
-                "Child found the failing test.",
-            ]
-        );
-        assert!(
-            !child
-                .turns
-                .iter()
-                .flat_map(|turn| turn.blocks.iter())
-                .any(|block| matches!(
-                    block,
-                    ContentBlock::ToolUse {
-                        tool_use_id: Some(id),
-                        ..
-                    } if id == "parent-tool"
-                )),
-            "the copied parent tool call must not become child activity"
-        );
-
-        // The raw prefix remains authoritative when parsed turns diverge while
-        // the parent is still being appended to. Simulate that parser-level
-        // divergence by changing a copied turn's derived timestamp; the old
-        // parsed-only LCP would keep the entire child transcript here.
-        let parent_path = dir.join(format!("rollout-2026-08-24T00-00-00-{parent_id}.jsonl"));
-        let child_path = dir.join(format!("rollout-2026-08-24T00-00-03-{child_id}.jsonl"));
-        let parent_detail = parser
-            .parse_conversation_detail(&parent_path, parent_id)
-            .expect("parent detail");
-        let mut divergent_child = parser
-            .parse_conversation_detail(&child_path, child_id)
-            .expect("child detail");
-        divergent_child.turns[0].timestamp += Duration::milliseconds(1);
-        let raw_prefix = copied_parent_record_prefix(&child_path, &parent_path);
-        trim_copied_parent_turn_prefix(
-            &mut divergent_child,
-            &parent_detail,
-            raw_prefix.as_ref(),
-        );
-        assert_eq!(
-            divergent_child.turns.len(),
-            3,
-            "raw fork boundary must survive parsed-turn divergence"
-        );
-        assert!(matches!(
-            divergent_child.turns[0].blocks.as_slice(),
-            [
-                ContentBlock::ToolUse {
-                    tool_use_id: Some(id),
-                    tool_name,
-                    ..
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: Some(result_id),
-                    ..
-                }
-            ] if id == "child-read"
-                && result_id == "child-read"
-                && tool_name == "read_file"
-        ));
-
-        // If the raw boundary cannot be mapped to a parsed turn, retain the
-        // readable transcript rather than erasing it on an unfamiliar shape.
-        let mut unmappable_child = parser
-            .parse_conversation_detail(&child_path, child_id)
-            .expect("child detail");
-        let original_turn_count = unmappable_child.turns.len();
-        unmappable_child.turns[0].blocks.insert(
-            0,
-            ContentBlock::Text {
-                text: "unmappable child prefix".to_string(),
-            },
-        );
-        trim_copied_parent_turn_prefix(
-            &mut unmappable_child,
-            &parent_detail,
-            Some(&RawForkPrefix {
-                parent_record_start: 0,
-                copied_records: 7,
-                child_body_records: 9,
-            }),
-        );
-        assert_eq!(unmappable_child.turns.len(), original_turn_count);
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn subagent_detail_crops_a_prefix_copied_from_the_middle_of_parent_rollout() {
-        // A fork can be created from a compacted/synchronized parent snapshot
-        // whose copied body does not include the parent's opening session
-        // metadata or older turns. The child-only endpoint must still locate
-        // the copied suffix and not return that parent assistant message.
-        let parent_id = "middle-parent";
-        let child_id = "middle-child";
-        let dir = temp_session_dir("forked-child-middle-prefix");
-
-        fs::write(
-            dir.join(format!("rollout-2026-08-24T01-00-00-{parent_id}.jsonl")),
-            [
-                rollout_line(
-                    "2026-08-24T01:00:00Z",
-                    "session_meta",
-                    serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
-                ),
-                rollout_line(
-                    "2026-08-24T01:00:01Z",
-                    "event_msg",
-                    serde_json::json!({
-                        "type":"user_message",
-                        "message":"Parent history before compaction."
-                    }),
-                ),
-                rollout_line(
-                    "2026-08-24T01:00:02Z",
-                    "event_msg",
-                    serde_json::json!({
-                        "type":"agent_message",
-                        "message":"Parent response copied from the synchronized suffix."
-                    }),
-                ),
-            ]
-            .join("\n"),
-        )
-        .expect("write parent rollout");
-
-        fs::write(
-            dir.join(format!("rollout-2026-08-24T01-00-03-{child_id}.jsonl")),
-            [
-                rollout_line(
-                    "2026-08-24T01:00:03Z",
-                    "session_meta",
-                    serde_json::json!({
-                        "id":child_id,
-                        "parent_thread_id":parent_id,
-                        "cwd":"/tmp/demo"
-                    }),
-                ),
-                // Only the parent's later response was copied into this
-                // synchronized child snapshot; the parent session_meta and
-                // earlier user record are absent from the child body.
-                rollout_line(
-                    "2026-08-24T01:00:02Z",
-                    "event_msg",
-                    serde_json::json!({
-                        "type":"agent_message",
-                        "message":"Parent response copied from the synchronized suffix."
-                    }),
-                ),
-                rollout_line(
-                    "2026-08-24T01:00:04Z",
-                    "event_msg",
-                    serde_json::json!({
-                        "type":"user_message",
-                        "message":"Child task prompt."
-                    }),
-                ),
-                rollout_line(
-                    "2026-08-24T01:00:05Z",
-                    "event_msg",
-                    serde_json::json!({"type":"agent_message","message":"Child-only answer."}),
-                ),
-            ]
-            .join("\n"),
-        )
-        .expect("write child rollout");
-
-        let child = CodexParser::with_base_dir(dir.clone())
-            .get_subagent_conversation(child_id)
-            .expect("child-only transcript");
-        let text: Vec<&str> = child
-            .turns
-            .iter()
-            .flat_map(|turn| turn.blocks.iter())
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(text, vec!["Child task prompt.", "Child-only answer."]);
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn subagent_detail_uses_parent_activity_when_child_header_has_no_parent_id() {
-        // Some native-team versions only persist the relationship in the
-        // parent's sub_agent_activity event. The child-only endpoint must not
-        // fall back to the complete forked file in that format.
-        let parent_id = "activity-parent";
-        let child_id = "activity-child";
-        let dir = temp_session_dir("forked-child-activity-parent");
-        let parent_records = [
-            rollout_line(
-                "2026-08-24T02:00:00Z",
-                "session_meta",
-                serde_json::json!({"id":parent_id,"cwd":"/tmp/demo"}),
-            ),
-            rollout_line(
-                "2026-08-24T02:00:01Z",
-                "event_msg",
-                serde_json::json!({
-                    "type":"sub_agent_activity",
-                    "agent_thread_id":child_id,
-                    "agent_path":"/root/worker"
-                }),
-            ),
-            rollout_line(
-                "2026-08-24T02:00:02Z",
-                "event_msg",
-                serde_json::json!({"type":"agent_message","message":"Parent-only message."}),
-            ),
-        ];
-        fs::write(
-            dir.join(format!("rollout-2026-08-24T02-00-00-{parent_id}.jsonl")),
-            parent_records.join("\n"),
-        )
-        .expect("write parent rollout");
-
-        let mut child_records = vec![rollout_line(
-            "2026-08-24T02:00:03Z",
-            "session_meta",
-            serde_json::json!({"id":child_id,"cwd":"/tmp/demo"}),
-        )];
-        child_records.extend(parent_records);
-        child_records.push(rollout_line(
-            "2026-08-24T02:00:04Z",
-            "event_msg",
-            serde_json::json!({"type":"user_message","message":"Child task."}),
-        ));
-        child_records.push(rollout_line(
-            "2026-08-24T02:00:05Z",
-            "event_msg",
-            serde_json::json!({"type":"agent_message","message":"Child answer."}),
-        ));
-        fs::write(
-            dir.join(format!("rollout-2026-08-24T02-00-03-{child_id}.jsonl")),
-            child_records.join("\n"),
-        )
-        .expect("write child rollout");
-
-        let child = CodexParser::with_base_dir(dir.clone())
-            .get_subagent_conversation(child_id)
-            .expect("child-only transcript");
-        let text: Vec<&str> = child
-            .turns
-            .iter()
-            .flat_map(|turn| turn.blocks.iter())
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(text, vec!["Child task.", "Child answer."]);
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn copied_turn_prefix_ignores_derived_metadata() {
-        // The child and parent parse the same copied records, but duration,
-        // model, and usage are derived from the surrounding rollout and may
-        // differ after the child starts its own work. They are not identity.
-        let mut parent = parse_rollout(
-            "prefix-derived-metadata-parent",
-            concat!(
-                "{\"timestamp\":\"2026-08-24T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"parent\",\"cwd\":\"/tmp/demo\"}}\n",
-                "{\"timestamp\":\"2026-08-24T00:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Parent prompt\"}}\n",
-                "{\"timestamp\":\"2026-08-24T00:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Parent answer\"}}\n"
-            ),
-            "parent",
-        );
-        parent.turns[1].blocks.push(ContentBlock::ToolResult {
-            tool_use_id: Some("copied-tool".to_string()),
-            output_preview: Some("copied output".to_string()),
-            is_error: false,
-            agent_stats: Some(AgentExecutionStats {
-                agent_type: Some("codex".to_string()),
-                status: Some("completed".to_string()),
-                total_duration_ms: Some(1),
-                total_tokens: Some(2),
-                total_tool_use_count: Some(3),
-                read_count: None,
-                search_count: None,
-                bash_count: None,
-                edit_file_count: None,
-                lines_added: None,
-                lines_removed: None,
-                other_tool_count: None,
-                tool_calls: Vec::new(),
-                child_session_id: None,
-            }),
-            images: Vec::new(),
-        });
-        let mut child = parent.clone();
-        // `MessageTurn.id` is local parser bookkeeping (`turn-{index}`), not a
-        // native rollout record id. Independent parser grouping can assign
-        // different local ids while copied content remains exactly the same.
-        child.turns[0].id = "turn-1".to_string();
-        child.turns[1].id = "turn-2".to_string();
-        child.turns[0].duration_ms = Some(7_000);
-        child.turns[0].model = Some("child-derived-model".to_string());
-        child.turns[1].usage = Some(TurnUsage {
-            input_tokens: 2,
-            output_tokens: 3,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 1,
-        });
-        if let ContentBlock::ToolResult { agent_stats, .. } = child.turns[1]
-            .blocks
-            .last_mut()
-            .expect("copied tool result")
-        {
-            *agent_stats = Some(AgentExecutionStats {
-                agent_type: Some("codex".to_string()),
-                status: Some("running".to_string()),
-                total_duration_ms: Some(99),
-                total_tokens: Some(101),
-                total_tool_use_count: Some(102),
-                read_count: Some(1),
-                search_count: Some(2),
-                bash_count: Some(3),
-                edit_file_count: Some(4),
-                lines_added: Some(5),
-                lines_removed: Some(6),
-                other_tool_count: Some(7),
-                tool_calls: Vec::new(),
-                child_session_id: Some("changed-while-reading".to_string()),
-            });
-        } else {
-            panic!("expected copied tool result");
-        }
-        let child_timestamp = child
-            .turns
-            .last()
-            .expect("parent answer turn")
-            .timestamp
-            + Duration::seconds(1);
-        child.turns.push(MessageTurn {
-            id: "child-only".to_string(),
-            role: TurnRole::Assistant,
-            blocks: vec![ContentBlock::Text {
-                text: "Child-only answer".to_string(),
-            }],
-            timestamp: child_timestamp,
-            usage: None,
-            duration_ms: None,
-            model: None,
-            completed_at: Some(child_timestamp),
-        });
-        child.summary.message_count = child.turns.len() as u32;
-
-        trim_copied_parent_turn_prefix(&mut child, &parent, None);
-
-        assert_eq!(child.turns.len(), 1);
-        assert_eq!(child.summary.message_count, 1);
-        assert!(matches!(
-            child.turns[0].blocks.as_slice(),
-            [ContentBlock::Text { text }] if text == "Child-only answer"
-        ));
-    }
-
-    #[test]
-    fn subagent_detail_keeps_a_forked_child_when_the_parent_is_unavailable() {
-        // A concurrent cleanup or an older Codex layout can leave us with a
-        // child file but no discoverable parent. Never turn that into data
-        // loss; only crop when the exact shared prefix can be proven.
-        let child_id = "orphan-child";
-        let dir = temp_session_dir("orphaned-forked-child-detail");
-        fs::write(
-            dir.join(format!("rollout-2026-08-24T00-00-03-{child_id}.jsonl")),
-            [
-                rollout_line(
-                    "2026-08-24T00:00:03Z",
-                    "session_meta",
-                    serde_json::json!({
-                        "id":child_id,
-                        // Deliberately a substring of this child's filename:
-                        // the normal compatibility lookup would find this
-                        // same file, but the strict parent lookup must not.
-                        "parent_thread_id":"child",
-                        "cwd":"/tmp/demo"
-                    }),
-                ),
-                rollout_line(
-                    "2026-08-24T00:00:04Z",
-                    "event_msg",
-                    serde_json::json!({"type":"user_message","message":"Child kickoff."}),
-                ),
-                rollout_line(
-                    "2026-08-24T00:00:05Z",
-                    "event_msg",
-                    serde_json::json!({"type":"agent_message","message":"Child answer."}),
-                ),
-            ]
-            .join("\n"),
-        )
-        .expect("write orphan child rollout");
-
-        let child = CodexParser::with_base_dir(dir.clone())
-            .get_subagent_conversation(child_id)
-            .expect("unavailable parent falls back to the readable child");
-        assert_eq!(child.turns.len(), 2);
-        assert_eq!(child.summary.message_count, 2);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -12220,20 +11589,35 @@ mod tests {
     fn a_labelled_fanout_splits_a_collapsed_blob_per_command() {
         let detail = code_mode_detail(
             &labelled_fanout(&["query-entry", "formula-service", "factor-full"]),
-            labelled_blob(6, &[
-                ("query-entry", "one"),
-                ("formula-service", "two"),
-                ("factor-full", "three"),
-            ]),
+            labelled_blob(
+                6,
+                &[
+                    ("query-entry", "one"),
+                    ("formula-service", "two"),
+                    ("factor-full", "three"),
+                ],
+            ),
             "code-mode-labelled",
         );
 
         assert_eq!(
             tool_uses(&detail),
             vec![
-                ("call_1#0".into(), "exec_command".into(), Some("echo 0".into())),
-                ("call_1#1".into(), "exec_command".into(), Some("echo 1".into())),
-                ("call_1#2".into(), "exec_command".into(), Some("echo 2".into())),
+                (
+                    "call_1#0".into(),
+                    "exec_command".into(),
+                    Some("echo 0".into())
+                ),
+                (
+                    "call_1#1".into(),
+                    "exec_command".into(),
+                    Some("echo 1".into())
+                ),
+                (
+                    "call_1#2".into(),
+                    "exec_command".into(),
+                    Some("echo 2".into())
+                ),
             ]
         );
         assert_eq!(
@@ -12257,12 +11641,21 @@ mod tests {
     #[test]
     fn a_truncated_separator_leaves_its_command_without_output() {
         let detail = code_mode_detail(
-            &labelled_fanout(&["query-entry", "formula-service", "vo", "formula-splice", "factor-full"]),
-            labelled_blob(20, &[
-                ("query-entry", "first"),
-                ("formula-service", "second\nvo-output\nsplice-output"),
-                ("factor-full", "last"),
+            &labelled_fanout(&[
+                "query-entry",
+                "formula-service",
+                "vo",
+                "formula-splice",
+                "factor-full",
             ]),
+            labelled_blob(
+                20,
+                &[
+                    ("query-entry", "first"),
+                    ("formula-service", "second\nvo-output\nsplice-output"),
+                    ("factor-full", "last"),
+                ],
+            ),
             "code-mode-labelled-partial",
         );
 
@@ -12270,7 +11663,11 @@ mod tests {
             tool_results(&detail),
             vec![
                 ("call_1#0".into(), Some("first".into()), false),
-                ("call_1#1".into(), Some("second\nvo-output\nsplice-output".into()), false),
+                (
+                    "call_1#1".into(),
+                    Some("second\nvo-output\nsplice-output".into()),
+                    false
+                ),
                 ("call_1#2".into(), None, false),
                 ("call_1#3".into(), None, false),
                 ("call_1#4".into(), Some("last".into()), false),
@@ -12278,7 +11675,10 @@ mod tests {
         );
 
         let metas = tool_metas(&detail);
-        assert_eq!(metas[1]["sharedWith"], serde_json::json!(["vo", "formula-splice"]));
+        assert_eq!(
+            metas[1]["sharedWith"],
+            serde_json::json!(["vo", "formula-splice"])
+        );
         assert_eq!(metas[2]["outputMissing"], true);
         assert_eq!(metas[3]["outputMissing"], true);
         assert!(metas[0].get("sharedWith").is_none());
@@ -12292,10 +11692,7 @@ mod tests {
     fn a_repeated_separator_line_keeps_the_script_card() {
         let detail = code_mode_detail(
             &labelled_fanout(&["alpha", "beta"]),
-            labelled_blob(8, &[
-                ("alpha", "one\n===== beta ====="),
-                ("beta", "two"),
-            ]),
+            labelled_blob(8, &[("alpha", "one\n===== beta ====="), ("beta", "two")]),
             "code-mode-labelled-dup",
         );
 
@@ -12311,11 +11708,14 @@ mod tests {
     fn a_repeated_output_line_still_splits() {
         let detail = code_mode_detail(
             &labelled_fanout(&["alpha", "beta", "gamma"]),
-            labelled_blob(8, &[
-                ("alpha", "shared line\none"),
-                ("beta", "shared line\ntwo"),
-                ("gamma", "three"),
-            ]),
+            labelled_blob(
+                8,
+                &[
+                    ("alpha", "shared line\none"),
+                    ("beta", "shared line\ntwo"),
+                    ("gamma", "three"),
+                ],
+            ),
             "code-mode-labelled-repeat",
         );
 
@@ -12400,7 +11800,9 @@ mod tests {
     /// want. Tool-only turns come back with `None`. The role is stringified
     /// because `TurnRole` is not `PartialEq` and a production model should not
     /// grow a derive to serve a test.
-    fn turn_texts(detail: &crate::models::ConversationDetail) -> Vec<(&'static str, Option<String>)> {
+    fn turn_texts(
+        detail: &crate::models::ConversationDetail,
+    ) -> Vec<(&'static str, Option<String>)> {
         detail
             .turns
             .iter()
@@ -12677,7 +12079,8 @@ mod tests {
         // ("如果你希望调整…" is codex's habit). Rendering the announcement and
         // dropping the record would silently lose that prose, so the record
         // takes the announcement's message over rather than adding a second.
-        let record = "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\n\n如果你希望调整，告诉我。";
+        let record =
+            "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\n\n如果你希望调整，告诉我。";
         let content = plan_turn(true, Some(record));
         let detail = parse_rollout("plan-prose", &content, "plan-1");
 

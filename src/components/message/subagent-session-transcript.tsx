@@ -19,7 +19,7 @@ import {
   adaptMessageTurns,
   type AdaptedMessage,
 } from "@/lib/adapters/ai-elements-adapter"
-import { getSubagentConversation } from "@/lib/api"
+import { getConversation } from "@/lib/api"
 import { toolStatusUnsettled } from "@/lib/tool-call-lifecycle"
 import type { AgentType, MessageTurn } from "@/lib/types"
 import { SubagentTranscriptAncestryProvider } from "./subagent-transcript-context"
@@ -142,7 +142,7 @@ export function SubagentSessionTranscript({
       if (initial) setLoading(true)
 
       try {
-        const detail = await getSubagentConversation(agentType, sessionId)
+        const detail = await getConversation(agentType, sessionId)
         if (!mountedRef.current || seq !== seqRef.current) return
 
         setMessages(

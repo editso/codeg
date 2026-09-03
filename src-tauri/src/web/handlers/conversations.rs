@@ -229,17 +229,6 @@ pub async fn get_conversation(
     Ok(Json(result))
 }
 
-/// Agent activity transcripts use an explicit endpoint so Codex native child
-/// rollouts can omit their copied parent prefix without changing normal fork
-/// conversation reads.
-pub async fn get_subagent_conversation(
-    Json(params): Json<GetConversationParams>,
-) -> Result<Json<ConversationDetail>, AppCommandError> {
-    let result =
-        conv_commands::get_subagent_conversation(params.agent_type, params.conversation_id).await?;
-    Ok(Json(result))
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetFolderConversationParams {

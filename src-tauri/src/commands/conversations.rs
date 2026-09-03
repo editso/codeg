@@ -776,15 +776,7 @@ pub async fn list_conversations(
 fn read_conversation_sync(
     agent_type: AgentType,
     conversation_id: &str,
-    subagent_transcript: bool,
 ) -> Result<ConversationDetail, ParseError> {
-    // A Codex native team child forks by copying its parent's rollout. The
-    // activity UI requests the child-only view explicitly; ordinary forked
-    // sessions still use the parser's complete, inherited conversation.
-    if subagent_transcript && agent_type == AgentType::Codex {
-        return CodexParser::new().get_subagent_conversation(conversation_id);
-    }
-
     let parser: Box<dyn AgentParser> = match agent_type {
         AgentType::ClaudeCode => Box::new(ClaudeParser::new()),
         AgentType::Codex => Box::new(CodexParser::new()),
@@ -811,10 +803,9 @@ fn read_conversation_sync(
 async fn load_conversation(
     agent_type: AgentType,
     conversation_id: String,
-    subagent_transcript: bool,
 ) -> Result<ConversationDetail, AppCommandError> {
     tokio::task::spawn_blocking(move || {
-        read_conversation_sync(agent_type, &conversation_id, subagent_transcript)
+        read_conversation_sync(agent_type, &conversation_id)
             .map_err(parse_error_to_app_error)
     })
     .await
@@ -829,19 +820,7 @@ pub async fn get_conversation(
     agent_type: AgentType,
     conversation_id: String,
 ) -> Result<ConversationDetail, AppCommandError> {
-    load_conversation(agent_type, conversation_id, false).await
-}
-
-/// Read a transcript for an Agent activity node. This is intentionally a
-/// separate API from `get_conversation`: Codex native child rollouts replay
-/// their parent's pre-fork history, whereas an ordinary user-created fork must
-/// retain that inherited history when opened as a conversation.
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_subagent_conversation(
-    agent_type: AgentType,
-    conversation_id: String,
-) -> Result<ConversationDetail, AppCommandError> {
-    load_conversation(agent_type, conversation_id, true).await
+    load_conversation(agent_type, conversation_id).await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]

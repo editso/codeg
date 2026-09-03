@@ -5,12 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const api = vi.hoisted(() => ({
   getConversation: vi.fn(),
-  getSubagentConversation: vi.fn(),
 }))
 
 vi.mock("@/lib/api", () => ({
   getConversation: api.getConversation,
-  getSubagentConversation: api.getSubagentConversation,
 }))
 
 import { ContentPartsRenderer } from "./content-parts-renderer"
@@ -41,25 +39,6 @@ function childDetail() {
   }
 }
 
-function unfilteredParentDetail() {
-  return {
-    summary: {},
-    turns: [
-      {
-        id: "parent-answer",
-        role: "assistant",
-        blocks: [
-          {
-            type: "text",
-            text: "Parent-only history must not appear in this agent.",
-          },
-        ],
-        timestamp: "2026-08-24T00:00:00.000Z",
-      },
-    ],
-  }
-}
-
 function renderTranscript(live = false) {
   return render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
@@ -76,12 +55,7 @@ function renderTranscript(live = false) {
 
 beforeEach(() => {
   api.getConversation.mockReset()
-  api.getSubagentConversation.mockReset()
-  // This is deliberately different from the child-only endpoint response.
-  // If the component accidentally returns to the generic API, the test will
-  // render this copied parent message and fail below.
-  api.getConversation.mockResolvedValue(unfilteredParentDetail())
-  api.getSubagentConversation.mockResolvedValue(childDetail())
+  api.getConversation.mockResolvedValue(childDetail())
 })
 
 afterEach(() => {
@@ -89,11 +63,11 @@ afterEach(() => {
 })
 
 describe("SubagentSessionTranscript", () => {
-  it("uses the child-only API, renders child work inline, and omits its kickoff prompt", async () => {
+  it("uses the conversation API, renders child work inline, and omits its kickoff prompt", async () => {
     renderTranscript()
 
     await waitFor(() =>
-      expect(api.getSubagentConversation).toHaveBeenCalledWith(
+      expect(api.getConversation).toHaveBeenCalledWith(
         "codex",
         "child-session-1"
       )
@@ -114,10 +88,6 @@ describe("SubagentSessionTranscript", () => {
     expect(
       screen.queryByText("Do not render this kickoff prompt.")
     ).not.toBeInTheDocument()
-    expect(
-      screen.queryByText("Parent-only history must not appear in this agent.")
-    ).not.toBeInTheDocument()
-    expect(api.getConversation).not.toHaveBeenCalled()
   })
 
   it("does not poll a settled child transcript", async () => {
@@ -127,13 +97,13 @@ describe("SubagentSessionTranscript", () => {
     await act(async () => {
       await Promise.resolve()
     })
-    expect(api.getSubagentConversation).toHaveBeenCalledTimes(1)
+    expect(api.getConversation).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       vi.advanceTimersByTime(6000)
       await Promise.resolve()
     })
-    expect(api.getSubagentConversation).toHaveBeenCalledTimes(1)
+    expect(api.getConversation).toHaveBeenCalledTimes(1)
   })
 
   it("refreshes a live child transcript on its two-second cadence", async () => {
@@ -143,13 +113,13 @@ describe("SubagentSessionTranscript", () => {
     await act(async () => {
       await Promise.resolve()
     })
-    expect(api.getSubagentConversation).toHaveBeenCalledTimes(1)
+    expect(api.getConversation).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       vi.advanceTimersByTime(2000)
       await Promise.resolve()
     })
-    expect(api.getSubagentConversation).toHaveBeenCalledTimes(2)
+    expect(api.getConversation).toHaveBeenCalledTimes(2)
   })
 
   it("suppresses a copied Codex launch that points back to the current child", () => {

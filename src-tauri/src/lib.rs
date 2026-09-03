@@ -1019,7 +1019,6 @@ mod tauri_app {
             .invoke_handler(tauri::generate_handler![
                 conversations::list_conversations,
                 conversations::get_conversation,
-                conversations::get_subagent_conversation,
                 conversations::list_all_conversations,
                 conversations::list_child_conversations,
                 conversations::list_opened_tabs,
