@@ -1507,7 +1507,7 @@ const ConversationTabView = memo(function ConversationTabView({
       const connectionId = conn.connectionId
       if (
         !connectionId ||
-        connStatus !== "connected" ||
+        !connectionReady ||
         // Read the queue length SYNCHRONOUSLY so a draft re-queued by a same-
         // tick bounce is seen even before React commits. The UI also hides the
         // fork affordance while the queue is non-empty; this is the guard.
@@ -1572,7 +1572,7 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       conn.connectionId,
-      connStatus,
+      connectionReady,
       mqGetQueueLength,
       mqEnqueue,
       effectiveConversationId,
@@ -1595,7 +1595,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const handleForkFromTurn = useCallback(
     async (turnId: string) => {
       const connectionId = conn.connectionId
-      if (!connectionId || connStatus !== "connected") return
+      if (!connectionId || !connectionReady) return
       try {
         const { forkedSessionId } = await acpFork(
           connectionId,
@@ -1636,7 +1636,7 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       conn.connectionId,
-      connStatus,
+      connectionReady,
       effectiveConversationId,
       folderId,
       refetchDetail,
@@ -2285,9 +2285,7 @@ const ConversationTabView = memo(function ConversationTabView({
         // jumped. A turn in flight is still rejected — by the backend, which is
         // the only place that can see it without racing.
         onForkFromTurn={
-          connStatus === "connected" &&
-          hasPersistedConversation &&
-          conn.supportsFork
+          connectionReady && hasPersistedConversation && conn.supportsFork
             ? handleForkFromTurn
             : undefined
         }
@@ -2423,7 +2421,7 @@ const ConversationTabView = memo(function ConversationTabView({
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}
       onForkSend={
-        connStatus === "connected" &&
+        connectionReady &&
         hasPersistedConversation &&
         conn.supportsFork &&
         !forkSendBlockedByQueue(msgQueue.length)
