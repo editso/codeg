@@ -376,10 +376,18 @@ async fn async_main() -> ExitCode {
                 chat_authoring_config.clone(),
             )),
         );
-        let socket = delegation_socket_path.clone();
+        // Bind through the service handle rather than a bare `listener.run`
+        // spawn: it keeps the bind error and the accept-loop handle around, so
+        // the workspace status indicator can report why the broker socket is
+        // down and rebind it without restarting the server.
+        let service = codeg_lib::acp::delegation::service::DelegationService::new(
+            listener,
+            delegation_socket_path.clone(),
+        );
+        codeg_lib::acp::delegation::service::install(service.clone());
         tokio::spawn(async move {
-            if let Err(e) = listener.run(socket).await {
-                tracing::info!("[delegation] listener exited: {e}");
+            if let Err(e) = service.start().await {
+                tracing::error!("[delegation] listener failed to start: {e}");
             }
         });
     }

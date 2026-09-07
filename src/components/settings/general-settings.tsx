@@ -41,6 +41,7 @@ import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
+import { DesktopNotificationSettingsSection } from "@/components/settings/desktop-notification-settings"
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { AgentToolsSettingsSection } from "@/components/settings/agent-tools-settings"
@@ -74,7 +75,7 @@ export function GeneralSettings() {
   // Backend-driven shell label keys are dynamic strings, so widen `t`
   // for that single call site rather than casting at every use.
   const tDynamic = t as unknown as (key: string) => string
-  const { isWindows } = usePlatform()
+  const { isWindows, isLinux } = usePlatform()
 
   // Rendering settings are a local Tauri preference (preferences.json). They
   // are only meaningful when the active transport is the local Tauri shell —
@@ -82,7 +83,11 @@ export function GeneralSettings() {
   // which deliberately does not expose this endpoint.
   const renderingSettingsLoadable =
     isDesktop() && getActiveRemoteConnectionId() === null
-  const renderingSectionVisible = renderingSettingsLoadable && isWindows
+  // Windows (WebView2) and Linux (WebKitGTK) each expose an env knob the
+  // backend can flip at startup. macOS (WKWebView) exposes none, so showing a
+  // switch that cannot do anything there would be a lie.
+  const renderingSectionVisible =
+    renderingSettingsLoadable && (isWindows || isLinux)
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -405,6 +410,10 @@ export function GeneralSettings() {
             )}
           </SettingsSection>
         )}
+
+        {/* The two halves of "how Codeg gets my attention", adjacent on
+            purpose: one leaves the window, one does not. */}
+        <DesktopNotificationSettingsSection />
 
         <NotificationSoundSettingsSection />
 

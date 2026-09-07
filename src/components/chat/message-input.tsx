@@ -16,6 +16,7 @@ import {
   Check,
   ChevronUp,
   ClipboardPaste,
+  Clock,
   Cog,
   Copy,
   GitFork,
@@ -229,17 +230,26 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  /** Fork the session and send `draft`. Fire-and-forget: the input consumes the
-   *  draft synchronously (clears on click); the parent re-queues it if the fork
-   *  can't run, so it is never lost. */
+  /** Fork the session and send `draft`; the parent re-queues it when needed. */
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
-  /** Inject the draft's TEXT into the RUNNING turn (native live-feedback
-   *  steering). Present only on sessions whose feedback channel is native —
-   *  when absent, the prompting branch renders its historical Stop-only form.
-   *  Awaited: resolve = injected + recorded (clear the draft); reject =
-   *  failure, where a turn-end `NoActiveTurn` race falls back to the queue
-   *  and anything else keeps the draft. */
-  onSteer?: (text: string) => Promise<void>
+  /** Send the draft into the RUNNING turn over the session's live-feedback
+   *  channel (see {@link steerChannel}). Present only on sessions with a
+   *  working delivery channel — when absent, the prompting branch renders its
+   *  historical Stop-only form. `text` is the recorded/display form; `blocks`
+   *  carries the full draft whenever it holds more than plain text (image
+   *  attachments, file badges), encoded exactly like a normal send. Awaited:
+   *  resolve = recorded (clear the draft); reject = failure, where a turn-end
+   *  `NoActiveTurn` race falls back to the queue and anything else keeps the
+   *  draft. */
+  onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
+  /** Which channel {@link onSteer} rides (`useSessionFeedback().channel`).
+   *  Picks the honest copy for the mid-turn action: `native` = inserted into
+   *  the turn immediately, `pull` = recorded as a note the agent reads on its
+   *  next `check_user_feedback` call. Defaults to `pull` — the weaker promise
+   *  — so a caller that wires `onSteer` and forgets this understates delivery
+   *  rather than claiming an insert that never happened (same reason
+   *  `FeedbackDialog.channel` defaults to `pull`). */
+  steerChannel?: "native" | "pull"
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
   onAddFeedback?: () => void
@@ -358,6 +368,7 @@ export function MessageInput({
   onCancelQueueEdit,
   onForkSend,
   onSteer,
+  steerChannel = "pull",
   onAddFeedback,
   feedbackAddDisabled,
   injectContent,
@@ -1289,19 +1300,12 @@ export function MessageInput({
 
   const handleForkSendClick = useCallback(() => {
     if (!onForkSend) return
-    // Same uploading gate as `handleSend`: a fork-send consumes the draft
-    // (and its blocks) immediately, so an unsettled upload would strip to
-    // nothing on the wire.
     if (hasUploadingImage) {
       toast.error(tAttach("attachUploadInProgress"))
       return
     }
     const draft = buildDraft()
     if (!draft) return
-    // Fork-send consumes the draft synchronously, exactly like a normal send:
-    // fire-and-forget and clear the input immediately, so there is no in-flight
-    // editable window. If the fork can't run (queue non-empty / disconnected /
-    // failure) the parent re-queues the draft, so it is never lost.
     onForkSend(draft, showModeSelector ? effectiveModeId : null)
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
@@ -1318,18 +1322,28 @@ export function MessageInput({
     resetComposer,
   ])
 
-  // Mid-turn "insert into current turn" (native steering). Awaited, unlike
-  // the synchronous send/enqueue/fork paths: the draft clears ONLY once the
-  // backend confirms the injection was recorded — a turn-end race falls back
-  // to the queue (the note is never lost), any other failure keeps the draft
-  // for retry. Steering is text-only: a draft carrying non-text blocks (file
-  // badges) is queued whole instead of being silently stripped; image
-  // attachments disable the menu entry at render (which also keeps unsettled
-  // uploads out of this path — the enqueue fallback below bypasses
-  // `handleSend`'s uploading gate).
+  // Mid-turn send over the session's live-feedback channel: a native push
+  // inserts into the running turn; a pull-tool session records a waiting note
+  // the agent reads on its next check (the copy is keyed on `steerChannel` so
+  // neither overpromises). Awaited, unlike the synchronous send/enqueue
+  // paths: the draft clears ONLY once the backend confirms the note was
+  // recorded — a turn-end race falls back to the queue (the note is never
+  // lost), any other failure keeps the draft for retry. A draft that holds
+  // more than plain text (image attachments, file badges) steers as its full
+  // block list — the same encoding a normal send uses, which the native wire
+  // carries verbatim — with the display text as the recorded note; nothing is
+  // silently stripped. Only the native wire takes blocks: the pull path
+  // rejects them as `NoActiveTurn`, which lands on the same enqueue fallback,
+  // so an attachment on a pull session goes to the queue whole. Unsettled
+  // uploads are gated here exactly like `handleSend` (no server-side uri to
+  // hydrate from yet), since the enqueue fallback below bypasses its gate.
   const [steering, setSteering] = useState(false)
   const handleSteerClick = useCallback(async () => {
     if (!onSteer || steering) return
+    if (hasUploadingImage) {
+      toast.error(tAttach("attachUploadInProgress"))
+      return
+    }
     const draft = buildDraft()
     if (!draft) return
     const enqueueInstead = () => {
@@ -1338,25 +1352,29 @@ export function MessageInput({
       resetComposer()
       toast.info(t("steerQueuedInstead"))
     }
-    if (draft.blocks.some((b) => b.type !== "text")) {
-      enqueueInstead()
-      return
-    }
-    const text = draft.blocks
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("\n")
-      .trim()
+    const blocks = draft.blocks.some((b) => b.type !== "text")
+      ? draft.blocks
+      : undefined
+    const text = blocks
+      ? draft.displayText
+      : draft.blocks
+          .map((b) => (b.type === "text" ? b.text : ""))
+          .join("\n")
+          .trim()
     if (!text) return
     setSteering(true)
     try {
-      await onSteer(text)
+      await onSteer(text, blocks)
       resetComposer()
     } catch (err) {
       if (isNoActiveTurnRejection(err)) {
         // The turn ended in the race window — reroute through the queue.
         enqueueInstead()
       } else {
-        toast.error(t("steerFailed"), { description: toErrorMessage(err) })
+        toast.error(
+          t(steerChannel === "pull" ? "steerNoteFailed" : "steerFailed"),
+          { description: toErrorMessage(err) }
+        )
       }
     } finally {
       setSteering(false)
@@ -1364,11 +1382,14 @@ export function MessageInput({
   }, [
     onSteer,
     steering,
+    hasUploadingImage,
+    tAttach,
     buildDraft,
     onEnqueue,
     showModeSelector,
     effectiveModeId,
     resetComposer,
+    steerChannel,
     t,
   ])
 
@@ -1711,11 +1732,14 @@ export function MessageInput({
     </div>
   ) : isPrompting && onCancel ? (
     onSteer && onEnqueue && hasSendableContent ? (
-      // Native-steering sessions surface the mid-turn actions that already
-      // exist but were keyboard-only/invisible: the primary half of the split
-      // queues the draft (what Enter has always done here), the dropdown
-      // injects it into the RUNNING turn. Without `onSteer` this branch stays
-      // pixel-identical to the historical Stop-only form below.
+      // Sessions with a working live-feedback channel surface the mid-turn
+      // actions that already exist but were keyboard-only/invisible: the
+      // primary half of the split queues the draft (what Enter has always
+      // done here), the dropdown sends it over the channel — a native push
+      // inserts into the RUNNING turn, a pull-tool session records a waiting
+      // note for the agent's next check (label keyed on `steerChannel`).
+      // Without `onSteer` this branch stays pixel-identical to the
+      // historical Stop-only form below.
       <div className="flex items-center gap-1">
         <Button
           onClick={onCancel}
@@ -1742,7 +1766,9 @@ export function MessageInput({
                 disabled={steering}
                 size="icon"
                 className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
-                aria-label={t("steerIntoTurn")}
+                aria-label={t(
+                  steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn"
+                )}
               >
                 <ChevronUp className="size-4" />
               </Button>
@@ -1750,15 +1776,17 @@ export function MessageInput({
             <DropdownMenuContent align="end" side="top">
               <DropdownMenuItem
                 onSelect={() => void handleSteerClick()}
-                disabled={steering || attachments.length > 0}
-                title={
-                  attachments.length > 0
-                    ? t("steerAttachmentsUnsupported")
-                    : undefined
-                }
+                disabled={steering}
               >
-                <Zap className="h-4 w-4" />
-                {t("steerIntoTurn")}
+                {/* Icon carries the same promise as the label: the bolt is
+                    the instant insert, the clock is the note that waits —
+                    the very glyph the notes strip uses for `pending`. */}
+                {steerChannel === "pull" ? (
+                  <Clock className="h-4 w-4" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+                {t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

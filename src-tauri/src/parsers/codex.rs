@@ -434,7 +434,20 @@ impl CodexParser {
 
             match msg_type {
                 "session_meta" => {
-                    if let Some(payload) = value.get("payload") {
+                    // The FIRST header is this thread's own; every later one
+                    // belongs to a parent. Two shapes put a second header in
+                    // this stream: an inline-replay fork writes the parent's
+                    // header into its own file, and a by-reference fork gets
+                    // the parent's lines spliced in by `rollout_lines`. In both
+                    // the parent header carries the PARENT's `id`, `cwd` and
+                    // branch, so a last-one-wins read would file the child's
+                    // whole summary under the parent's session id — two rollouts
+                    // claiming one id, which the conversation-list dedup then
+                    // collapses, losing the fork. Latch every identity field,
+                    // not just `parent_id`. Same rule `parse_codex_subagent_stats`
+                    // uses.
+                    if let Some(payload) = value.get("payload").filter(|_| !session_header_seen) {
+                        session_header_seen = true;
                         conversation_id = payload
                             .get("id")
                             .and_then(|s| s.as_str())
@@ -443,16 +456,7 @@ impl CodexParser {
                             .get("cwd")
                             .and_then(|s| s.as_str())
                             .map(|s| s.to_string());
-                        // Only the FIRST header names this thread's parent. A
-                        // forked child replays the parent's header further down
-                        // the same file and that copy declares no parent, so a
-                        // last-one-wins read would clear the child's `parent_id`
-                        // and hand it back to the importer as a root session.
-                        // Same rule `parse_codex_subagent_stats` uses.
-                        if !session_header_seen {
-                            session_header_seen = true;
-                            parent_id = codex_parent_thread_id(payload);
-                        }
+                        parent_id = codex_parent_thread_id(payload);
                         _cli_version = payload
                             .get("cli_version")
                             .and_then(|s| s.as_str())
@@ -2943,18 +2947,17 @@ impl CodexParser {
 
             match msg_type {
                 "session_meta" => {
-                    if let Some(payload) = value.get("payload") {
+                    // First header wins for every identity field — see the same
+                    // latch in `parse_jsonl_summary`: the parent header that
+                    // follows a forked child's own (replayed inline, or spliced
+                    // in by `rollout_lines`) carries the PARENT's cwd and branch.
+                    if let Some(payload) = value.get("payload").filter(|_| !session_header_seen) {
+                        session_header_seen = true;
                         cwd = payload
                             .get("cwd")
                             .and_then(|s| s.as_str())
                             .map(|s| s.to_string());
-                        // First header wins — see the same latch in
-                        // `parse_jsonl_summary`: the replayed parent header that
-                        // follows a forked child's own declares no parent.
-                        if !session_header_seen {
-                            session_header_seen = true;
-                            parent_id = codex_parent_thread_id(payload);
-                        }
+                        parent_id = codex_parent_thread_id(payload);
                         git_branch = payload
                             .get("git")
                             .and_then(|g| g.get("branch"))
@@ -6219,6 +6222,95 @@ mod tests {
             .get_conversation(child)
             .expect("load conversation detail");
         assert_eq!(detail.summary.parent_id.as_deref(), Some(parent));
+    }
+
+    /// A by-reference fork keeps its history in the parent file, so
+    /// `rollout_lines` splices the parent's lines in — including the parent's
+    /// own `session_meta`. Reading identity last-record-wins then files the
+    /// CHILD's summary under the PARENT's id and cwd: two rollouts claiming one
+    /// id, which the conversation list dedups down to one and the fork
+    /// disappears. Every identity field latches on the first header, not just
+    /// `parent_id`.
+    #[test]
+    fn spliced_parent_header_does_not_steal_the_forked_child_identity() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let parent = "01a0626c-c601-78f1-a13d-2b26dd168501";
+        let child = "01a0626d-1e26-7853-8f86-02e0f57818a3";
+
+        let parent_lines = [
+            rollout_line(
+                "2026-09-02T14:00:00Z",
+                "session_meta",
+                serde_json::json!({
+                    "id": parent,
+                    "cwd": "/tmp/parent",
+                    "git": {"branch": "parent-branch"}
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T14:00:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "round one"}),
+            ),
+        ];
+        fs::write(
+            temp_dir
+                .path()
+                .join(format!("rollout-2026-09-02T14-00-00-{parent}.jsonl")),
+            format!("{}\n", parent_lines.join("\n")),
+        )
+        .expect("write parent rollout");
+
+        // The child holds ONLY its header — the by-reference shape.
+        let child_lines = [rollout_line(
+            "2026-09-02T14:01:53Z",
+            "session_meta",
+            serde_json::json!({
+                "id": child,
+                "cwd": "/tmp/child",
+                "git": {"branch": "child-branch"},
+                "forked_from_id": parent,
+                "forked_from_ordinal_exclusive": 1
+            }),
+        )];
+        fs::write(
+            temp_dir
+                .path()
+                .join(format!("rollout-2026-09-02T14-01-53-{child}.jsonl")),
+            format!("{}\n", child_lines.join("\n")),
+        )
+        .expect("write child rollout");
+
+        let parser = CodexParser::with_base_dir(temp_dir.path().to_path_buf());
+        let summaries = parser.list_conversations().expect("list conversations");
+        let ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        assert!(
+            ids.contains(&child) && ids.contains(&parent),
+            "both the fork and its parent must list under their OWN ids, got {ids:?}"
+        );
+
+        let forked = summaries
+            .iter()
+            .find(|s| s.id == child)
+            .expect("the fork is listed");
+        assert_eq!(
+            forked.folder_path.as_deref(),
+            Some("/tmp/child"),
+            "the spliced parent header must not overwrite the fork's cwd"
+        );
+        assert_eq!(
+            forked.git_branch.as_deref(),
+            Some("child-branch"),
+            "the spliced parent header must not overwrite the fork's branch"
+        );
+
+        let detail = parser.get_conversation(child).expect("load fork detail");
+        assert_eq!(detail.summary.id, child);
+        assert_eq!(
+            detail.summary.folder_path.as_deref(),
+            Some("/tmp/child"),
+            "the spliced parent header must not overwrite the fork's cwd in detail"
+        );
     }
 
     /// Both on-disk sub-agent shapes must surface `parent_id`, because that is

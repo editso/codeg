@@ -234,11 +234,12 @@ pub struct MessageTurn {
     /// names nothing an agent could look up.
     ///
     /// Set only where a turn can be a fork point: `session/fork` takes an AIR
-    /// fork point (`_meta.jetbrains.air.fork.messageId`) and both
-    /// claude-agent-acp 0.73.0 and codex-acp 1.8.0 resolve it against their own
-    /// message identity, so a fork "up to here" needs the agent's spelling of
-    /// "here". Claude's is `assistant.message.id ?? uuid` — a pure function of
-    /// the transcript record, which is why the parser can derive it offline
+    /// fork point (`_meta.jetbrains.air.fork.messageId`) and claude-agent-acp
+    /// 0.75.1, codex-acp 1.8.0 and deepseek-acp 0.8.0 all resolve it against
+    /// their own message identity, so a fork "up to here" needs the agent's
+    /// spelling of "here". Claude's is `assistant.message.id ?? uuid` and
+    /// DeepSeek's is the session log's `message.id` — both pure functions of
+    /// the stored record, which is why the parsers can derive them offline
     /// instead of having to have captured the live `messageId` chunk field.
     ///
     /// `None` for every parser with no such id (codex rollouts record no item

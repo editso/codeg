@@ -67,8 +67,8 @@ import { useShallow } from "zustand/react/shallow"
  *   `MessageListView`         the transcript (reads turns by conversation id)
  *   `ConversationShell`       composer + the three interrupt dialogs
  *
- * What it deliberately leaves out: the message queue, fork-send, live-feedback
- * steering, transcript export and the welcome-page quick actions. Those belong
+ * What it deliberately leaves out: the message queue, live-feedback steering,
+ * transcript export and the welcome-page quick actions. Those belong
  * to the full workspace surface, which the card's "open in workspace" menu
  * entry is one click away from.
  *

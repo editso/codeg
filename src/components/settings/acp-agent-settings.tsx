@@ -548,6 +548,56 @@ export function setHostToolsAgentMode(
   })
 }
 
+/**
+ * Per-agent `env_json` key that opts an npx agent into installing the
+ * package's `latest` npm dist-tag instead of the maintainer-reviewed pin.
+ * Same storage as pi's runtime override and the host-tools knob above. The
+ * backend reads it at install/upgrade time only: a launch always runs whatever
+ * is installed, nothing polls npm in the background, and a failed latest
+ * install falls back to the pinned version with a note in the install log.
+ */
+const ADAPTER_CHANNEL_ENV = "CODEG_ADAPTER_CHANNEL"
+const ADAPTER_CHANNEL_LATEST = "latest"
+
+export type AdapterChannel = "pinned" | "latest"
+
+/**
+ * Which adapter channel an env draft selects. Anything other than the exact
+ * (trimmed) `latest` sentinel reads as pinned, matching the Rust reader
+ * (`adapter_channel_is_latest`), which treats the pin as the only default.
+ */
+export function adapterChannelFromEnvText(envText: string): AdapterChannel {
+  return parseEnvText(envText)[ADAPTER_CHANNEL_ENV]?.trim() ===
+    ADAPTER_CHANNEL_LATEST
+    ? "latest"
+    : "pinned"
+}
+
+/** [`adapterChannelFromEnvText`] over the saved env map the backend reports. */
+export function adapterChannelFromEnv(
+  env: Record<string, string>
+): AdapterChannel {
+  return env[ADAPTER_CHANNEL_ENV]?.trim() === ADAPTER_CHANNEL_LATEST
+    ? "latest"
+    : "pinned"
+}
+
+/**
+ * Select the adapter channel in an env draft. Pinned DELETES the key: unlike
+ * the host-tools knob there is no process-env second layer that could make
+ * "absent" mean something else, so absent is unambiguously the pinned default
+ * on both sides, and the raw editor stays free of a key that only restates it.
+ */
+export function setAdapterChannel(
+  envText: string,
+  channel: AdapterChannel
+): string {
+  return patchEnvText(envText, {
+    [ADAPTER_CHANNEL_ENV]:
+      channel === "latest" ? ADAPTER_CHANNEL_LATEST : undefined,
+  })
+}
+
 interface ImportantEnvKeys {
   apiBaseUrl: string[]
   apiKey: string[]
@@ -3930,6 +3980,12 @@ export function buildVersionCheck(
   const withCustomInstall = (fixes: UiFixAction[]): UiFixAction[] =>
     supportsCustomInstall ? [...fixes, customInstallFix] : fixes
 
+  // The opt-in "Adapter version: Latest" channel (npx agents only) — install
+  // and upgrade actions resolve the `latest` dist-tag instead of the pin.
+  const latestChannel =
+    agent.distribution_type === "npx" &&
+    adapterChannelFromEnv(agent.env) === "latest"
+
   if (!agent.installed_version) {
     return {
       check_id: "version_status",
@@ -4040,6 +4096,37 @@ export function buildVersionCheck(
         { versionText }
       ),
       fixes: withCustomInstall([
+        {
+          label: acpText("actions.uninstall", "Uninstall"),
+          kind: uninstallAction,
+          payload: agent.agent_type,
+        },
+      ]),
+    }
+  }
+
+  // A latest-channel agent's installed version normally sits AT or AHEAD of
+  // the pin, so the compare-to-pin branch above never offers an upgrade again
+  // — and codeg cannot know whether npm has something newer, because nothing
+  // polls in the background (by design). Keep the Upgrade action available:
+  // it resolves the `latest` dist-tag on demand, and "Already latest" would
+  // claim a comparison that was never made.
+  if (latestChannel) {
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "pass",
+      message: acpText(
+        "version.latestChannel",
+        "{versionText}. Latest channel is on; Upgrade installs the newest release.",
+        { versionText }
+      ),
+      fixes: withCustomInstall([
+        {
+          label: acpText("actions.upgrade", "Upgrade"),
+          kind: upgradeAction,
+          payload: agent.agent_type,
+        },
         {
           label: acpText("actions.uninstall", "Uninstall"),
           kind: uninstallAction,
@@ -7916,6 +8003,58 @@ export function AcpAgentSettings() {
                       aria-label={t("hostTools.label")}
                     />
                   </div>
+                  {/*
+                    Same contract as the host-tools switch above: backed by the
+                    `envText` draft, persisted by the one Save button. Npx
+                    agents only — a binary or uvx install has no npm dist-tag
+                    to track.
+                  */}
+                  {selectedAgent.distribution_type === "npx" && (
+                    <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
+                      <div className="min-w-0 space-y-1">
+                        <label className="text-xs font-medium">
+                          {t("adapterChannel.label")}
+                        </label>
+                        <p className="text-2xs text-muted-foreground">
+                          {t("adapterChannel.description")}
+                        </p>
+                        {adapterChannelFromEnvText(selectedDraft.envText) ===
+                          "latest" && (
+                          <p className="text-2xs text-yellow-600 dark:text-yellow-400">
+                            {t("adapterChannel.latestWarning")}
+                          </p>
+                        )}
+                      </div>
+                      <Select
+                        value={adapterChannelFromEnvText(selectedDraft.envText)}
+                        onValueChange={(value) => {
+                          updateSelectedDraft((current) => ({
+                            ...current,
+                            envText: setAdapterChannel(
+                              current.envText,
+                              value === "latest" ? "latest" : "pinned"
+                            ),
+                          }))
+                        }}
+                        disabled={selectedGrokSaving}
+                      >
+                        <SelectTrigger
+                          className="w-44 shrink-0"
+                          aria-label={t("adapterChannel.label")}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="pinned">
+                            {t("adapterChannel.pinned")}
+                          </SelectItem>
+                          <SelectItem value="latest">
+                            {t("adapterChannel.latest")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                   <div className="flex justify-end">
                     <Button
                       size="sm"

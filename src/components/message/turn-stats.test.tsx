@@ -79,4 +79,63 @@ describe("TurnStats fork-from-here gating", () => {
     renderStats(<TurnStats copyText="" onForkFromHere={vi.fn()} />)
     expect(screen.getByLabelText(forkLabel)).toBeInTheDocument()
   })
+
+  it("keeps the button in place, disabled, while a turn is in flight", () => {
+    // The regression this guards: the button used to be taken away for the
+    // length of every reply, moving the whole icon row under the reader.
+    renderStats(
+      <TurnStats copyText="hello" onForkFromHere={vi.fn()} forkDisabled />
+    )
+    expect(screen.getByLabelText(forkLabel)).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    )
+  })
+
+  it("does not fork when the disabled button is clicked", async () => {
+    // `aria-disabled` leaves the button clickable, so the handler has to be the
+    // thing that's withheld.
+    const onForkFromHere = vi.fn()
+    renderStats(
+      <TurnStats
+        copyText="hello"
+        onForkFromHere={onForkFromHere}
+        forkDisabled
+      />
+    )
+    await userEvent.click(screen.getByLabelText(forkLabel))
+    expect(onForkFromHere).not.toHaveBeenCalled()
+  })
+
+  it("explains on hover why the disabled button is disabled", async () => {
+    // Why `aria-disabled` and not the native `disabled`: a disabled element
+    // gets no pointer events, so this tooltip — the only thing that says why
+    // the button is dead — would never open.
+    renderStats(
+      <TurnStats copyText="hello" onForkFromHere={vi.fn()} forkDisabled />
+    )
+    await userEvent.hover(screen.getByLabelText(forkLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      enMessages.Folder.chat.messageList.forkBusy
+    )
+  })
+
+  it("says so when the reply has no name to fork at yet", async () => {
+    // The other reason the button greys out: a reply this session streamed is
+    // named `live-…` until the post-turn reparse renames it, and the backend
+    // silently tail-forks such an id. Saying "a turn is running" there would
+    // be a lie about a session that is sitting idle.
+    renderStats(
+      <TurnStats
+        copyText="hello"
+        onForkFromHere={vi.fn()}
+        forkDisabled
+        forkDisabledReason="unnamed"
+      />
+    )
+    await userEvent.hover(screen.getByLabelText(forkLabel))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      enMessages.Folder.chat.messageList.forkNotReady
+    )
+  })
 })

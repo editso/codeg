@@ -138,6 +138,27 @@ struct SpawnDedupKey {
 /// genuinely broken.
 pub(crate) const SPAWN_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 
+/// Whether the turn a steer was admitted against is no longer the turn now in
+/// flight — the guard `submit_feedback_native` applies across attachment
+/// hydration, the one await between admission and the enqueue.
+///
+/// Both halves are needed. `turn_in_flight` alone cannot see "turn N ended and
+/// N+1 started while we hydrated" — it reads true both times.
+/// `SessionState.turns_completed` closes exactly that: it moves only on
+/// `TurnComplete`, so it is stable for a turn's whole life and differs across
+/// turns, whatever the new turn did to the flag. It is also independent of
+/// whether the turn ever published a user message, which
+/// `pending_user_message_started_at` is not (`user_message` is `None` for
+/// delegation children and unbound conversations, so those turns would have
+/// carried no identity at all).
+fn steered_turn_changed(
+    admitted_turns_completed: u64,
+    now_in_flight: bool,
+    now_turns_completed: u64,
+) -> bool {
+    !now_in_flight || now_turns_completed != admitted_turns_completed
+}
+
 /// Read the spawn-handshake timeout from `CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`,
 /// falling back to `SPAWN_HANDSHAKE_TIMEOUT_SECS`. Returns the configured
 /// `Duration`. Tests can construct the manager with a custom value via
@@ -190,8 +211,62 @@ async fn wait_for_session_started(
     (outcome, start.elapsed())
 }
 
+/// A connection that has left the map while its process may still be running.
+struct DrainingChild {
+    agent: AgentType,
+    /// The connection's live pid cell. `on_spawn` publishes the pid and
+    /// `on_exit` zeroes it on a real reap.
+    pid: Arc<std::sync::atomic::AtomicU32>,
+    parked_at: std::time::Instant,
+}
+
+type DrainingChildren = Vec<DrainingChild>;
+
+/// How long a child whose pid reads zero is still treated as possibly running.
+///
+/// Zero is ambiguous: it means "reaped" AND "not spawned yet". A connection
+/// torn down mid-spawn can publish a live pid moments later, so dropping it
+/// immediately would hide a real writer. The grace resolves the ambiguity in
+/// the safe direction — a false positive only downgrades a restore to the side
+/// location, while a false negative unlinks a file an agent is writing.
+const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Drop entries that are provably finished: pid back to zero and long enough
+/// ago that it cannot be a spawn still in flight.
+fn prune_reaped(draining: &mut DrainingChildren) {
+    draining.retain(|c| {
+        c.pid.load(std::sync::atomic::Ordering::SeqCst) != 0
+            || c.parked_at.elapsed() < DRAIN_GRACE
+    });
+}
+
 pub struct ConnectionManager {
     pub(crate) connections: Arc<Mutex<HashMap<String, AgentConnection>>>,
+    /// Connections whose teardown was requested but whose child process has
+    /// not been reaped yet.
+    ///
+    /// `disconnect` drops the map entry immediately and only then signals the
+    /// child, so without this an agent that is still exiting — and still able
+    /// to append to its transcript — is invisible to the backup restore gate,
+    /// which would then unlink files it is still writing.
+    ///
+    /// Each entry holds the connection's live `child_pid` cell. `on_exit`
+    /// zeroes it on a REAL reap; a connection that merely ended keeps its pid,
+    /// because `ChildGuard::drop` signals the tree without waiting. So
+    /// "non-zero" is exactly the codebase's existing definition of "this
+    /// process may still be running", the same one the shutdown backstop
+    /// relies on. Pruned on every push and every read, so it stays small.
+    draining: Arc<Mutex<DrainingChildren>>,
+    /// Read-held for the whole of `spawn_agent`, write-held while a backup
+    /// restore writes transcripts back to the agents' own directories.
+    ///
+    /// Enumerating live connections and then writing is a check-then-use with
+    /// a gap wide enough to drive through: staging a large archive takes
+    /// minutes, and automations, the work-task engine and MCP delegation all
+    /// start connections without a user clicking anything. Taking the write
+    /// lock BEFORE enumerating closes it — no connection can appear between
+    /// the count and the writes.
+    external_restore_lock: Arc<tokio::sync::RwLock<()>>,
     /// Per-(agent, working_dir, session_id) async mutex. Held across the
     /// dedup-lookup + spawn + SessionStarted-wait critical section so two
     /// concurrent `spawn_agent` calls for the same logical session can't
@@ -271,6 +346,8 @@ impl ConnectionManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
+            external_restore_lock: Arc::new(tokio::sync::RwLock::new(())),
+            draining: Arc::new(Mutex::new(Vec::new())),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
@@ -286,6 +363,8 @@ impl ConnectionManager {
     pub fn clone_ref(&self) -> Self {
         Self {
             connections: self.connections.clone(),
+            external_restore_lock: self.external_restore_lock.clone(),
+            draining: self.draining.clone(),
             spawn_locks: self.spawn_locks.clone(),
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
@@ -337,6 +416,8 @@ impl ConnectionManager {
     fn with_spawn_handshake_timeout(timeout: Duration) -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
+            external_restore_lock: Arc::new(tokio::sync::RwLock::new(())),
+            draining: Arc::new(Mutex::new(Vec::new())),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
@@ -453,6 +534,11 @@ impl ConnectionManager {
         preferred_config_values: BTreeMap<String, String>,
         additional_mcp_servers: Vec<McpServer>,
     ) -> Result<AcpConnectResult, AcpError> {
+        // Held for the whole establishment. A restore writing back to the
+        // agents' own directories takes the write side, so it can never see an
+        // empty connection list and then have one appear underneath it. Not
+        // re-entrant: nothing reachable from here calls `spawn_agent` again.
+        let _restore_guard = self.external_restore_lock.read().await;
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
         // the same external session in the same working_dir for the same
@@ -2174,17 +2260,64 @@ impl ConnectionManager {
     }
 
     pub async fn disconnect(&self, conn_id: &str) -> Result<(), AcpError> {
-        let cmd_tx = {
+        let removed = {
+            // The map lock is held ACROSS the handoff into `draining`, and
+            // readers take it in the same order, so an observer can never see
+            // the connection in neither place.
             let mut connections = self.connections.lock().await;
-            connections.remove(conn_id).map(|conn| conn.cmd_tx)
+            let removed = connections.remove(conn_id);
+            if let Some(conn) = &removed {
+                self.park_draining(conn).await;
+            }
+            removed
         };
-        if let Some(cmd_tx) = cmd_tx {
+        if let Some(conn) = removed {
             tracing::info!("[ACP] disconnect connection={}", conn_id);
-            let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
+            let _ = conn.cmd_tx.send(ConnectionCommand::Disconnect).await;
             Ok(())
         } else {
             Err(AcpError::ConnectionNotFound(conn_id.into()))
         }
+    }
+
+    /// Remember a connection's child until it is provably finished. Call while
+    /// holding the connections lock, immediately after removing the entry.
+    async fn park_draining(&self, conn: &AgentConnection) {
+        let mut draining = self.draining.lock().await;
+        prune_reaped(&mut draining);
+        draining.push(DrainingChild {
+            agent: conn.agent_type,
+            pid: conn.child_pid.clone(),
+            parked_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Every agent that could still be writing to its own files: connected or
+    /// prompting, plus any whose connection is gone but whose process is not.
+    ///
+    /// Taken under the connections lock so the `disconnect` handoff into
+    /// `draining` is atomic from here — otherwise a restore could look between
+    /// the two and conclude nothing is running.
+    pub async fn live_or_draining_agent_names(&self) -> Vec<String> {
+        let connections = self.connections.lock().await;
+        let mut names: Vec<String> = connections
+            .values()
+            .filter(|c| {
+                matches!(
+                    c.status,
+                    ConnectionStatus::Connecting
+                        | ConnectionStatus::Connected
+                        | ConnectionStatus::Prompting
+                )
+            })
+            .map(|c| c.agent_type.to_string())
+            .collect();
+        let mut draining = self.draining.lock().await;
+        prune_reaped(&mut draining);
+        names.extend(draining.iter().map(|c| c.agent.to_string()));
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Probe an agent for the modes / config_options it advertises on a fresh
@@ -2379,6 +2512,9 @@ impl ConnectionManager {
             let mut txs = Vec::with_capacity(ids.len());
             for id in ids {
                 if let Some(conn) = connections.remove(&id) {
+                    // Same handoff as `disconnect`: closing a window leaves
+                    // the agents exiting, not exited.
+                    self.park_draining(&conn).await;
                     txs.push(conn.cmd_tx);
                 }
             }
@@ -2495,6 +2631,15 @@ impl ConnectionManager {
         .await;
 
         disconnected
+    }
+
+    /// Block new connections from being established until the returned guard
+    /// is dropped. The caller must enumerate live connections only AFTER
+    /// holding this, never before.
+    pub async fn lock_out_new_connections(
+        &self,
+    ) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.external_restore_lock.clone().write_owned().await
     }
 
     pub async fn list_connections(&self) -> Vec<ConnectionInfo> {
@@ -2641,10 +2786,15 @@ impl ConnectionManager {
     /// steer and the note would strand (the frontend falls back to an ordinary
     /// prompt). The append rides `emit_with_state` so `SessionState.feedback`,
     /// the ring buffer, and every attached client stay in lockstep.
+    /// `blocks`, when present, is the full prompt-block draft (text plus
+    /// image attachments) to deliver on the native wire instead of the bare
+    /// `text` — `text` then serves as the recorded note. Only the native
+    /// channel can carry blocks; see the pull-path gate below.
     pub async fn submit_feedback(
         &self,
         conn_id: &str,
         text: String,
+        blocks: Option<Vec<PromptInputBlock>>,
     ) -> Result<FeedbackItem, AcpError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -2656,6 +2806,7 @@ impl ConnectionManager {
             )));
         }
         let text = trimmed.to_string();
+        let blocks = blocks.filter(|b| !b.is_empty());
         let (state, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -2684,7 +2835,22 @@ impl ConnectionManager {
         }
 
         if native {
-            return Self::submit_feedback_native(conn_id, state, cmd_tx, emitter, text).await;
+            return Self::submit_feedback_native(conn_id, state, cmd_tx, emitter, text, blocks)
+                .await;
+        }
+
+        // The pull tool delivers plain text (`PendingFeedback`), so a draft
+        // carrying attachment blocks cannot ride it without silently dropping
+        // them. Two ways to get here: an ordinary pull session (the composer
+        // offers its mid-turn send on every session with a delivery channel,
+        // so a codex/grok/gemini draft with an image lands right here), or a
+        // native session that downgraded between the frontend's channel read
+        // and this call (startedNewTurn latch). `NoActiveTurn` is the
+        // rejection the caller already maps to its queue fallback, which
+        // re-routes the WHOLE draft — attachments included — as the next
+        // turn's prompt.
+        if blocks.is_some() {
+            return Err(AcpError::NoActiveTurn);
         }
 
         let item = FeedbackItem::new_pending(
@@ -2733,26 +2899,118 @@ impl ConnectionManager {
     ///   note recorded right after `TurnComplete` is harmless — the notes
     ///   list renders only while prompting, and the next turn's `UserMessage`
     ///   clears `feedback`.
+    /// * `created_at` PRECEDES THE INJECTION. It is taken before the `Steer`
+    ///   command is enqueued, so it is earlier than any transcript entry the
+    ///   injection can cause. The frontend relies on that ordering to tell the
+    ///   agent's own copy of the message from the same words sent in an
+    ///   earlier round (`suppressPersistedSteeredPrompts`).
     async fn submit_feedback_native(
         conn_id: &str,
         state: Arc<tokio::sync::RwLock<crate::acp::session_state::SessionState>>,
         cmd_tx: tokio::sync::mpsc::Sender<ConnectionCommand>,
         emitter: EventEmitter,
         text: String,
+        blocks: Option<Vec<PromptInputBlock>>,
     ) -> Result<FeedbackItem, AcpError> {
         // Cheap pre-flight, NOT the authoritative check (that's the loop's
         // idle arm replying `NoActiveTurn`): skip the round-trip when no turn
-        // is in flight at all.
-        if !state.read().await.turn_in_flight {
-            return Err(AcpError::NoActiveTurn);
-        }
+        // is in flight at all. The counter read alongside it identifies WHICH
+        // turn this steer was admitted against — see the re-check below.
+        let admitted_turns_completed = {
+            let s = state.read().await;
+            if !s.turn_in_flight {
+                return Err(AcpError::NoActiveTurn);
+            }
+            s.turns_completed
+        };
+        // The wire payload: the caller's full draft when it carried blocks
+        // (attachments included), else the recorded text as a single block —
+        // byte-identical to the historical text-only steer. Uploaded-image
+        // markers (web / remote mode) are re-hydrated exactly like a prompt's,
+        // AFTER the admission checks above so a rejected steer never triggers
+        // file reads, and BEFORE the shield below so a failure aborts with no
+        // side effects.
+        // Whether the caller sent a real draft rather than bare text. Read
+        // BEFORE `blocks` is consumed below, and the sole gate on recording a
+        // block list at all: a text-only steer must keep producing exactly the
+        // note it always produced.
+        let had_blocks = blocks.is_some();
+        let wire_blocks = match blocks {
+            Some(mut blocks) => {
+                crate::acp::prompt_hydration::hydrate_prompt_blocks(
+                    &mut blocks,
+                    &crate::paths::codeg_uploads_root(),
+                )
+                .await?;
+                // Hydration is the ONLY await this path puts between admission
+                // and the enqueue, and it runs for as long as reading the
+                // uploads takes. The loop's idle arm already covers "the turn
+                // ended" (it replies `NoActiveTurn`), but it cannot cover "the
+                // NEXT turn started in the meantime": the loop would then be
+                // in its active arm and inject the note into a turn the user
+                // never aimed at, recorded `Delivered` while the composer
+                // clears. Re-check the admitted turn's identity so that case
+                // takes the caller's queue fallback instead — which re-routes
+                // the whole draft, attachment included.
+                let changed = {
+                    let s = state.read().await;
+                    steered_turn_changed(
+                        admitted_turns_completed,
+                        s.turn_in_flight,
+                        s.turns_completed,
+                    )
+                };
+                if changed {
+                    return Err(AcpError::NoActiveTurn);
+                }
+                blocks
+            }
+            None => vec![PromptInputBlock::Text { text: text.clone() }],
+        };
+        // Project what the user sent for the broadcast, AFTER hydration and
+        // from the same bytes the agent gets — the contract an ordinary prompt
+        // already follows (`user_blocks_from_prompt` at the `UserMessage`
+        // emit). Without it the note reaches the live transcript as `text`
+        // alone, which is the composer's DISPLAY form: a steered image would
+        // render as words about an image until a reload replaced it with the
+        // agent's own copy.
+        //
+        // `None` for a text-only steer, so that path's note is unchanged and
+        // the frontend keeps rendering it from `text`.
+        //
+        // Filtered on the ATTACHMENT bytes rather than on `blocks.is_some()`: a
+        // draft that projects down to text alone says nothing `text` does not
+        // already say, and recording a list for it would put one on a note the
+        // field's contract calls text-only.
+        //
+        // No budget check here on purpose — the per-turn attachment bound lives
+        // at the single authorized writer (`SessionState::apply_event`'s
+        // `FeedbackSubmitted` arm), where the check and the append share one
+        // critical section. Enforcing it here would be a read, an agent
+        // round-trip, then a write: concurrent steers would both read the same
+        // total and both pass it.
+        let record_blocks = had_blocks
+            .then(|| crate::acp::user_blocks_from_prompt(&wire_blocks))
+            .filter(|projected| crate::acp::feedback::attachment_bytes(projected) > 0);
         let conn_id_for_task = conn_id.to_string();
         let handle = tokio::spawn(async move {
             let outcome: Result<FeedbackItem, AcpError> = async {
+                // Stamped BEFORE the command goes out, so the note's instant is
+                // causally earlier than anything the injection can cause. The
+                // adapter pushes the text to the agent before it answers, and
+                // the agent may write its own transcript copy of the message
+                // while this task is still awaiting that answer — a note
+                // stamped on the way back would then look NEWER than the copy
+                // it produced, and the frontend (which folds a persisted copy
+                // away only when it postdates the injection — see
+                // `suppressPersistedSteeredPrompts`) would show the message
+                // twice. Same clock, same host: `created_at` is when the note
+                // was created, which is also what the pull path records.
+                let created_at = chrono::Utc::now();
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 cmd_tx
                     .send(ConnectionCommand::Steer {
-                        text: text.clone(),
+                        blocks: wire_blocks,
                         reply: reply_tx,
                     })
                     .await
@@ -2784,7 +3042,8 @@ impl ConnectionManager {
                 let item = FeedbackItem::new_delivered(
                     uuid::Uuid::new_v4().to_string(),
                     text,
-                    chrono::Utc::now(),
+                    created_at,
+                    record_blocks,
                 );
                 // Ungated on purpose — see the invariant on this fn's doc.
                 emit_with_state(
@@ -3826,6 +4085,102 @@ impl SessionPlanApprovalAccess for ConnectionManagerPlanApprovalLookup {
 mod tests {
     use super::*;
     use crate::acp::connection::AgentConnection;
+
+    /// An agent that has left the connection map but not yet exited can still
+    /// be appending to the transcript a restore is about to unlink, so the
+    /// gate has to see it. `disconnect` drops the map entry immediately, which
+    /// is why the pid is parked separately rather than the entry being kept.
+    #[tokio::test]
+    async fn disconnect_keeps_a_live_child_visible_after_the_map_entry_is_gone() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        let pid = {
+            let conns = mgr.connections.lock().await;
+            conns.get("c1").unwrap().child_pid.clone()
+        };
+        pid.store(4242, SeqCst); // spawned
+
+        mgr.disconnect("c1").await.unwrap();
+        assert!(
+            mgr.list_connections().await.is_empty(),
+            "the map entry goes immediately — that is the whole problem"
+        );
+        assert_eq!(
+            mgr.live_or_draining_agent_names().await,
+            vec!["Claude Code".to_string()]
+        );
+    }
+
+    /// Closing a window tears down its agents the same way, and leaves them
+    /// exiting rather than exited.
+    #[tokio::test]
+    async fn closing_a_window_also_keeps_its_children_visible() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        {
+            let conns = mgr.connections.lock().await;
+            conns.get("c1").unwrap().child_pid.store(777, SeqCst);
+        }
+        assert_eq!(mgr.disconnect_by_owner_window("test-window").await, 1);
+        assert_eq!(
+            mgr.live_or_draining_agent_names().await,
+            vec!["Codex CLI".to_string()]
+        );
+    }
+
+    /// A pid of zero means BOTH "reaped" and "not spawned yet", so a
+    /// connection torn down mid-spawn — which can publish a live pid moments
+    /// later — must not be dismissed. It ages out instead.
+    #[tokio::test]
+    async fn a_child_that_has_not_published_a_pid_is_still_assumed_live() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        mgr.disconnect("c1").await.unwrap();
+        assert_eq!(
+            mgr.live_or_draining_agent_names().await,
+            vec!["Codex CLI".to_string()],
+            "within the grace window an unpublished pid counts as running"
+        );
+
+        // Backdate past the grace: now zero can only mean finished.
+        {
+            let mut draining = mgr.draining.lock().await;
+            for child in draining.iter_mut() {
+                child.parked_at = std::time::Instant::now() - DRAIN_GRACE * 2;
+            }
+        }
+        assert!(mgr.live_or_draining_agent_names().await.is_empty());
+        assert_eq!(
+            mgr.draining.lock().await.len(),
+            0,
+            "reading prunes, so the list cannot grow without bound"
+        );
+    }
+
+    /// `spawn_agent` takes the read side of `external_restore_lock` as its
+    /// very first statement, so holding the write side is what makes a backup
+    /// restore's "are any agents running?" check a real gate rather than a
+    /// check-then-use with a multi-minute gap.
+    #[tokio::test]
+    async fn lock_out_new_connections_blocks_connection_establishment() {
+        let mgr = ConnectionManager::new();
+        let guard = mgr.lock_out_new_connections().await;
+        assert!(
+            mgr.external_restore_lock.try_read().is_err(),
+            "no connection may be established while the lockout is held"
+        );
+        drop(guard);
+        assert!(mgr.external_restore_lock.try_read().is_ok());
+    }
+    // Test-only: the budget itself is enforced at the append in
+    // `SessionState::apply_event`, so nothing in this module's production code
+    // names it — only the tests that pin the bound do.
+    use crate::acp::feedback::MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN;
     use crate::acp::session_state::SessionState;
     use crate::acp::types::ConnectionStatus;
     use crate::web::event_bridge::{EventEmitter, WebEvent, WebEventBroadcaster};
@@ -7675,7 +8030,7 @@ mod tests {
         // (e.g. its session started before the feature was enabled), even mid-turn.
         let state = mgr.get_state("c1").await.unwrap();
         state.write().await.turn_in_flight = true;
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::FeedbackDisabled));
         assert!(state.read().await.feedback.is_empty());
     }
@@ -7687,7 +8042,7 @@ mod tests {
             .await;
         // Tool available but no turn in flight → nothing to steer.
         set_feedback_tool_available(&mgr, "c1").await;
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::NoActiveTurn));
         // And nothing was appended.
         let state = mgr.get_state("c1").await.unwrap();
@@ -7698,7 +8053,7 @@ mod tests {
     async fn submit_feedback_missing_connection_errors() {
         let mgr = ConnectionManager::new();
         let err = mgr
-            .submit_feedback("nope", "note".into())
+            .submit_feedback("nope", "note".into(), None)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::ConnectionNotFound(_)));
@@ -7711,7 +8066,7 @@ mod tests {
             .await;
         mark_feedback_ready(&mgr, "c1").await;
         let item = mgr
-            .submit_feedback("c1", "  use UserService  ".into())
+            .submit_feedback("c1", "  use UserService  ".into(), None)
             .await
             .unwrap();
         assert_eq!(item.status, FeedbackStatus::Pending);
@@ -7731,16 +8086,16 @@ mod tests {
         mark_feedback_ready(&mgr, "c1").await;
         // Empty / whitespace-only → rejected, nothing appended.
         for empty in ["", "   ", "\n\t "] {
-            let err = mgr.submit_feedback("c1", empty.into()).await.unwrap_err();
+            let err = mgr.submit_feedback("c1", empty.into(), None).await.unwrap_err();
             assert!(matches!(err, AcpError::InvalidFeedback(_)));
         }
         // Oversized → rejected.
         let huge = "x".repeat(MAX_FEEDBACK_CHARS + 1);
-        let err = mgr.submit_feedback("c1", huge).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", huge, None).await.unwrap_err();
         assert!(matches!(err, AcpError::InvalidFeedback(_)));
         // Exactly at the bound is accepted.
         let at_bound = "y".repeat(MAX_FEEDBACK_CHARS);
-        assert!(mgr.submit_feedback("c1", at_bound).await.is_ok());
+        assert!(mgr.submit_feedback("c1", at_bound, None).await.is_ok());
         let state = mgr.get_state("c1").await.unwrap();
         assert_eq!(state.read().await.feedback.len(), 1, "only the valid note stuck");
     }
@@ -7755,20 +8110,88 @@ mod tests {
     }
 
     /// Play the connection loop's role: receive one `Steer` command and reply
-    /// the given outcome. Returns the text the command carried.
+    /// the given outcome. Returns the blocks the command carried.
     fn answer_steer(
         mut rx: tokio::sync::mpsc::Receiver<ConnectionCommand>,
         outcome: Result<SteerOutcome, AcpError>,
-    ) -> tokio::task::JoinHandle<String> {
+    ) -> tokio::task::JoinHandle<Vec<PromptInputBlock>> {
         tokio::spawn(async move {
             match rx.recv().await {
-                Some(ConnectionCommand::Steer { text, reply }) => {
+                Some(ConnectionCommand::Steer { blocks, reply }) => {
                     let _ = reply.send(outcome);
-                    text
+                    blocks
                 }
                 _ => panic!("expected a Steer command"),
             }
         })
+    }
+
+    /// [`answer_steer`] for a test that submits more than once: answers `n`
+    /// Steer commands with the same outcome. The loop is what makes concurrent
+    /// submits resolvable — each waits on its own reply channel, so a
+    /// single-shot answerer would leave the second one hanging.
+    /// Takes a bare [`SteerOutcome`] (which is `Copy`) rather than the
+    /// `Result` [`answer_steer`] accepts, because `AcpError` is not `Clone` and
+    /// a repeated answerer has to hand out the same value more than once. No
+    /// caller needs a repeated FAILURE.
+    fn answer_steer_n(
+        mut rx: tokio::sync::mpsc::Receiver<ConnectionCommand>,
+        outcome: SteerOutcome,
+        n: usize,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            for _ in 0..n {
+                match rx.recv().await {
+                    Some(ConnectionCommand::Steer { reply, .. }) => {
+                        let _ = reply.send(Ok(outcome));
+                    }
+                    _ => panic!("expected a Steer command"),
+                }
+            }
+        })
+    }
+
+    /// The note's instant must precede the injection reaching the agent. The
+    /// adapter hands the text to the agent BEFORE it answers `injected`, so the
+    /// agent can write its own transcript copy of the message while this call
+    /// is still awaiting that answer. A note stamped on the way back would
+    /// postdate the copy it caused, and the frontend — which folds a persisted
+    /// copy away only when it postdates the injection, so that the same words
+    /// sent in an earlier round are never hidden — would show the message both
+    /// as a transcript turn and as a live one.
+    #[tokio::test]
+    async fn native_submit_stamps_the_note_before_the_agent_can_see_it() {
+        let mgr = ConnectionManager::new();
+        let mut rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        // Stand in for the adapter: note when the injection reached it (the
+        // earliest instant the agent could record the message), then dawdle
+        // before answering, as a real round-trip does.
+        let fake_loop = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ConnectionCommand::Steer { reply, .. }) => {
+                    let seen_by_agent = chrono::Utc::now();
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    let _ = reply.send(Ok(SteerOutcome::Injected));
+                    seen_by_agent
+                }
+                _ => panic!("expected a Steer command"),
+            }
+        });
+
+        let item = mgr
+            .submit_feedback("c1", "use the other API".into(), None)
+            .await
+            .unwrap();
+        let seen_by_agent = fake_loop.await.unwrap();
+        assert!(
+            item.created_at <= seen_by_agent,
+            "created_at ({}) must precede the injection reaching the agent ({})",
+            item.created_at,
+            seen_by_agent
+        );
     }
 
     #[tokio::test]
@@ -7784,12 +8207,23 @@ mod tests {
         set_feedback_tool_available(&mgr, "c1").await;
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
 
-        let item = mgr.submit_feedback("c1", "  ship it  ".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "  ship it  ".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         assert!(item.delivered_at.is_some());
         assert_eq!(item.text, "ship it");
-        // The wire carried the trimmed text.
-        assert_eq!(fake_loop.await.unwrap(), "ship it");
+        // The wire carried the trimmed text as a single block (a blocks-less
+        // submit stays byte-identical to the historical text-only steer).
+        assert_eq!(
+            fake_loop.await.unwrap(),
+            vec![PromptInputBlock::Text {
+                text: "ship it".into()
+            }]
+        );
+        // ...and so does the NOTE: a text-only steer records no block list, so
+        // every consumer keeps rendering it from `text` alone. This is the
+        // half that keeps the attachment support below from changing the
+        // historical path.
+        assert_eq!(item.blocks, None);
 
         let state = mgr.get_state("c1").await.unwrap();
         {
@@ -7805,6 +8239,291 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_submit_with_blocks_carries_the_draft_and_records_the_text() {
+        // A draft with an image attachment steers as its full block list (the
+        // wire payload) while the recorded note's `text` stays the display
+        // form. The note ALSO carries the projected blocks, because `text` is
+        // what the composer collapsed the attachment into: without them the
+        // live transcript renders a sentence about an image where the image
+        // should be, and only a reload (which reads the agent's own copy) puts
+        // it back. Projection matches an ordinary prompt's `user_message`.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+
+        let draft = vec![
+            PromptInputBlock::Text {
+                text: "make it match this mock".into(),
+            },
+            PromptInputBlock::Image {
+                data: "aGk=".into(),
+                mime_type: "image/png".into(),
+                uri: None,
+            },
+        ];
+        let item = mgr
+            .submit_feedback("c1", "make it match this mock".into(), Some(draft.clone()))
+            .await
+            .unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        assert_eq!(item.text, "make it match this mock");
+        // The note carries the image, so the live transcript can render it at
+        // the point the user sent it rather than waiting for a reload.
+        assert_eq!(
+            item.blocks,
+            Some(vec![
+                crate::acp::types::UserMessageBlock::Text {
+                    text: "make it match this mock".into()
+                },
+                crate::acp::types::UserMessageBlock::Image {
+                    data: "aGk=".into(),
+                    mime_type: "image/png".into(),
+                },
+            ])
+        );
+        // The wire carried the caller's blocks verbatim, attachment included.
+        assert_eq!(fake_loop.await.unwrap(), draft);
+    }
+
+    #[tokio::test]
+    async fn a_draft_that_projects_to_text_alone_records_no_block_list() {
+        // `blocks` means "this note carried more than its text". A draft whose
+        // projection is text-only says nothing `text` does not, so recording a
+        // list for it would put one on a note the field's contract calls
+        // text-only — and the frontend would key its dedup on that list.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+
+        let item = mgr
+            .submit_feedback(
+                "c1",
+                "just words".into(),
+                Some(vec![PromptInputBlock::Text {
+                    text: "just words".into(),
+                }]),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(item.blocks, None);
+        // The wire still carried what the caller sent — only the RECORD is
+        // trimmed, so the agent's input is untouched.
+        assert_eq!(
+            fake_loop.await.unwrap(),
+            vec![PromptInputBlock::Text {
+                text: "just words".into()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn steer_attachments_past_the_per_turn_budget_are_not_retained() {
+        // The budget guards what OUTLIVES the event: `SessionState.feedback`,
+        // which every snapshot is rebuilt from. So it is enforced at the append
+        // — the single authorized writer, where the check and the push share
+        // one critical section — not at the submit site, where a read, an agent
+        // round-trip and a write would let two concurrent steers both pass it.
+        //
+        // Past the budget the note still DELIVERS and the event still carries
+        // its blocks to whoever is attached right now; only the retained copy
+        // drops them, so a reconnect renders it from `text` like any text-only
+        // steer.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+
+        let huge = "A".repeat(MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN + 1);
+        let item = mgr
+            .submit_feedback(
+                "c1",
+                "one enormous screenshot".into(),
+                Some(vec![PromptInputBlock::Image {
+                    data: huge,
+                    mime_type: "image/png".into(),
+                    uri: None,
+                }]),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            item.status,
+            FeedbackStatus::Delivered,
+            "over budget is not a rejection — the agent already has the content"
+        );
+
+        // The RETAINED note is the one that had to shed the attachment.
+        let state = mgr.get_state("c1").await.unwrap();
+        {
+            let s = state.read().await;
+            assert_eq!(s.feedback.len(), 1);
+            assert_eq!(
+                s.feedback[0].blocks, None,
+                "an over-budget attachment must not be kept for the turn"
+            );
+            assert_eq!(s.feedback[0].text, "one enormous screenshot");
+        }
+
+        // And the wire was never trimmed: the budget governs what codeg KEEPS,
+        // not what the agent receives.
+        let sent = fake_loop.await.unwrap();
+        assert!(matches!(
+            sent.as_slice(),
+            [PromptInputBlock::Image { data, .. }]
+                if data.len() == MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN + 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_over_budget_steers_cannot_both_be_retained() {
+        // The interleaving a submit-site check could not stop: two steers whose
+        // attachments each fit the budget alone but not together. The append is
+        // serialized by the state write lock, so the second one sees the first
+        // already retained and sheds its own blocks.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer_n(rx, SteerOutcome::Injected, 2);
+
+        // Two thirds of the budget each: either alone is admissible, the pair
+        // is not.
+        let half = "A".repeat((MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN / 3) * 2);
+        let shot = |text: &str| {
+            let data = half.clone();
+            let text = text.to_string();
+            let mgr = &mgr;
+            async move {
+                mgr.submit_feedback(
+                    "c1",
+                    text,
+                    Some(vec![PromptInputBlock::Image {
+                        data,
+                        mime_type: "image/png".into(),
+                        uri: None,
+                    }]),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let (a, b) = tokio::join!(shot("first"), shot("second"));
+        assert_eq!(a.status, FeedbackStatus::Delivered);
+        assert_eq!(b.status, FeedbackStatus::Delivered);
+        fake_loop.await.unwrap();
+
+        let state = mgr.get_state("c1").await.unwrap();
+        let s = state.read().await;
+        assert_eq!(s.feedback.len(), 2, "both notes are still recorded");
+        let retained: usize = s
+            .feedback
+            .iter()
+            .filter_map(|f| f.blocks.as_deref())
+            .map(crate::acp::feedback::attachment_bytes)
+            .sum();
+        assert!(
+            retained <= MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN,
+            "the aggregate bound holds across concurrent steers: retained={retained}"
+        );
+        assert_eq!(
+            s.feedback.iter().filter(|f| f.blocks.is_some()).count(),
+            1,
+            "exactly one of the pair keeps its attachment"
+        );
+    }
+
+    #[test]
+    fn a_steer_admitted_against_one_turn_does_not_ride_the_next_one() {
+        // The guard `submit_feedback_native` applies across attachment
+        // hydration — the one await between admission and the enqueue. The
+        // loop's idle arm covers "the turn ended"; only this covers "the next
+        // turn started", which would otherwise have the loop inject the note
+        // into a turn the user never aimed at.
+        //
+        // Same turn throughout — the overwhelmingly common case.
+        assert!(!steered_turn_changed(3, true, 3));
+        // The turn ended and a NEW one started: still in flight, so the flag
+        // alone says nothing. This is the case nothing else catches.
+        assert!(steered_turn_changed(3, true, 4));
+        // The turn simply ended (the loop's idle arm would also catch this).
+        assert!(steered_turn_changed(3, false, 4));
+        // A repeat `TurnComplete` double-counts; only inequality is read, so
+        // the verdict is the same.
+        assert!(steered_turn_changed(3, true, 5));
+        // First turn of a connection: the counter starts at zero and carries
+        // identity from the very first turn, with no "unknown" window.
+        assert!(!steered_turn_changed(0, true, 0));
+        assert!(steered_turn_changed(0, true, 1));
+    }
+
+    #[tokio::test]
+    async fn turn_complete_moves_the_turn_identity_the_steer_guard_reads() {
+        // The guard above is only as good as the counter under it: prove
+        // `TurnComplete` — the single production clear of `turn_in_flight` —
+        // is what moves it, so "the turn I was admitted against is over" is
+        // observable even once a NEXT turn has set the flag again.
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        let state = mgr.get_state("c1").await.unwrap();
+        let admitted = {
+            let mut s = state.write().await;
+            s.turn_in_flight = true;
+            s.turns_completed
+        };
+        state.write().await.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        // A next turn re-sets the flag, exactly as `send_prompt_inner` does.
+        state.write().await.turn_in_flight = true;
+
+        let s = state.read().await;
+        assert!(
+            steered_turn_changed(admitted, s.turn_in_flight, s.turns_completed),
+            "an in-flight flag that belongs to the NEXT turn must not read as the admitted one"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_submit_with_blocks_rejects_instead_of_dropping_attachments() {
+        // The pull tool delivers plain text, so a blocks-bearing note on a
+        // pull-only session (native downgraded mid-race) must reject with
+        // NoActiveTurn — the caller's queue fallback re-routes the whole
+        // draft — rather than deliver the text and silently drop the image.
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_feedback_ready(&mgr, "c1").await;
+        let draft = vec![PromptInputBlock::Image {
+            data: "aGk=".into(),
+            mime_type: "image/png".into(),
+            uri: None,
+        }];
+        let err = mgr
+            .submit_feedback("c1", "1 attachment".into(), Some(draft))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcpError::NoActiveTurn));
+        // Nothing recorded: the content is still draft-owned.
+        let state = mgr.get_state("c1").await.unwrap();
+        assert!(state.read().await.feedback.is_empty());
+        assert!(mgr.read_pending_feedback("c1").await.is_empty());
+    }
+
+    #[tokio::test]
     async fn native_submit_prompt_required_maps_to_no_active_turn_and_records_nothing() {
         let mgr = ConnectionManager::new();
         let rx = mgr
@@ -7813,7 +8532,7 @@ mod tests {
         mark_native_steering_ready(&mgr, "c1").await;
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::PromptRequired));
 
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::NoActiveTurn));
         let _ = fake_loop.await;
 
@@ -7837,7 +8556,7 @@ mod tests {
 
         // The adapter ignored the opt-in: content consumed → recorded
         // Delivered (never resent), and the session downgrades to pull.
-        let item = mgr.submit_feedback("c1", "note one".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "note one".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
         let state = mgr.get_state("c1").await.unwrap();
@@ -7849,7 +8568,7 @@ mod tests {
         // The NEXT note rides the pull path: lands Pending, no Steer command
         // (the loop receiver was consumed above — a native attempt would fail
         // on the dead channel, so an Ok(Pending) proves the pull branch ran).
-        let second = mgr.submit_feedback("c1", "note two".into()).await.unwrap();
+        let second = mgr.submit_feedback("c1", "note two".into(), None).await.unwrap();
         assert_eq!(second.status, FeedbackStatus::Pending);
         let pending = mgr.read_pending_feedback("c1").await;
         assert_eq!(pending.len(), 1);
@@ -7882,7 +8601,7 @@ mod tests {
             }
         });
 
-        let item = mgr.submit_feedback("c1", "late note".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "late note".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
         assert_eq!(state.read().await.feedback.len(), 1);
@@ -7924,7 +8643,7 @@ mod tests {
         // caller future.
         let timed = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            mgr.submit_feedback("c1", "shielded note".into()),
+            mgr.submit_feedback("c1", "shielded note".into(), None),
         )
         .await;
         assert!(
@@ -7964,7 +8683,7 @@ mod tests {
         mark_native_steering_ready(&mgr, "c1").await;
         // feedback_tool_available stays false.
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
-        let item = mgr.submit_feedback("c1", "no tool needed".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "no tool needed".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
     }
@@ -8303,8 +9022,8 @@ mod tests {
         mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
             .await;
         mark_feedback_ready(&mgr, "c1").await;
-        let a = mgr.submit_feedback("c1", "a".into()).await.unwrap();
-        let b = mgr.submit_feedback("c1", "b".into()).await.unwrap();
+        let a = mgr.submit_feedback("c1", "a".into(), None).await.unwrap();
+        let b = mgr.submit_feedback("c1", "b".into(), None).await.unwrap();
 
         // READ returns both pending notes (insert order) WITHOUT mutating state.
         let pending = mgr.read_pending_feedback("c1").await;

@@ -98,17 +98,45 @@ pub(crate) const RETRY_THE_CLEANUP: &str = "Remove them, then retry the cleanup.
 /// The probe every worktree-removal gate shares: does this checkout still hold
 /// work (tracked edits or files git has never seen)?
 ///
-/// FAILS CLOSED. Exactly one reason for git being unable to answer is safe to
-/// read as "clean" — the checkout is already off disk, so there is nothing left
-/// to lose, and the removal paths handle a missing directory on their own. Any
-/// OTHER failure (a corrupt index, a permission error, a transient git fault)
-/// means we could not prove the directory is safe to destroy, and the operation
-/// waiting on this answer is `git worktree remove --force`. Guessing "clean"
+/// FAILS CLOSED. Only two reasons for git being unable to answer are safe to
+/// read as "clean": the checkout is already off disk, or git removed its
+/// registration and contents but left a readable, strictly empty directory
+/// behind. Any entry in that shell (ignored and hidden files included), a
+/// corrupt index, a permission error, or another transient filesystem failure
+/// means we could not prove the directory is safe to destroy. The operation
+/// waiting on this answer is `git worktree remove --force`, so guessing "clean"
 /// there trades a recoverable stall for unrecoverable files.
+///
+/// The `.git` marker is checked FIRST, and not as an optimization: `has_changes`
+/// runs `git status` with the path as its working directory, and git walks UP
+/// from there. A shell with no marker left is not a checkout git can speak for,
+/// so whatever it answers is about the repository that ENCLOSES the shell — the
+/// project itself whenever the folder's worktree root is a path inside it. That
+/// answer is a clean `Ok(false)` or a dirty `Ok(true)` about somebody else's
+/// files, and neither is this path's; only the directory probe below is.
 async fn path_holds_uncommitted(path: &str) -> bool {
+    match std::fs::symlink_metadata(Path::new(path).join(".git")) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return shell_holds_entries(path),
+        // Could not even look at the marker — no proof of anything. Fail closed.
+        Err(_) => return true,
+    }
     match task_git::has_changes(path).await {
         Ok(dirty) => dirty,
-        Err(_) => Path::new(path).exists(),
+        Err(_) => shell_holds_entries(path),
+    }
+}
+
+/// The one thing left to ask about a directory git has stopped speaking for: is
+/// it strictly empty? Anything else — an entry of any kind, or a failure to read
+/// the directory at all — is "holds work", because a `--force` removal is what
+/// waits on the answer. Only a path that is gone reads as nothing to lose.
+fn shell_holds_entries(path: &str) -> bool {
+    match std::fs::read_dir(path) {
+        // `Some(Err(_))` is deliberately still "holds work": even learning
+        // whether an entry exists has to succeed before removal is safe.
+        Ok(mut entries) => entries.next().is_some(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 
@@ -4250,19 +4278,30 @@ impl TaskEngine {
                 .push_branch(&ctx, wt_path, &push_repo, work_branch, remote_branch)
                 .await
                 .map_err(|e| {
-                    if crate::forge::same_repo(&push_repo, &meta.owner_repo) {
-                        format!("could not push back to '{remote_branch}': {e}")
+                    let own_repo = crate::forge::same_repo(&push_repo, &meta.owner_repo);
+                    let where_ = if own_repo {
+                        format!("could not push back to '{remote_branch}'")
                     } else {
-                        // The push went to the FORK. The by-far most common
-                        // refusal there is permission: forges only let this
-                        // account push when the author allowed maintainer
-                        // edits on the pull request.
-                        format!(
-                            "could not push back to '{remote_branch}' on {push_repo}: {e} — \
-                             pushing to a fork needs its author to allow edits from \
-                             maintainers on the {}",
+                        format!("could not push back to '{remote_branch}' on {push_repo}")
+                    };
+                    // A hint is only added when git actually said something we
+                    // recognise. The fork case used to carry the permission
+                    // hint unconditionally, which reads as a finding rather
+                    // than the guess it was: a push refused for being out of
+                    // date came back advising the reader to go change a
+                    // setting on the pull request that was already correct.
+                    match classify_push_refusal(&e) {
+                        PushRefusal::Permission if !own_repo => format!(
+                            "{where_}: {e} — pushing to a fork needs its author to allow edits \
+                             from maintainers on the {}",
                             meta.provider.change_noun()
-                        )
+                        ),
+                        PushRefusal::BranchMoved => format!(
+                            "{where_}: {e} — that branch has commits this task does not have, so \
+                             the push is not a fast-forward. Bring them into the task's branch, \
+                             then deliver again"
+                        ),
+                        _ => format!("{where_}: {e}"),
                     }
                 })?;
 
@@ -5863,6 +5902,67 @@ fn is_queued_merge_superseded(error: &str) -> bool {
     error.contains("changed or withdrawn")
 }
 
+/// What a refused push-back most likely means, read off git's own words.
+///
+/// Deliberately narrow. Whatever this returns is printed to a human as advice,
+/// so the only two shapes recognised are the ones git states plainly, and
+/// everything else is `Unknown` — which prints no advice at all. An unhelpful
+/// message costs a reader a moment; a confident wrong one sends them to change
+/// a setting that was never the problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushRefusal {
+    /// The remote refused the account: no write access, or a fork whose author
+    /// did not allow maintainer edits.
+    Permission,
+    /// The branch has commits the task's branch does not, so a fast-forward
+    /// push cannot apply. Routine on a long-lived pull request: the author
+    /// pushed, or merged the base branch in, after this task was triggered.
+    BranchMoved,
+    Unknown,
+}
+
+/// Match on git's stderr, which reaches here inside the delivery error string.
+/// Permission is tested first: a forge that refuses the push outright can also
+/// mention "rejected", and being told the wrong one of these two is precisely
+/// the failure this classification exists to stop.
+fn classify_push_refusal(error: &str) -> PushRefusal {
+    let lower = error.to_lowercase();
+    // The status codes are matched in the phrasing git and curl actually
+    // print, not as bare digits: "403" on its own also matches a branch called
+    // `fix/403-page` or a repository named after an issue number, and the whole
+    // point of this function is to stop it handing out confident wrong advice.
+    let permission = [
+        "permission to",
+        "denied to",
+        "error: 403",
+        "error: 401",
+        "http 403",
+        "http 401",
+        "status code 403",
+        "status code 401",
+        "authentication failed",
+        "write access",
+        "read-only",
+        "protected branch",
+        "pre-receive hook declined",
+    ];
+    if permission.iter().any(|needle| lower.contains(needle)) {
+        return PushRefusal::Permission;
+    }
+    let moved = [
+        "non-fast-forward",
+        "fetch first",
+        "updates were rejected",
+        "[rejected]",
+        "behind its remote",
+        "stale info",
+    ];
+    if moved.iter().any(|needle| lower.contains(needle)) {
+        return PushRefusal::BranchMoved;
+    }
+    PushRefusal::Unknown
+}
+
 /// The repository a pull-request task's push-back lands in: the HEAD
 /// repository recorded at trigger time — the fork, when the pull request comes
 /// from one. A row that recorded none falls back to the source repository:
@@ -6852,6 +6952,73 @@ mod tests {
     const ABS_PREFIX: &str = "C:";
     #[cfg(not(windows))]
     const ABS_PREFIX: &str = "";
+
+    /// The stderr shapes below are what git and the forges actually print. A
+    /// push-back refused for being out of date used to come back advising the
+    /// reader to turn on maintainer edits — a setting that, in the report that
+    /// prompted this, was already on. So the two must never be confused.
+    #[test]
+    fn a_stale_push_back_is_not_read_as_a_permission_problem() {
+        let out_of_date = "git push failed: ! [rejected]        task/57 -> feat/x \
+             (fetch first)\nerror: failed to push some refs to \
+             'https://github.com/owner/repo.git'\nhint: Updates were rejected because the \
+             remote contains work that you do not have locally.";
+        assert_eq!(classify_push_refusal(out_of_date), PushRefusal::BranchMoved);
+        assert_eq!(
+            classify_push_refusal("git push failed: ! [rejected] a -> b (non-fast-forward)"),
+            PushRefusal::BranchMoved
+        );
+    }
+
+    #[test]
+    fn a_refused_fork_push_is_read_as_a_permission_problem() {
+        let denied = "git push: authentication failed. Configure a GitHub account in \
+             Settings → Version Control.: remote: Permission to author/repo.git denied to \
+             maintainer.\nfatal: unable to access \
+             'https://github.com/author/repo.git/': The requested URL returned error: 403";
+        assert_eq!(classify_push_refusal(denied), PushRefusal::Permission);
+        assert_eq!(
+            classify_push_refusal(
+                "remote: GitLab: You are not allowed to push code to \
+                 protected branches on this project."
+            ),
+            PushRefusal::Permission
+        );
+        // A forge that refuses outright can also say "rejected"; permission
+        // has to win, or the advice sends the reader to rebase for nothing.
+        assert_eq!(
+            classify_push_refusal(
+                "! [remote rejected] a -> b (pre-receive hook declined)\nerror: failed to push"
+            ),
+            PushRefusal::Permission
+        );
+    }
+
+    /// Anything unrecognised must stay `Unknown`, because `Unknown` is what
+    /// prints no advice — the whole point of the split.
+    #[test]
+    fn an_unrecognised_push_failure_gets_no_advice() {
+        assert_eq!(
+            classify_push_refusal("git push failed: fatal: the remote end hung up unexpectedly"),
+            PushRefusal::Unknown
+        );
+        assert_eq!(classify_push_refusal(""), PushRefusal::Unknown);
+    }
+
+    /// A status code has to be matched in the phrasing that carries it. Branch
+    /// and repository names are part of every push error, and plenty of them
+    /// are named after an issue number.
+    #[test]
+    fn a_number_in_a_branch_name_is_not_a_status_code() {
+        let stale_on_an_issue_branch = "git push failed: ! [rejected] fix/403-page -> \
+             fix/401-redirect (fetch first)\nerror: failed to push some refs to \
+             'https://github.com/owner/repo-403.git'";
+        assert_eq!(
+            classify_push_refusal(stale_on_an_issue_branch),
+            PushRefusal::BranchMoved,
+            "a 403 in a ref name must not be read as a permission refusal"
+        );
+    }
 
     #[test]
     fn worktree_names_carry_ids() {
@@ -10131,6 +10298,192 @@ mod tests {
         assert_eq!(task.worktree_folder_id, None, "detached");
         assert!(!f.worktree.exists(), "and really gone from disk");
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
+    }
+
+    /// Git for Windows can finish the destructive part of `worktree remove`
+    /// (registration and checkout contents) but fail to remove the now-empty
+    /// directory. That first pass leaves the task flagged for cleanup; its retry
+    /// must recognize the harmless shell, finish the branch/DB cleanup, and not
+    /// report files that do not exist.
+    #[tokio::test]
+    async fn worktree_cleanup_retry_converges_an_empty_detached_shell() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let worktree = f.worktree.to_str().expect("utf-8 worktree");
+        git_run(&f.root, &["worktree", "remove", "--force", worktree]);
+        std::fs::create_dir(&f.worktree).expect("empty shell");
+        work_task_service::set_cleanup_state(
+            &f.engine.db.conn,
+            f.task_id,
+            true,
+            Some("the first removal stopped after git detached it".into()),
+        )
+        .await
+        .expect("flag failed cleanup");
+
+        f.engine
+            .cleanup_task(f.task_id)
+            .await
+            .expect("retry cleanup");
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.cleanup_state, None, "the retry is fully settled");
+        assert_eq!(
+            task.worktree_folder_id, None,
+            "folder bookkeeping converged"
+        );
+        assert!(!f.worktree.exists(), "the empty shell is gone");
+        assert!(
+            task_git::rev_parse(f.root.to_str().unwrap(), "refs/heads/task/7")
+                .await
+                .is_err(),
+            "the requested work branch goes too"
+        );
+    }
+
+    /// A missing `.git` file alone is not proof that the directory is a harmless
+    /// post-removal shell. Files may have appeared after the partial teardown,
+    /// and none of them is recoverable through git, so the retry must preserve
+    /// both the sentinel and the branch.
+    #[tokio::test]
+    async fn worktree_cleanup_retry_preserves_a_file_in_a_detached_shell() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let worktree = f.worktree.to_str().expect("utf-8 worktree");
+        git_run(&f.root, &["worktree", "remove", "--force", worktree]);
+        std::fs::create_dir(&f.worktree).expect("empty shell");
+        std::fs::write(f.worktree.join("sentinel.txt"), "not in git\n").expect("sentinel");
+
+        let err = f
+            .engine
+            .cleanup_task(f.task_id)
+            .await
+            .expect_err("a non-empty shell is not removable");
+
+        assert!(err.holds_work, "the retry is refused as a data-safety gate");
+        assert_eq!(
+            std::fs::read_to_string(f.worktree.join("sentinel.txt")).expect("read sentinel"),
+            "not in git\n"
+        );
+        let task = row(&f.engine, f.task_id).await;
+        assert!(
+            task.worktree_folder_id.is_some(),
+            "the retry remains available"
+        );
+        assert!(
+            task_git::rev_parse(f.root.to_str().unwrap(), "refs/heads/task/7")
+                .await
+                .is_ok(),
+            "the branch survives with the sentinel"
+        );
+    }
+
+    /// A repository with `layout` applied to it, for the probe tests below:
+    /// returns `(tempdir, repo path, worktree path)`. The two tests that pass
+    /// `"sibling"` reproduce the DEFAULT worktree layout — beside the project,
+    /// with no repository of the fixture's own above it, which is the layout in
+    /// which a shell has no enclosing repository for `git status` to answer
+    /// about instead. (Nothing here can rule out a repository ABOVE the system
+    /// temp directory; in that environment the sibling pair still asserts the
+    /// right answers, but it is `an_empty_shell_inside_a_dirty_project_reads_as_clean`
+    /// — which builds its own enclosing repository — that pins the regression
+    /// unconditionally.)
+    fn probe_repo(layout: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+        let worktree = match layout {
+            "sibling" => dir.path().join("wt"),
+            _ => repo.join("wt"),
+        };
+        (dir, repo, worktree)
+    }
+
+    /// THE probe behind issue #642's dead-end retry, exercised where the bug
+    /// actually happens. `has_changes` runs `git status` from the path itself,
+    /// so a shell in the default layout — beside the project, no repository
+    /// above it — makes git error, and reading that error as "dirty" is what
+    /// made the retry offer the same refusal forever. An empty shell has, by
+    /// definition, nothing a `--force` removal could take.
+    #[tokio::test]
+    async fn an_empty_shell_beside_a_project_reads_as_clean() {
+        let (_dir, _repo, worktree) = probe_repo("sibling");
+        std::fs::create_dir(&worktree).expect("empty shell");
+
+        assert!(
+            !path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "an empty post-removal shell holds nothing"
+        );
+    }
+
+    /// The other half of the same answer: outside a repository git errors on a
+    /// shell whatever is in it, so emptiness is the ONLY thing separating a
+    /// harmless leftover from files nothing can give back.
+    #[tokio::test]
+    async fn a_file_in_a_shell_beside_a_project_still_reads_as_dirty() {
+        let (_dir, _repo, worktree) = probe_repo("sibling");
+        std::fs::create_dir(&worktree).expect("shell");
+        std::fs::write(worktree.join("sentinel.txt"), "not in git\n").expect("sentinel");
+
+        assert!(
+            path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "a shell with an entry in it is not removable"
+        );
+    }
+
+    /// A worktree root configured INSIDE the project (a relative
+    /// `worktree_root`, which the setting takes at face value) puts the shell
+    /// under the project's own `.git`. `git status` then answers happily — about
+    /// the PROJECT — so a project with a stray file of its own would answer
+    /// "dirty" for a shell holding nothing, and #642's retry would still never
+    /// converge. Without a `.git` marker the path is not a checkout git speaks
+    /// for, and its answer must not be read as this path's.
+    ///
+    /// The project's dirt is an edit to a TRACKED file, not a stray untracked
+    /// one: `has_changes` spawns git through `crate::process`, which inherits
+    /// the real environment, so an untracked fixture is only as visible as the
+    /// developer's global `core.excludesFile` lets it be — and a fixture git
+    /// silently ignores would make this test pass against the very bug it
+    /// exists to pin. No ignore rule can hide a modified tracked file.
+    #[tokio::test]
+    async fn an_empty_shell_inside_a_dirty_project_reads_as_clean() {
+        let (_dir, repo, worktree) = probe_repo("nested");
+        std::fs::write(repo.join("a.txt"), "the project's own mess\n").expect("dirty project");
+        std::fs::create_dir(&worktree).expect("empty shell");
+
+        assert!(
+            !path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "the project's dirt is not the shell's"
+        );
+    }
+
+    /// And the marker check must not short-circuit the case it is guarding: a
+    /// checkout that still HAS its `.git` is exactly what `git status` is for,
+    /// uncommitted work included. Tracked and modified for the reason above —
+    /// an untracked fixture would read as clean under a global ignore rule that
+    /// happens to match it, and fail this assertion on that developer's machine
+    /// alone.
+    #[tokio::test]
+    async fn an_intact_worktree_is_still_measured_by_git() {
+        let (_dir, repo, worktree) = probe_repo("sibling");
+        let worktree_path = worktree.to_str().expect("utf-8");
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/probe", worktree_path],
+        );
+        assert!(
+            !path_holds_uncommitted(worktree_path).await,
+            "a fresh checkout holds nothing"
+        );
+
+        std::fs::write(worktree.join("a.txt"), "unstaged\n").expect("edit");
+
+        assert!(
+            path_holds_uncommitted(worktree_path).await,
+            "an uncommitted edit in a live checkout is work"
+        );
     }
 
     /// The removal underneath is `worktree remove --force`, and a stop pressed

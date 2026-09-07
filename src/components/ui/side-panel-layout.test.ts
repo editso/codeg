@@ -21,6 +21,10 @@ const SIDE_PANELS = [
   "src/components/tasks/task-transcript-dialog.tsx",
   "src/components/message/sub-agent-session-dialog.tsx",
   "src/components/forge/forge-issue-detail-sheet.tsx",
+  "src/components/canvas/canvas-conversation-drawer.tsx",
+  // Opens over any of the transcript viewers above (a file badge clicked in
+  // one), so it is part of the same stack.
+  "src/components/files/file-viewer-drawer.tsx",
 ]
 
 /** The `<DrawerContent …>` opening tag — where a width would be declared. */

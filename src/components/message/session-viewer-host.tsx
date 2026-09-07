@@ -1,7 +1,8 @@
 "use client"
 
 /**
- * Owns delegation-session drawers for one transcript, ABOVE the virtual list.
+ * Owns the transcript's side-panel viewers — the "查看会话" drawers and the
+ * file viewer — ABOVE the virtual list.
  *
  * The `DelegatedSubThread` card for a `delegate_to_agent` call renders inside
  * `VirtualizedMessageThread`'s rows. It used to hold the
@@ -16,44 +17,34 @@
  * ONE request slot, not one per kind. Two viewers open at the same level would
  * be same-width siblings with no stacking relationship between them — one
  * flatly covering the other, which reads as a glitch. Opening a second viewer
- * therefore replaces the first.
+ * therefore replaces the first. That is also why the FILE viewer lives here
+ * rather than in a host of its own: a file opened from a transcript is one
+ * more thing this transcript is showing off to the side, and it has to stack
+ * over (or replace) whatever else the transcript already put there.
  */
 
 import * as React from "react"
 
+import { FileViewerDrawer } from "@/components/files/file-viewer-drawer"
+import {
+  SessionViewerHostContext,
+  type SessionViewerHostValue,
+  type SessionViewerRequest,
+} from "@/components/message/session-viewer-host-context"
 import { SubAgentSessionDialog } from "@/components/message/sub-agent-session-dialog"
+import { SubagentSessionDialog } from "@/components/message/subagent-session-dialog"
 import {
   useDelegationCardModel,
   type DelegationCardSource,
 } from "@/hooks/use-delegation-card-model"
 
-/** A sub-agent delegated with `delegate_to_agent`, viewed through its child
- *  conversation. Carries the card's raw SOURCE rather than the resolved ids —
- *  see `DelegationViewer` below. */
-interface DelegationRequest {
-  kind: "delegation"
-  source: DelegationCardSource
-}
-
-export type SessionViewerRequest = DelegationRequest
-
-interface SessionViewerHostValue {
-  open: (request: SessionViewerRequest) => void
-}
-
-const SessionViewerHostContext =
-  React.createContext<SessionViewerHostValue | null>(null)
-
-/**
- * The host for the current transcript, or `null` when there is none.
- *
- * Null is a supported answer, not a failure: `ContentPartsRenderer` also
- * renders outside a `MessageListView`, where no delegated-session drawer is
- * needed.
- */
-export function useSessionViewerHost(): SessionViewerHostValue | null {
-  return React.useContext(SessionViewerHostContext)
-}
+// The request shapes and `useSessionViewerHost` live in the leaf module beside
+// this one; re-exported here so the cards that already import them from this
+// path keep working.
+export {
+  useSessionViewerHost,
+  type SessionViewerRequest,
+} from "@/components/message/session-viewer-host-context"
 
 export function SessionViewerHost({ children }: { children: React.ReactNode }) {
   const [request, setRequest] = React.useState<SessionViewerRequest | null>(
@@ -84,6 +75,25 @@ export function SessionViewerHost({ children }: { children: React.ReactNode }) {
           // re-point.
           key={request.source.parentToolUseId}
           source={request.source}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )}
+      {request?.kind === "agentSession" && (
+        <SubagentSessionDialog
+          key={request.sessionId}
+          open={open}
+          onOpenChange={setOpen}
+          sessionId={request.sessionId}
+          agentType={request.agentType}
+          subagentType={request.subagentType}
+          description={request.description}
+          live={request.live}
+        />
+      )}
+      {request?.kind === "file" && (
+        <FileViewerDrawer
+          request={request}
           open={open}
           onOpenChange={setOpen}
         />
