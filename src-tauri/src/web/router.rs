@@ -613,6 +613,60 @@ pub fn build_router(
             "/backup_discard_pending",
             post(handlers::backup::backup_discard_pending),
         )
+        // ─── Configuration sync ───
+        //
+        // The WebDAV half is runtime-agnostic. Local file transfer is the
+        // by-content pair: a browser has no path to name, and the payload is
+        // tens of KB, so it travels in the JSON body rather than through the
+        // upload-staging machinery above.
+        .route(
+            "/config_sync_get_settings",
+            post(handlers::config_sync::config_sync_get_settings),
+        )
+        .route(
+            "/config_sync_update_settings",
+            post(handlers::config_sync::config_sync_update_settings),
+        )
+        .route(
+            "/config_sync_get_state",
+            post(handlers::config_sync::config_sync_get_state),
+        )
+        .route(
+            "/config_sync_test_connection",
+            post(handlers::config_sync::config_sync_test_connection),
+        )
+        .route(
+            "/config_sync_upload_now",
+            post(handlers::config_sync::config_sync_upload_now),
+        )
+        .route(
+            "/config_sync_peek_remote",
+            post(handlers::config_sync::config_sync_peek_remote),
+        )
+        .route(
+            "/config_sync_download_apply",
+            post(handlers::config_sync::config_sync_download_apply),
+        )
+        .route(
+            "/config_sync_export_content",
+            post(handlers::config_sync::config_sync_export_content),
+        )
+        .route(
+            "/config_sync_peek_content",
+            post(handlers::config_sync::config_sync_peek_content),
+        )
+        .route(
+            "/config_sync_import_content",
+            post(handlers::config_sync::config_sync_import_content),
+        )
+        .route(
+            "/config_sync_list_rollbacks",
+            post(handlers::config_sync::config_sync_list_rollbacks),
+        )
+        .route(
+            "/config_sync_apply_rollback",
+            post(handlers::config_sync::config_sync_apply_rollback),
+        )
         .route(
             "/download_workspace_file",
             post(handlers::workspace_files::download_workspace_file),
@@ -830,6 +884,14 @@ pub fn build_router(
             post(handlers::acp::acp_clear_binary_cache),
         )
         .route(
+            "/acp_scan_leaked_temp",
+            post(handlers::acp::acp_scan_leaked_temp),
+        )
+        .route(
+            "/acp_reclaim_leaked_temp",
+            post(handlers::acp::acp_reclaim_leaked_temp),
+        )
+        .route(
             "/acp_update_agent_preferences",
             post(handlers::acp::acp_update_agent_preferences),
         )
@@ -874,6 +936,14 @@ pub fn build_router(
             post(handlers::acp::acp_load_pi_config),
         )
         .route(
+            "/acp_load_deepseek_model_catalog",
+            post(handlers::acp::acp_load_deepseek_model_catalog),
+        )
+        .route(
+            "/acp_update_deepseek_model_catalog",
+            post(handlers::acp::acp_update_deepseek_model_catalog),
+        )
+        .route(
             "/acp_validate_pi_command",
             post(handlers::acp::acp_validate_pi_command),
         )
@@ -892,6 +962,10 @@ pub fn build_router(
         .route(
             "/acp_antigravity_login_cancel",
             post(handlers::acp::acp_antigravity_login_cancel),
+        )
+        .route(
+            "/acp_antigravity_sign_out",
+            post(handlers::acp::acp_antigravity_sign_out),
         )
         .route(
             "/acp_pi_project_trust_state",
@@ -1682,6 +1756,10 @@ pub fn build_router(
         .route(
             "/terminal_resize",
             post(handlers::terminal::terminal_resize),
+        )
+        .route(
+            "/terminal_snapshot",
+            post(handlers::terminal::terminal_snapshot),
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))

@@ -249,6 +249,8 @@
     "appLanguage": "App language",
     "languageSaveSuccess": "Language settings saved",
     "languageSaveFailed": "Failed to save language settings: {message}",
+    "dataTitle": "Data & sync",
+    "dataDescription": "Configuration sync carries your settings between machines; backup packs up all of this machine's codeg data.",
     "updateTitle": "App Update",
     "versionTitle": "Software Update",
     "updateDescription": "Check the configured release source for newer versions and install directly when available.",
@@ -427,7 +429,7 @@
       },
       "open_folder": {
         "title": "Open Folder",
-        "description": "Open folder picker and open in a new window"
+        "description": "Open folder picker and open the folder in the workspace"
       },
       "open_settings": {
         "title": "Open Settings",
@@ -961,7 +963,28 @@
         "failed": "Sign-in did not complete.",
         "startFailed": "Could not start the sign-in",
         "credentialHint": "The token is cached here. Copy this file to another machine with no desktop to sign that one in too."
-      }
+      },
+      "signOut": {
+        "title": "Signed in as the wrong account?",
+        "description": "Antigravity caches the Google account it signed in as and reuses it silently, so signing in again cannot reach a different one. Signing out discards the stored credential; any running Antigravity sessions end first, because they would otherwise write the old account back.",
+        "action": "Sign out",
+        "done": "Signed out. Sign in again to pick a different account.",
+        "failed": "Could not sign out"
+      },
+      "tempReclaimTitle": "Leftover temp space",
+      "tempReclaimHint": "Older versions of codeg could not clean up the temporary directory this agent unpacks on every launch. This scans the system temp folder for those leftovers. That folder is shared with other applications, so nothing is deleted until you confirm, and anything still in use is skipped.",
+      "tempReclaimScan": "Scan",
+      "tempReclaimDelete": "Delete leftovers",
+      "tempReclaimNone": "Nothing to reclaim.",
+      "tempReclaimFound": "{count} leftover item(s), {size} reclaimable.",
+      "tempReclaimSkipped": "{count} skipped (still in use or too recent).",
+      "tempReclaimed": "Reclaimed {size} from {count} item(s).",
+      "tempReclaimSelectAll": "Select all",
+      "tempReclaimAgeHours": "{hours}h",
+      "tempReclaimConfirmTitle": "Delete {count} item(s)?",
+      "tempReclaimConfirmBody": "This permanently deletes {size}. The system temp folder is shared with other applications, so check each path before confirming — anything still in use is skipped.",
+      "tempReclaimConfirmAction": "Delete",
+      "tempReclaimCancel": "Cancel"
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness Configuration",
@@ -1169,6 +1192,46 @@
           "todowrite": "Write the todo list",
           "question": "Ask you a question",
           "doom_loop": "Trips when the same call repeats three times with identical input"
+        }
+      },
+      "behavior": {
+        "title": "Behavior & compaction",
+        "description": "Session defaults, context compaction and tool-output limits. Written to opencode.json and applied once you save below.",
+        "docsLink": "Config docs",
+        "unset": "Not configured",
+        "defaultAgent": "Default agent",
+        "defaultAgentHint": "Which primary agent a new session opens in. Falls back to build when empty or unknown.",
+        "share": "Sharing",
+        "shareHint": "How a session may be published to a share link.",
+        "shareManual": "Manual (on request)",
+        "shareAuto": "Automatic (every new session)",
+        "shareDisabled": "Disabled",
+        "autoUpdate": "Auto-update",
+        "autoUpdateHint": "Whether OpenCode updates itself to the latest release.",
+        "autoUpdateOn": "Update automatically",
+        "autoUpdateNotify": "Notify only",
+        "autoUpdateOff": "Never",
+        "snapshot": "Filesystem snapshots",
+        "snapshotHint": "Records a snapshot before each step. Turning it off means undo and revert can no longer restore files.",
+        "compactionAuto": "Auto-compaction",
+        "compactionAutoHint": "Summarize the conversation automatically when the context window fills up.",
+        "compactionPrune": "Prune old tool output",
+        "compactionPruneHint": "Drop the output of older tool calls during compaction instead of summarizing it.",
+        "fields": {
+          "subagentDepth": "Sub-agent depth",
+          "tailTurns": "Turns kept verbatim",
+          "preserveRecentTokens": "Tokens kept verbatim",
+          "reserved": "Reserved tokens",
+          "maxLines": "Tool output line limit",
+          "maxBytes": "Tool output byte limit"
+        },
+        "hints": {
+          "subagentDepth": "How deep sub-agents may nest. 1 stops a sub-agent from launching another.",
+          "tailTurns": "Most recent user turns kept uncompacted. Unset means only the token budget below limits them.",
+          "preserveRecentTokens": "Token budget of recent turns kept uncompacted after a compaction.",
+          "reserved": "Window left free so a compaction itself never overflows the context.",
+          "maxLines": "Output longer than this is written to disk and replaced with a preview. Default 2000.",
+          "maxBytes": "Output larger than this is written to disk and replaced with a preview. Default 51200."
         }
       }
     },
@@ -1440,7 +1503,11 @@
       "ready": "Adapter {adapterCmd} is installed — that is what Codeg launches. It ships its own runtime, so the {nativeLabel} is not required; install it later and the two coexist, sharing {configDir}."
     },
     "cline": {
-      "configDescription": "Configure Cline API provider and credentials. Settings are saved to ~/.cline/data/."
+      "configDescription": "Configure Cline API provider and credentials. Settings are saved to ~/.cline/data/.",
+      "signInGroup": "Sign in with Cline",
+      "byoGroup": "Bring your own provider",
+      "externalGroup": "Configured outside codeg",
+      "signInHint": "Cline holds this credential itself. Run the command below in a terminal to sign in — it prints a code and opens a browser page to confirm it."
     },
     "opencodePlugins": {
       "title": "OpenCode Plugins",
@@ -1448,7 +1515,10 @@
       "noPlugins": "No plugins declared.",
       "status": {
         "installed": "Installed",
-        "missing": "Missing"
+        "needs_migration": "Needs migration",
+        "missing": "Missing",
+        "path": "Path plugin",
+        "path_missing": "Path not found"
       },
       "installAll": "Install All Missing",
       "pinVersions": "Pin @latest Versions",
@@ -1509,6 +1579,7 @@
       "installing": "Installing…",
       "recheck": "Recheck",
       "configDirSkillsNote": "With a custom config directory, the Skills, Experts, and Office tools managed in Settings won't apply to this pi — manage its skills in that folder directly.",
+      "dirHistoryNote": "These directories reach the pi process only. codeg's conversation history reads pi's own default location, so sessions written to a custom directory here won't be listed.",
       "projectTrustTitle": "Project trust",
       "projectTrustDescription": "Folders you allowed pi to load project files from. A trusted folder lets that repository's .pi/extensions run code when pi starts, applies to every folder inside it, and is also used when you run pi in a terminal.",
       "projectTrustLoading": "Loading…",
@@ -1578,9 +1649,57 @@
     "customAgentBadge": "Custom",
     "customAgentNotLaunchable": "This agent cannot launch here: {reason}"
   },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "Normal",
+    "deepseekModeDefaultDescription": "Reads and edits files and runs commands directly to get the job done",
+    "deepseekModePlan": "Plan",
+    "deepseekModePlanDescription": "Investigates first and proposes a full plan for you to confirm before touching anything. This steers the model — the real boundary is still whatever File access allows.",
+    "deepseekOptionModel": "Model",
+    "deepseekOptionReasoning": "Reasoning effort",
+    "deepseekOptionReasoningDescription": "Higher is slower and costs more tokens, but steadier on hard problems",
+    "deepseekOptionSandbox": "File access",
+    "deepseekOptionSandboxDescription": "Commands and file tools share this one boundary",
+    "deepseekReasoningOff": "Off",
+    "deepseekReasoningOffDescription": "Answers directly with no reasoning; fastest",
+    "deepseekReasoningLow": "Low",
+    "deepseekReasoningLowDescription": "Reasons briefly; steadier than off, faster than high",
+    "deepseekReasoningHigh": "High",
+    "deepseekReasoningHighDescription": "Reasons before answering; the everyday coding default",
+    "deepseekReasoningMax": "Max",
+    "deepseekReasoningMaxDescription": "Reasons longer; steadier on hard problems, but slower and costs more tokens",
+    "deepseekSandboxReadOnly": "Read-only",
+    "deepseekSandboxReadOnlyDescription": "Runs under a read-only policy; switch access when a write is needed. Enforcement can be partial on some platforms.",
+    "deepseekSandboxWorkspaceWrite": "Workspace write",
+    "deepseekSandboxWorkspaceWriteDescription": "Writes are meant to stay inside the session workspace and the system temp directories; a call outside them asks for one-time approval. Enforcement can be partial on some platforms.",
+    "deepseekSandboxFullAccess": "Full access (no sandbox)",
+    "deepseekSandboxFullAccessDescription": "Applies no file restrictions at all. Choose it only when you understand the consequences.",
+    "deepseekPermissionAllowOnce": "Allow once",
+    "deepseekPermissionRejectOnce": "Reject"
+  },
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
     "skillPacksLoading": "Loading skill packs…"
+  },
+  "CloseBehaviorSettings": {
+    "title": "Close Button Behavior",
+    "description": "Choose what the main window's close button does.",
+    "trayUnavailable": "This system has no usable tray, so the close button always exits codeg.",
+    "behaviorAsk": "Ask every time",
+    "behaviorMinimize": "Minimize to tray",
+    "behaviorExit": "Exit codeg",
+    "saveFailed": "Failed to save close behavior: {message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "Close codeg?",
+    "askDescription": "codeg can keep running in the tray so agents and terminals stay alive, or exit completely.",
+    "confirmExitTitle": "Exit codeg?",
+    "confirmExitDescription": "Closing the window is set to exit codeg.",
+    "runningTerminals": "{count, plural, one {# terminal is still running and will be terminated on exit.} other {# terminals are still running and will be terminated on exit.}}",
+    "remember": "Remember my choice",
+    "cancel": "Cancel",
+    "minimize": "Minimize to tray",
+    "exit": "Exit codeg",
+    "actionFailed": "Action failed: {message}"
   },
   "GeneralSettings": {
     "loading": "Loading...",
@@ -1601,6 +1720,8 @@
     "terminalShellNotInstalled": "not installed",
     "terminalShellNotFoundWarning": "This path doesn't exist on this host.",
     "terminalCurrentShell": "Currently using: {path}",
+    "colorizeCommandOutput": "Colorize command output",
+    "colorizeCommandOutputDescription": "Force ANSI color out of the commands agents run, so their output renders in color in the transcript instead of as plain text. Takes effect on new sessions.",
     "renderingDescription": "Disable hardware acceleration if the app shows a black screen or rendering glitches (common on certain AMD GPUs or Intel integrated GPUs on Windows, and with the proprietary NVIDIA driver on Linux). Only takes effect on the Windows and Linux desktop builds.",
     "disableHardwareAcceleration": "Disable hardware acceleration",
     "renderingSaveFailed": "Failed to save rendering settings: {message}",
@@ -2936,6 +3057,8 @@
         "tasks": {
           "connectingTitle": "Connecting to {agent}",
           "connectingDescription": "Establishing connection",
+          "preparingTitle": "Preparing {agent} session",
+          "preparingDescription": "Reading the conversation history",
           "loadingSelectorsTitle": "Loading {agent} selectors",
           "loadingSelectorsDescription": "Fetching mode and session config options",
           "initSessionTitle": "Initializing {agent} session",
@@ -2973,6 +3096,9 @@
         "cut": "Cut",
         "copy": "Copy",
         "selectAll": "Select all",
+        "openLink": "Open link",
+        "openFile": "Open file",
+        "sendEmail": "Send email",
         "pasteUnavailable": "Couldn't read the clipboard. Press Ctrl/⌘V to paste instead.",
         "clipboardWriteFailed": "Couldn't write to the clipboard. Use the keyboard shortcut instead.",
         "quickMessageUntitled": "Untitled",
@@ -3017,6 +3143,7 @@
         "searchModel": "Search models...",
         "searchModelAria": "Search models",
         "modelListLabel": "Models",
+        "recommendedBadge": "Recommended",
         "noModels": "No models found",
         "cancel": "Cancel",
         "send": "Send",
@@ -3055,7 +3182,9 @@
         "saveEdit": "Save",
         "cancelEdit": "Cancel edit",
         "editItem": "Edit",
-        "deleteItem": "Remove"
+        "deleteItem": "Remove",
+        "steerItemNow": "Insert into current turn",
+        "steerItemAsNote": "Send as note for next check"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Settings > Agents",
@@ -3276,13 +3405,17 @@
         "openInFileManager": "Open in file manager",
         "copyRelativePath": "Copy relative path",
         "copyAbsolutePath": "Copy absolute path",
+        "download": "Download file",
         "pathCopied": "Path copied",
         "copyPathFailed": "Failed to copy path",
-        "openFailed": "Failed to open local file"
+        "openFailed": "Failed to open local file",
+        "downloadSaved": "Downloaded {name}",
+        "downloadFailed": "Failed to download {name}"
       },
       "messageList": {
         "attachedResources": "Attached resources",
         "loading": "Loading...",
+        "loadBackgroundActivity": "Load background activity",
         "loadEarlier": "Load earlier messages",
         "loadingEarlier": "Loading earlier messages…",
         "error": "Error: {message}",
@@ -3457,7 +3590,10 @@
         "agentStatusFailed": "Failed",
         "agentStatusCompleted": "Completed",
         "agentFallbackTitle": "Sub-agent starting…",
-        "agentCodexLaunchOnly": "Launched. Codex reports no further progress for this sub-agent — its result arrives as a message in this conversation.",
+        "agentCodexLaunchOnly": "Launched. Codex hasn't reported how this sub-agent ended — open its session to follow the work.",
+        "agentSubagentDone": "Finished",
+        "agentSubagentInterrupted": "Interrupted",
+        "agentSubagentUnknown": "Outcome unknown",
         "agentStatsBash": "Commands",
         "agentStatsRead": "Files read",
         "agentStatsSearch": "Searches",
@@ -3723,7 +3859,8 @@
         "opSpawn": "Starting sub-agent",
         "opWait": "Fetching sub-agent result",
         "opClose": "Closing sub-agent",
-        "opResume": "Resuming sub-agent"
+        "opResume": "Resuming sub-agent",
+        "opList": "Listing sub-agents"
       },
       "contextCompaction": {
         "compacting": "Compacting context…",
@@ -3972,6 +4109,13 @@
     "emptyDirectory": "This directory is empty",
     "errorLoadingDir": "Failed to load directory",
     "selectedCount": "{count} selected"
+  },
+  "BranchPicker": {
+    "searchPlaceholder": "Search branches…",
+    "none": "No branches",
+    "local": "Local",
+    "remote": "Remote",
+    "useCustom": "Use \"{query}\""
   },
   "ChatChannelSettings": {
     "loading": "Loading...",
@@ -4561,13 +4705,12 @@
     "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
   },
   "BackupSettings": {
-    "title": "Backup & Restore",
-    "description": "Export a portable backup of your codeg data, or restore from one.",
     "tabs": {
       "backup": "Backup",
       "restore": "Restore"
     },
     "export": {
+      "description": "Packs this machine's codeg data — the database and uploaded files — into one archive.",
       "includeExternal": "Include conversation content",
       "includeExternalHint": "Also archive agent CLI transcripts (Claude, Codex, Gemini, …). Increases size.",
       "passphrase": "Passphrase (optional)",
@@ -4590,6 +4733,7 @@
       }
     },
     "restore": {
+      "description": "Replaces this machine's codeg data with the contents of a backup archive.",
       "selectFile": "Select backup file",
       "passphrasePrompt": "This backup is encrypted. Enter its passphrase.",
       "unlock": "Unlock",
@@ -4657,6 +4801,105 @@
       "rollbackConfirmBody": "This replaces your current data with the snapshot, then restarts. The data being replaced is snapshotted first."
     }
   },
+  "ConfigSyncSettings": {
+    "title": "Configuration sync",
+    "scopeTitle": "What gets synced",
+    "scopeIncludedTitle": "Included",
+    "scopeExcludedTitle": "Not included",
+    "scopeIncluded": {
+      "providers": "Model providers (with API keys)",
+      "agentSettings": "Agent settings",
+      "customAgents": "Custom agents",
+      "quickMessages": "Quick messages",
+      "taskTemplates": "Task templates",
+      "preferences": "App preferences (language, appearance, toggles)"
+    },
+    "scopeExcluded": {
+      "conversations": "Conversations and history",
+      "uploads": "Uploaded files and images",
+      "workspaces": "Workspace projects and paths",
+      "mcp": "MCP servers (owned by each CLI)",
+      "credentials": "Login credentials and tokens"
+    },
+    "fileTitle": "Configuration file",
+    "exportButton": "Export to file",
+    "importButton": "Import from file",
+    "fileHint": "Writes one JSON file you can carry to another machine. Importing adds or updates entries; existing ones that are missing from the file are kept.",
+    "webdavTitle": "WebDAV sync",
+    "webdavHint": "Upload the configuration snapshot to your own WebDAV server.",
+    "presetLabel": "Server",
+    "preset": {
+      "jianguoyun": "Jianguoyun",
+      "nextcloud": "Nextcloud",
+      "synology": "Synology NAS",
+      "custom": "Custom"
+    },
+    "presetHint": {
+      "jianguoyun": "Jianguoyun needs an app password created in Security settings, not your login password.",
+      "nextcloud": "Replace the domain and username, then use an app password from Settings → Security.",
+      "synology": "Enable WebDAV Server in DSM Package Center; default ports are 5005 (HTTP) and 5006 (HTTPS)."
+    },
+    "serverUrl": "Server URL",
+    "username": "Username",
+    "password": "Password",
+    "passwordKeep": "Leave empty to keep the saved password",
+    "passwordPlaceholder": "App password",
+    "remoteDir": "Remote folder",
+    "profile": "Profile",
+    "profileHint": "Machines that share a profile share one configuration. Use separate profiles to keep work and personal setups apart.",
+    "autoSyncLabel": "Upload automatically",
+    "autoSyncHint": "Checks periodically and uploads only when the configuration changed.",
+    "intervalLabel": "Check interval",
+    "intervalOption": "Every {minutes} minutes",
+    "saveButton": "Save",
+    "testButton": "Test connection",
+    "uploadButton": "Sync now",
+    "restoreButton": "Restore from remote",
+    "saved": "Sync settings saved",
+    "testSucceeded": "Connected to the WebDAV server",
+    "uploaded": "Configuration uploaded",
+    "exported": "Configuration exported",
+    "restored": "{count, plural, one {# entry applied} other {# entries applied}}",
+    "imported": "{count, plural, one {# entry applied} other {# entries applied}}",
+    "noRemoteSnapshot": "There is no configuration snapshot on the server yet",
+    "lastSyncAt": "Last synced {time}",
+    "neverSynced": "Not synced yet",
+    "lastError": "Last error: {message}",
+    "working": "Working…",
+    "plaintextWarning": "The snapshot is uploaded unencrypted and includes API keys, so use a WebDAV server only you can reach. The sync credentials themselves are never part of the snapshot.",
+    "importConfirmTitle": "Import configuration?",
+    "importConfirmBody": "Entries from this file will be added or updated on this machine. Existing entries that the file does not mention are kept.",
+    "restartHint": "Some changes — appearance, language, and the provider list — take effect after restarting codeg.",
+    "importConfirmAction": "Import",
+    "restoreConfirmTitle": "Restore from remote?",
+    "restoreConfirmBody": "The snapshot from {device}, taken {time}, will be applied to this machine. Existing entries that the snapshot does not mention are kept.",
+    "restoreConfirmAction": "Restore",
+    "cancel": "Cancel",
+    "emptySnapshot": "This snapshot contains no configuration entries.",
+    "domain": {
+      "modelProviders": "{count, plural, one {# model provider} other {# model providers}}",
+      "agentSettings": "{count, plural, one {# agent setting} other {# agent settings}}",
+      "customAgents": "{count, plural, one {# custom agent} other {# custom agents}}",
+      "quickMessages": "{count, plural, one {# quick message} other {# quick messages}}",
+      "taskTemplates": "{count, plural, one {# task template} other {# task templates}}",
+      "preferences": "{count, plural, one {# preference} other {# preferences}}"
+    },
+    "rollbackTitle": "Undo an import",
+    "rollbackHint": "Every import and every restore saves what this machine looked like beforehand. The last ten are kept.",
+    "rollbackAction": "Undo",
+    "rollbackUnknownTime": "Unknown time",
+    "rollbackConfirmTitle": "Go back to this configuration?",
+    "rollbackConfirmBody": "This replaces the current configuration with the copy saved on {time}. The current one is saved first, so this is itself undoable.",
+    "rollbackConfirmAction": "Undo",
+    "rolledBack": "{count, plural, one {# entry restored} other {# entries restored}}",
+    "encryptLabel": "Encrypt the snapshot",
+    "encryptHint": "Protect the uploaded file with a passphrase. Every machine you sync needs the same one.",
+    "encryptedNotice": "The snapshot is encrypted with your passphrase before it is uploaded. If you lose the passphrase, the copy on the server cannot be recovered.",
+    "passphrase": "Passphrase",
+    "passphraseKeep": "Leave empty to keep the saved passphrase",
+    "passphrasePlaceholder": "Encryption passphrase",
+    "passphraseHint": "Kept in this machine's keychain and never uploaded. Enter the same passphrase on your other machines."
+  },
   "backup": {
     "restore": {
       "error": {
@@ -4670,6 +4913,27 @@
     "error": {
       "diskSpace": "Not enough disk space to complete the operation.",
       "cancelled": "The operation was cancelled."
+    }
+  },
+  "configSync": {
+    "error": {
+      "newerSchema": "This snapshot was created by a newer version of codeg (format {snapshotVersion}); this version understands up to format {appVersion}.",
+      "checksum": "The snapshot does not match its checksum and may be incomplete.",
+      "invalidSnapshot": "This file is not a valid codeg configuration snapshot.",
+      "noRemoteSnapshot": "There is no configuration snapshot on the server yet.",
+      "notConfigured": "Set up the WebDAV server before syncing.",
+      "unauthorized": "The WebDAV server rejected the username or password.",
+      "forbidden": "The WebDAV server denied access to this folder.",
+      "remotePath": "The remote folder or profile name is not valid.",
+      "quota": "The WebDAV server has no space left.",
+      "network": "Could not reach the WebDAV server.",
+      "server": "The WebDAV server returned an error ({status}).",
+      "passphraseRequired": "This snapshot is encrypted. Set the encryption passphrase before syncing.",
+      "badPassphrase": "The snapshot could not be decrypted. Check the passphrase — or the file may be damaged.",
+      "badDomain": "The {domain} section of this snapshot could not be read.",
+      "noRollback": "That saved configuration is no longer on this machine.",
+      "credentialsUnreadable": "Could not read the saved credentials. Unlock the system keychain, then try again.",
+      "notEncrypted": "The snapshot on the server is not encrypted, but encryption is turned on here. Upload from this device to replace it, or turn encryption off to use it."
     }
   },
   "WebConnection": {
@@ -4954,12 +5218,7 @@
     "cronApply": "Apply",
     "cronPreviewLabel": "Preview",
     "cronOpenBuilder": "Open schedule builder",
-    "branchDefault": "Default branch",
-    "branchUseCustom": "Use \"{query}\"",
-    "branchLocal": "Local",
-    "branchRemote": "Remote",
-    "branchSearchPlaceholder": "Search branches…",
-    "branchNone": "No branches"
+    "branchDefault": "Default branch"
   },
   "Tasks": {
     "title": "To-dos",
@@ -5084,11 +5343,16 @@
     "phaseRetry": "Retry run",
     "phaseReturn": "Follow-up",
     "phaseMerge": "Merge",
+    "phaseCompact": "Context compaction",
     "titleLabel": "Title",
     "titlePlaceholder": "What needs to be done?",
     "promptLabel": "Task description",
     "promptPlaceholder": "Describe the task for the agent — @ to reference files, / for commands",
     "folderPlaceholder": "Select a folder",
+    "baseBranch": "Base branch",
+    "baseBranchPlaceholder": "Current branch",
+    "baseBranchDefault": "Current branch when the task starts",
+    "baseBranchHint": "The task branches from here, and merging lands it back on this branch.",
     "agentInheritedHint": "Inherited from task settings — change it to override for this task",
     "agentOverrideReset": "Reset to inherited",
     "sectionTarget": "Target",
@@ -5114,6 +5378,7 @@
     "mergeDeleteWorktree": "Delete worktree after merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Add to merge queue",
+    "mergeSubmitting": "Starting…",
     "mergeQueuedToast": "Added to the merge queue — it starts as soon as the current merge finishes.",
     "completeTitle": "Complete task",
     "completeDescription": "This task changed no files, so there is nothing to merge — it is marked as done directly.",
@@ -5135,6 +5400,7 @@
     "settingsMaxConcurrentHint": "0 = unlimited",
     "settingsAutoCompact": "Auto-compact threshold",
     "settingsAutoCompactHint": "Before a follow-up, retry or merge round, compact the session when its context window is at least this full. 0 = off.",
+    "compactingNote": "Compacting the session context…",
     "settingsCompactCommand": "Compact command",
     "settingsCompactCommandHint": "Leave blank to use what the agent offers, or its known default.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5377,6 +5643,47 @@
     "groupInstructions": "Description & system prompt",
     "fieldDescription": "Description",
     "baseInstructions": "System prompt (base_instructions)"
+  },
+  "DeepSeekModelEditor": {
+    "title": "Model list",
+    "description": "The models a DeepSeek session can be switched between. Stored in the harness settings document, which the agent reads at launch — a save reaches sessions started after it.",
+    "inheritedBadge": "Agent defaults",
+    "inheritedHint": "No list is stored yet, so these are the agent's built-in models. Saving pins them, and later agent versions will no longer change them on their own. File:",
+    "storedHint": "Stored in your harness settings document. Keys outside this list — and the comments around them — are left untouched. File:",
+    "unreadable": "This settings document cannot be edited from here without risking what it already holds. Edit it by hand instead.",
+    "invalidStored": "This stored list is one the agent refuses, so sessions are running on its built-in models until it is fixed:",
+    "loading": "Reading the settings document…",
+    "loadFailed": "Could not read the settings document.",
+    "empty": "No models. Add one, or save to fall back to the agent's built-in list.",
+    "addModel": "Add model",
+    "remove": "Remove model",
+    "advanced": "More",
+    "save": "Save model list",
+    "saving": "Saving…",
+    "restoreDefaults": "Use agent defaults",
+    "fieldId": "Model id",
+    "fieldName": "Display name",
+    "fieldContextWindow": "Context window",
+    "fieldDescription": "Description",
+    "fieldMaxTokens": "Max output tokens",
+    "fieldAcceptsImages": "Accepts images",
+    "fieldImagePixelBudget": "Image pixel budget",
+    "imageBudgetPixels": "Pixel count",
+    "imageBudgetLow": "Low detail (512×512)",
+    "fieldImageMaxBytes": "Image byte cap",
+    "placeholderId": "deepseek-flash",
+    "placeholderName": "Shown in the picker",
+    "placeholderInherit": "Agent default",
+    "errorMissingId": "Every model needs an id.",
+    "errorDuplicateId": "Two models share the id “{id}”.",
+    "errorBadContextWindow": "The context window of “{id}” must be a whole number above zero.",
+    "errorBadMaxTokens": "The max output tokens of “{id}” must be a whole number above zero.",
+    "errorBadImageLimit": "The image limits of “{id}” must be whole numbers above zero.",
+    "warnSingleModel": "With a single model the agent stops offering a model picker at all.",
+    "warnLaunchModelMissing": "New sessions start on “{model}”, which is not in this list. Add it, or set {variable} in the environment variables above.",
+    "toastSaved": "Model list saved",
+    "toastRestored": "Using the agent's built-in model list",
+    "toastSaveFailed": "Could not save the model list"
   },
   "DiagnosticsSettings": {
     "title": "Environment diagnostics",
@@ -5809,6 +6116,23 @@
     "confirmDeleteCancel": "Cancel",
     "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
-    "mergeIntoNewRegion": "New region"
+    "mergeIntoNewRegion": "New region",
+    "addFileCard": "File card",
+    "addTerminalCard": "Terminal card",
+    "searchFiles": "Search files…",
+    "searchFilesIn": "Search in {folder}…",
+    "searchingFiles": "Searching…",
+    "noFiles": "No files found",
+    "noOpenFiles": "No files open — type to search",
+    "browseForFile": "Browse…",
+    "filePreview": "Preview",
+    "fileSource": "Source",
+    "reloadFile": "Reload",
+    "removeFileCard": "Remove file card",
+    "restartTerminal": "Restart terminal",
+    "removeTerminalCard": "Remove terminal card",
+    "terminalNoDirectory": "This card has no working directory",
+    "confirmDeleteTerminals": "{count} running terminal(s) will be closed and their processes stopped.",
+    "confirmDeleteNotesAndTerminals": "{notes} note(s) you wrote will be permanently deleted, and {terminals} running terminal(s) will be stopped."
   }
 }

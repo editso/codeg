@@ -94,6 +94,8 @@ interface ConversationShellProps {
   /** Pass-through: see `MessageInput`. */
   folderPickerOverride?: ConversationFolderPickerOverride
   draftStorageKey?: string | null
+  /** Pass-through: see `MessageInput.getSentHistory`. */
+  getSentHistory?: () => string[]
   hideInput?: boolean
   /** Optional banner rendered in the composer dock, where the input sits.
    *  Used with `hideInput` to explain WHY the composer is unavailable (e.g.
@@ -118,6 +120,10 @@ interface ConversationShellProps {
   onQueueReorder?: (items: QueuedMessage[]) => void
   onQueueEdit?: (id: string) => void
   onQueueDelete?: (id: string) => void
+  /** Insert one queued item into the RUNNING turn over the session's
+   *  live-feedback channel; threaded straight through to the composer's
+   *  queue list. See `ChatInputProps.onQueueSteer`. */
+  onQueueSteer?: (id: string) => Promise<void> | void
   editingItemId?: string | null
   editingDraftText?: string | null
   editingDraftBlocks?: PromptInputBlock[] | null
@@ -192,6 +198,7 @@ export function ConversationShell({
   attachmentTabId,
   folderPickerOverride,
   draftStorageKey,
+  getSentHistory,
   hideInput = false,
   composerBanner,
   feedbackList,
@@ -204,6 +211,7 @@ export function ConversationShell({
   onQueueReorder,
   onQueueEdit,
   onQueueDelete,
+  onQueueSteer,
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
@@ -314,6 +322,7 @@ export function ConversationShell({
             <PermissionDialog
               permission={pendingPermission}
               onRespond={onRespondPermission}
+              agentType={agentType}
             />
           </div>
         )}
@@ -374,6 +383,7 @@ export function ConversationShell({
               attachmentTabId={attachmentTabId}
               folderPickerOverride={folderPickerOverride}
               draftStorageKey={draftStorageKey}
+              getSentHistory={getSentHistory}
               isActive={isActive}
               showActiveFlow={showActiveFlow}
               queue={queue}
@@ -381,6 +391,7 @@ export function ConversationShell({
               onQueueReorder={onQueueReorder}
               onQueueEdit={onQueueEdit}
               onQueueDelete={onQueueDelete}
+              onQueueSteer={onQueueSteer}
               editingItemId={editingItemId}
               editingDraftText={editingDraftText}
               editingDraftBlocks={editingDraftBlocks}

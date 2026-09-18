@@ -19,12 +19,16 @@ import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
 import type {
+  LeakedTempReclaim,
+  LeakedTempScan,
   AgentType,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
   Automation,
   AutomationRun,
   AutomationDraft,
+  DeepSeekCatalogModel,
+  DeepSeekModelCatalog,
   ForgeChangeDetail,
   ForgeChangedFileList,
   ForgeComment,
@@ -133,6 +137,7 @@ import type {
   PreflightResult,
   FolderCommand,
   TerminalInfo,
+  TerminalSnapshot,
   PromptInputBlock,
   FileTreeNode,
   WorkspaceFileEntry,
@@ -148,6 +153,9 @@ import type {
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
+  CloseRequestPayload,
+  CloseWindowBehavior,
+  SystemCloseBehaviorSettingsView,
   SystemRenderingSettings,
   SystemAutostartSettings,
   SystemTerminalSettings,
@@ -515,6 +523,21 @@ export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {
   return getTransport().call("acp_clear_binary_cache", { agentType })
 }
 
+/** Read-only scan of the system temp dir for pre-isolation launch leftovers. */
+export async function acpScanLeakedTemp(): Promise<LeakedTempScan> {
+  return getTransport().call("acp_scan_leaked_temp", {})
+}
+
+/**
+ * Delete leaked temp artifacts. The backend re-validates every path
+ * immediately before deleting — this list is never trusted as-is.
+ */
+export async function acpReclaimLeakedTemp(
+  paths: string[]
+): Promise<LeakedTempReclaim> {
+  return getTransport().call("acp_reclaim_leaked_temp", { paths })
+}
+
 export async function acpDownloadAgentBinary(
   agentType: AgentType,
   taskId: string,
@@ -828,6 +851,31 @@ export async function loadPiConfig(): Promise<{
 }
 
 /**
+ * Read the DeepSeek Harness model catalog — `llm-deepseek.models` in
+ * `$DSH_HOME/settings.yaml` — for the settings panel. A missing document is
+ * "inheriting the agent's built-in list", not an error; an unreadable one
+ * arrives as `error` so the panel can refuse to edit it.
+ */
+export async function loadDeepSeekModelCatalog(): Promise<DeepSeekModelCatalog> {
+  return getTransport().call("acp_load_deepseek_model_catalog", {})
+}
+
+/**
+ * Store the DeepSeek Harness model catalog, replacing `llm-deepseek.models`
+ * and leaving every other key (and every comment) in the document alone.
+ *
+ * `null` — and an empty list — REMOVE the key, so the agent's built-in catalog
+ * is inherited again. Invalid entries are rejected before anything is written.
+ * The agent reads the document at launch, so a save reaches sessions started
+ * after it, not the ones already running.
+ */
+export async function updateDeepSeekModelCatalog(
+  models: DeepSeekCatalogModel[] | null
+): Promise<void> {
+  return getTransport().call("acp_update_deepseek_model_catalog", { models })
+}
+
+/**
  * Validate a user-supplied custom pi binary (BYO-pi): resolve it (path or
  * `PATH`) and best-effort read its `--version`. A not-found binary returns
  * `{ found: false, resolvedPath: null, version: null }` (not an error).
@@ -995,6 +1043,32 @@ export async function acpAntigravityLoginFinish(
 /** Abandon a pending browser-free sign-in and stop its agent process. */
 export async function acpAntigravityLoginCancel(handle: string): Promise<void> {
   return getTransport().call("acp_antigravity_login_cancel", { handle })
+}
+
+/**
+ * Clear the credential Antigravity is holding, so the next sign-in can reach a
+ * different Google account.
+ *
+ * Without it a signed-in Antigravity cannot switch accounts at all: the agent
+ * refreshes its cached token silently, so `acpAntigravityLoginStart` answers
+ * `alreadySignedIn` and never produces a consent link.
+ *
+ * Returns the settings.json sync report rather than a success flag. Signing out
+ * removes `auth.type` from that file, so the backend writes the saved method
+ * straight back — and a `skipped` report is the warning that it could not, and
+ * that every later session will fail with "Authentication required" until the
+ * user edits the file themselves.
+ */
+export async function acpAntigravitySignOut(): Promise<AntigravitySyncReport> {
+  // The backend spawns the agent and puts two requests to it: up to 60s for
+  // `initialize` (CPython inside a PAR, unpacked on first run) plus 60s for the
+  // sign-out itself. The transport defaults — 60s on web, 30s through the
+  // remote-desktop proxy — would abort while that child is still starting.
+  return getTransport().call(
+    "acp_antigravity_sign_out",
+    {},
+    { timeoutMs: 180_000 }
+  )
 }
 
 /**
@@ -1786,6 +1860,49 @@ export async function updateSystemAutostartSettings(
   settings: SystemAutostartSettings
 ): Promise<SystemAutostartSettings> {
   return getTransport().call("update_system_autostart_settings", { settings })
+}
+
+// --- Close window behavior ---
+
+/**
+ * Emitted when a close press needs an answer. Addressed to `main`, but the
+ * Tauri transport subscribes with `EventTarget::Any`, so every webview sharing
+ * the root layout still receives it — `CloseRequestDialog` gates on the window
+ * label rather than trusting the target.
+ */
+export const CLOSE_REQUEST_EVENT = "app://close-request"
+
+export async function getSystemCloseBehaviorSettings(): Promise<SystemCloseBehaviorSettingsView> {
+  return getTransport().call("get_system_close_behavior_settings")
+}
+
+export async function updateSystemCloseBehaviorSettings(
+  behavior: CloseWindowBehavior
+): Promise<SystemCloseBehaviorSettingsView> {
+  return getTransport().call("update_system_close_behavior_settings", {
+    behavior,
+  })
+}
+
+/**
+ * Answer an open close prompt. The backend holds a "a prompt is up" flag that
+ * only this call clears, so every dismissal path — including Cancel and the
+ * Esc key — has to reach it or the close button goes dead for the session.
+ */
+export async function resolveCloseRequest(
+  action: "minimize" | "exit" | "cancel",
+  remember: boolean
+): Promise<void> {
+  return getTransport().call("resolve_close_request", { action, remember })
+}
+
+export async function listenCloseRequest(
+  handler: (payload: CloseRequestPayload) => void
+): Promise<() => void> {
+  return getTransport().subscribe<CloseRequestPayload>(
+    CLOSE_REQUEST_EVENT,
+    handler
+  )
 }
 
 // --- Logging ---
@@ -2903,7 +3020,8 @@ export async function removeFolderLink(
 
 /** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
  *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
- *  conversation → conversationId; custom starts empty; note uses content. */
+ *  conversation → conversationId; custom starts empty; note uses content;
+ *  file and terminal use path. */
 export interface CreateCanvasNodeInput {
   kind: CanvasNodeKind
   folderId?: number
@@ -2912,6 +3030,9 @@ export interface CreateCanvasNodeInput {
   conversationId?: number
   title?: string
   content?: string
+  /** file → the document's absolute path; terminal → its working directory.
+   *  Required for those two kinds, rejected for the rest. */
+  path?: string
   color?: string
   /** Pinned grid axes (regions only); omitted / 0 = auto. */
   gridColumns?: number
@@ -4033,7 +4154,7 @@ export interface UploadWorkspaceFileResult {
  * Tauri window (no remote binding) is rejected, because it has its own
  * native file dialogs and these helpers would just be the wrong tool.
  */
-function isWorkspaceFileApiAvailable(): boolean {
+export function isWorkspaceFileApiAvailable(): boolean {
   return !isDesktop() || isRemoteDesktopMode()
 }
 
@@ -4670,6 +4791,22 @@ export async function terminalResize(
   rows: number
 ): Promise<void> {
   return getTransport().call("terminal_resize", { terminalId, cols, rows })
+}
+
+/**
+ * Recent output of an already-running terminal, for a viewer attaching to a
+ * PTY it did not spawn (a canvas terminal card coming back from another
+ * route). `alive: false` is the settled answer "nothing to attach to" — spawn
+ * instead; it is never an error, so callers don't have to parse one.
+ *
+ * Subscribe to `terminal://output/<id>` BEFORE calling this, and drop the
+ * events whose `seq` is at or below the returned `seq` — that overlap is
+ * already in `data`. See `TerminalEvent.seq`.
+ */
+export async function terminalSnapshot(
+  terminalId: string
+): Promise<TerminalSnapshot> {
+  return getTransport().call("terminal_snapshot", { terminalId })
 }
 
 export async function terminalKill(terminalId: string): Promise<void> {

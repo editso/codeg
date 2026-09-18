@@ -17,6 +17,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { RichComposerHandle } from "./composer/rich-composer"
 import { serializeDocToText } from "./composer/to-prompt-blocks"
 import {
+  clearMessageInputDraftV2,
+  loadMessageInputDraftV2,
+} from "@/lib/message-input-draft"
+import {
   emitAttachFileToSession,
   emitAttachSessionToSession,
 } from "@/lib/session-attachment-events"
@@ -86,12 +90,28 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationFolderBranchPicker: () => null,
   useConversationFolderBranchPickerVisible: () => false,
 }))
+// `openUrl` is where link-safety lands a web-mode link, and so where the
+// right-click menu's "Open link" ends up.
+const platform = vi.hoisted(() => ({ openUrl: vi.fn(async () => {}) }))
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => false,
   openFileDialog: vi.fn(),
+  openUrl: platform.openUrl,
 }))
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
+  isDesktop: () => false,
+}))
+// A local-file link target routes to the workspace file column, whose provider
+// this suite deliberately renders without.
+vi.mock("@/hooks/use-open-file-target", () => ({
+  useOpenFileTarget: () => async () => {},
+}))
+// The right-click menu refreshes the quick-message list as it opens; keep that
+// off the backend so the menu tests exercise only the menu.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  quickMessagesList: vi.fn(async () => []),
 }))
 // Real classifier only recognizes actual backend NoActiveTurn payloads; the
 // steering tests flip this per-case to drive the enqueue fallback.
@@ -677,6 +697,63 @@ describe("MessageInput boolean config options", () => {
   })
 })
 
+describe("MessageInput selector loading placeholder", () => {
+  afterEach(() => cleanup())
+
+  it("shows a visible placeholder in the selector row while the session comes up", async () => {
+    // Opening a historical conversation spends seconds with no selectors known.
+    // The cue has to be in the row itself — the cog popover's loading text is
+    // only reachable by a user who already suspects something is loading.
+    const { container } = renderInput({
+      configOptionsLoading: true,
+      configOptions: [],
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    expect(
+      screen.getByRole("status", { name: MSGS.loadingSettings })
+    ).toBeInTheDocument()
+  })
+
+  it("drops the placeholder as soon as the real options arrive", async () => {
+    const view = renderInput({
+      configOptionsLoading: true,
+      configOptions: [],
+    })
+    await waitFor(() =>
+      expect(view.container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    expect(screen.queryByRole("status")).not.toBeNull()
+
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput
+          onSend={vi.fn()}
+          promptCapabilities={CAPS}
+          configOptionsLoading={false}
+          configOptions={[MODEL_OPTION]}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getByRole("button", { name: /Model/ })).toBeInTheDocument()
+  })
+
+  it("renders no selector affordance at all when nothing is loading or known", async () => {
+    // The pre-fix steady state: an agent with neither modes nor config options
+    // must not grow a placeholder that never resolves.
+    const { container } = renderInput({ configOptions: [], modes: [] })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: MSGS.agentSettings })
+    ).toBeNull()
+  })
+})
+
 describe("MessageInput collapsed selectors popover", () => {
   afterEach(() => cleanup())
 
@@ -993,6 +1070,197 @@ describe("MessageInput slash menu while the agent connects", () => {
       )
     })
     await waitFor(() => expect(screen.queryByTestId("slash-menu")).toBeNull())
+  })
+})
+
+describe("MessageInput slash badges", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  const COMMANDS = [{ name: "compact", description: "Compact the thread" }]
+
+  async function mount(
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    renderInput({ availableCommands: COMMANDS, ...props })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const handle = composerHandle.current
+    const editor = handle?.getEditor()
+    if (!handle || !editor) throw new Error("composer editor not mounted")
+    return { handle, editor }
+  }
+
+  function press(editor: Editor, key: string) {
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+      )
+    })
+  }
+
+  for (const key of ["Enter", "Tab"]) {
+    it(`still badges the command picked from the menu with ${key}`, async () => {
+      const { handle, editor } = await mount()
+      act(() => {
+        editor.commands.insertContent("/comp")
+      })
+      await screen.findByTestId("slash-menu")
+      press(editor, key)
+      await waitFor(() =>
+        expect(JSON.stringify(handle.getJSON())).toContain('"type":"reference"')
+      )
+      // The badge still brings its trailing space, so the next word is typed
+      // clear of it.
+      expect(handle.getText()).toBe("/compact ")
+    })
+  }
+
+  it("badges the command clicked in the menu", async () => {
+    const { handle, editor } = await mount()
+    act(() => {
+      editor.commands.insertContent("/comp")
+    })
+    const menu = await screen.findByTestId("slash-menu")
+    fireEvent.mouseDown(within(menu).getByText("/compact"))
+    await waitFor(() =>
+      expect(JSON.stringify(handle.getJSON())).toContain('"type":"reference"')
+    )
+    expect(handle.getText()).toBe("/compact ")
+  })
+
+  it("leaves a seeded slash word the agent never advertised as plain text", async () => {
+    const { handle } = await mount()
+    act(() => {
+      handle.setText("/notacommand on /tmp/x and and/or")
+    })
+    expect(JSON.stringify(handle.getJSON())).not.toContain('"type":"reference"')
+    expect(handle.getText()).toBe("/notacommand on /tmp/x and and/or")
+  })
+
+  it("badges a seeded token that IS one of the agent's commands", async () => {
+    const { handle } = await mount()
+    act(() => {
+      handle.setText("/compact the thread")
+    })
+    expect(JSON.stringify(handle.getJSON())).toContain('"refType":"skill"')
+    // Same bytes on the wire either way — only the composer's rendering differs.
+    expect(handle.getText()).toBe("/compact the thread")
+  })
+
+  it("leaves a seeded command alone for an agent that has none", async () => {
+    const { handle } = await mount({ availableCommands: [] })
+    act(() => {
+      handle.setText("/compact the thread")
+    })
+    expect(JSON.stringify(handle.getJSON())).not.toContain('"type":"reference"')
+    expect(handle.getText()).toBe("/compact the thread")
+  })
+})
+
+// The queue-edit / draft restore claims its one-shot guard synchronously but
+// mutates the editor in a rAF whose cleanup cancels that frame. Anything in the
+// effect's dependency array that changes identity in between therefore cancels
+// the restore and then bails on the already-claimed guard — nothing is ever
+// restored. The advertised-command list is exactly such a value: it lands with
+// the ACP connection, and the Set built from it is fresh every time.
+describe("MessageInput queue-edit restore vs. a late command list", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+    vi.unstubAllGlobals()
+  })
+
+  /** Hold every rAF callback so the test decides when the frame runs. */
+  function captureFrames(): { flush: () => void } {
+    const frames: (FrameRequestCallback | null)[] = []
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      frames.push(cb)
+    )
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      frames[id - 1] = null
+    })
+    return {
+      flush: () => {
+        act(() => {
+          // Indexed, not iterated: a callback may queue another frame.
+          for (let i = 0; i < frames.length; i++) {
+            const cb = frames[i]
+            frames[i] = null
+            cb?.(0)
+          }
+        })
+      },
+    }
+  }
+
+  /** The identity the ACP connection replaces once it advertises. */
+  const NO_COMMANDS: React.ComponentProps<
+    typeof MessageInput
+  >["availableCommands"] = []
+
+  function renderAgain(
+    view: ReturnType<typeof renderInput>,
+    props: Partial<React.ComponentProps<typeof MessageInput>>
+  ) {
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput onSend={vi.fn()} promptCapabilities={CAPS} {...props} />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("restores the queued message when the commands land before its frame", async () => {
+    const { flush } = captureFrames()
+    const editing = {
+      isEditingQueueItem: true,
+      editingItemId: "q1",
+      editingDraftBlocks: [{ type: "text" as const, text: "queued prose" }],
+    }
+    const view = renderInput({ availableCommands: NO_COMMANDS, ...editing })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    // The connection comes up: a brand-new command list, and so a brand-new
+    // `knownInvocations` Set, while the restore's frame is still pending.
+    renderAgain(view, {
+      availableCommands: [{ name: "compact", description: "Compact" }],
+      ...editing,
+    })
+    flush()
+    expect(composerHandle.current?.getText()).toBe("queued prose")
+  })
+
+  // The "re-edit a DIFFERENT queued item" restore is a second effect with its
+  // own one-shot guard (the last hydrated item id), so it needs its own case.
+  it("restores the next queued item picked while its frame is pending", async () => {
+    const { flush } = captureFrames()
+    const view = renderInput({ availableCommands: NO_COMMANDS })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    flush()
+
+    // The user clicks "edit" on a queued message…
+    const editing = {
+      isEditingQueueItem: true,
+      editingItemId: "q2",
+      editingDraftBlocks: [{ type: "text" as const, text: "the next one" }],
+    }
+    renderAgain(view, { availableCommands: NO_COMMANDS, ...editing })
+    // …and the command list lands before that restore's frame runs.
+    renderAgain(view, {
+      availableCommands: [{ name: "compact", description: "Compact" }],
+      ...editing,
+    })
+    flush()
+    expect(composerHandle.current?.getText()).toBe("the next one")
   })
 })
 
@@ -1402,5 +1670,298 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
         "check the tests"
       )
     )
+  })
+})
+
+describe("MessageInput right-click token selection", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  /**
+   * The custom radix menu only replaces the browser's own where the async
+   * clipboard read exists (a secure context). jsdom has neither, so each mode is
+   * set up here rather than inherited from whatever ran before.
+   */
+  function setClipboardRead(supported: boolean) {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: supported
+        ? { readText: async () => "", writeText: async () => {} }
+        : undefined,
+    })
+  }
+
+  async function mountWithEditor({ clipboardRead = true } = {}) {
+    setClipboardRead(clipboardRead)
+    renderInput({})
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  /** Seed the draft and drop a collapsed caret at `caret`. */
+  function seed(editor: Editor, text: string, caret: number) {
+    act(() => {
+      editor.commands.setContent(text)
+      editor.commands.setTextSelection(caret)
+    })
+  }
+
+  /** The editing surface the right click lands on. jsdom has no layout, so
+   *  hit-testing declines and the caret above is what the menu resolves. */
+  function editingSurface(): HTMLElement {
+    const surface = document.querySelector<HTMLElement>(".ProseMirror")
+    if (!surface) throw new Error("composer editing surface not mounted")
+    return surface
+  }
+
+  function selectedText(editor: Editor): string {
+    const { from, to } = editor.state.selection
+    return editor.state.doc.textBetween(from, to)
+  }
+
+  it("selects the address under the pointer and offers to write to it", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "ping adam@example.com today", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    await screen.findByRole("menuitem", { name: "Send email" })
+    expect(selectedText(editor)).toBe("adam@example.com")
+    // Copy is live off the same right click — before this it needed the user to
+    // highlight the address by hand.
+    expect(screen.getByRole("menuitem", { name: "Copy" })).not.toHaveAttribute(
+      "data-disabled"
+    )
+  })
+
+  it("opens a schemeless link through the shared opener", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "see example.com/docs later", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    const open = await screen.findByRole("menuitem", { name: "Open link" })
+    expect(selectedText(editor)).toBe("example.com/docs")
+
+    fireEvent.click(open)
+    await waitFor(() =>
+      expect(platform.openUrl).toHaveBeenCalledWith("https://example.com/docs")
+    )
+  })
+
+  it("selects a plain word without inventing an action for it", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "refactor the parser today", 16)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    await screen.findByRole("menuitem", { name: "Copy" })
+    expect(selectedText(editor)).toBe("parser")
+    expect(screen.queryByRole("menuitem", { name: "Open link" })).toBeNull()
+    expect(screen.queryByRole("menuitem", { name: "Send email" })).toBeNull()
+  })
+
+  it("leaves a hand-made selection alone and acts on that", async () => {
+    const editor = await mountWithEditor()
+    seed(editor, "ping adam@example.com today", 1)
+    act(() => {
+      editor.commands.setTextSelection({ from: 6, to: 22 })
+    })
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    // A click inside a live selection neither re-selects nor collapses it, and
+    // the address it holds still gets its own row.
+    await screen.findByRole("menuitem", { name: "Send email" })
+    expect(selectedText(editor)).toBe("adam@example.com")
+  })
+
+  it("still picks the token up where the native menu takes over", async () => {
+    const editor = await mountWithEditor({ clipboardRead: false })
+    seed(editor, "ping adam@example.com today", 8)
+
+    fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+    // No custom menu in a non-secure context — the browser's own is left to
+    // appear — but it now opens over a selected address instead of a caret.
+    expect(screen.queryByRole("menuitem", { name: "Copy" })).toBeNull()
+    expect(selectedText(editor)).toBe("adam@example.com")
+  })
+})
+
+describe("MessageInput prompt history", () => {
+  async function mountWithHistory(
+    history: string[],
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    renderInput({ getSentHistory: () => history, ...props })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const handle = composerHandle.current
+    const editor = handle?.getEditor()
+    if (!handle || !editor) throw new Error("composer editor not mounted")
+    return { handle, editor }
+  }
+
+  function press(editor: Editor, key: string) {
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+      )
+    })
+  }
+
+  it("recalls sent prompts on Up and restores the draft on Down", async () => {
+    const { handle, editor } = await mountWithHistory(["first", "latest"])
+
+    act(() => handle.setText("my draft"))
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("latest")
+
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("first")
+
+    act(() => editor.commands.focus("end"))
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("latest")
+
+    // Past the newest entry the original draft comes back.
+    act(() => editor.commands.focus("end"))
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("my draft")
+  })
+
+  it("recalls into an empty composer, where the caret is at both edges", async () => {
+    const { handle, editor } = await mountWithHistory(["first", "latest"])
+
+    // The common case: nothing typed yet. Down must still fall through (there
+    // is nothing recalled to move forward from), Up must recall.
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("")
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("latest")
+  })
+
+  it("persists the draft the first recall replaces", async () => {
+    // The stash that ArrowDown restores lives only in memory, and the draft
+    // save is debounced: a recall that lands inside that window must flush the
+    // typed draft rather than let the timer write the RECALLED prompt over it
+    // (a tab switch from there would lose what the user typed).
+    const draftKey = "test:history-recall-draft"
+    clearMessageInputDraftV2(draftKey)
+    const { handle, editor } = await mountWithHistory(["first", "latest"], {
+      draftStorageKey: draftKey,
+    })
+
+    act(() => editor.commands.insertContent("my draft"))
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("latest")
+
+    // Past the debounce: whatever was going to be written has been written.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    })
+    const stored = loadMessageInputDraftV2(draftKey)
+    expect(JSON.stringify(stored)).toContain("my draft")
+    expect(JSON.stringify(stored)).not.toContain("latest")
+    clearMessageInputDraftV2(draftKey)
+  })
+
+  it("editing a recalled prompt leaves history mode", async () => {
+    const { handle, editor } = await mountWithHistory(["first", "latest"])
+
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("latest")
+
+    // Type into the recalled entry, then Down must NOT be treated as "newer"
+    // past the newest — history mode ended with the edit.
+    act(() => editor.commands.focus("end"))
+    act(() => editor.commands.insertContent(" edited"))
+    expect(handle.getText()).toBe("latest edited")
+    act(() => editor.commands.focus("end"))
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("latest edited")
+  })
+
+  it("does nothing on Up when the session has no history", async () => {
+    const { handle, editor } = await mountWithHistory([])
+
+    act(() => handle.setText("my draft"))
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("my draft")
+  })
+
+  it("steps on the edge and lands on the edge it travelled from", async () => {
+    const { handle, editor } = await mountWithHistory([
+      "first",
+      "older\nmulti\nline",
+      "newest\nmulti\nline",
+    ])
+
+    act(() => handle.setText("DRAFT"))
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("newest\nmulti\nline")
+
+    // Recalling lands at the TOP, so the same key keeps going older without the
+    // caret having to be walked anywhere.
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("older\nmulti\nline")
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("first")
+
+    // Turning around means walking to the bottom edge first — until it gets
+    // there the caret is the editor's, not the history's. (jsdom has no native
+    // caret movement, so that walk is simulated with focus("end").)
+    act(() => editor.commands.focus("end"))
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("older\nmulti\nline")
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("newest\nmulti\nline")
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("DRAFT")
+  })
+
+  it("does not switch prompts while the caret is inside a multi-line entry", async () => {
+    const { handle, editor } = await mountWithHistory([
+      "older",
+      "newest\nmulti\nline",
+    ])
+
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+    expect(handle.getText()).toBe("newest\nmulti\nline")
+
+    // The caret is at the TOP, so Down belongs to the caret, not the history
+    // (jsdom has no native caret movement, so the observable is "no recall").
+    press(editor, "ArrowDown")
+    expect(handle.getText()).toBe("newest\nmulti\nline")
+  })
+
+  it("leaves the arrows to the caret while editing a queued message", async () => {
+    const { handle, editor } = await mountWithHistory(["older", "newest"], {
+      isEditingQueueItem: true,
+    })
+
+    act(() => handle.setText("queued edit"))
+    act(() => editor.commands.focus("start"))
+    press(editor, "ArrowUp")
+
+    // A recall here would replace the queued message being edited.
+    expect(handle.getText()).toBe("queued edit")
   })
 })

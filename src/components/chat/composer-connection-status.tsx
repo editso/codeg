@@ -126,6 +126,20 @@ export function ComposerConnectionStatus({
     getConnSnapshot,
     getConnSnapshot
   )
+  // A `connect()` in flight has no store entry yet — the backend call that
+  // creates one only returns once the agent has spawned and resumed the
+  // session. Without this the whole (often multi-second) establishment showed
+  // the dimmed "disconnected" heart, which is the opposite of what's happening.
+  const getPendingSnapshot = useCallback(
+    () => (tabId ? store.getConnectPending(tabId) : undefined),
+    [store, tabId]
+  )
+  const connectPending = useSyncExternalStore(
+    subscribeConn,
+    getPendingSnapshot,
+    getPendingSnapshot
+  )
+  const status = conn?.status ?? (connectPending ? "connecting" : null)
 
   // Provider selection lives in the persisted conversation config (or in the
   // draft before its first message), not on the live ACP state. Resolve it only
@@ -165,9 +179,9 @@ export function ComposerConnectionStatus({
     }
   }, [conversationId, draftConfig?.model_provider_id, open, t])
 
-  const statusKey = toConnStatus(conn?.status ?? null)
+  const statusKey = toConnStatus(status)
   const statusLabel = t(statusKey)
-  const agentType = conn?.agentType ?? null
+  const agentType = conn?.agentType ?? connectPending?.agentType ?? null
   const agentLabel = agentType ? getAgentLabel(agentType) : null
   const titleText = !agentLabel
     ? statusLabel
@@ -186,8 +200,12 @@ export function ComposerConnectionStatus({
   const detailAgentLabel = detailAgentType
     ? getAgentLabel(detailAgentType)
     : null
-  const detailStatusKey = toDetailStatus(conn?.status ?? null)
-  const workingDir = conn?.workingDir ?? reconnectInfo?.workingDir ?? null
+  const detailStatusKey = toDetailStatus(status)
+  const workingDir =
+    conn?.workingDir ??
+    connectPending?.workingDir ??
+    reconnectInfo?.workingDir ??
+    null
   const sessionId = conn?.sessionId ?? reconnectInfo?.sessionId ?? null
   // A reconnect on a busy OWNER kills the agent CLI mid-turn; a viewer's only
   // detaches and re-attaches, leaving the owner's agent alone — so only the

@@ -710,6 +710,28 @@ fn is_context_continuation(content: &[ContentBlock]) -> bool {
 ///
 /// The record is bookkeeping, not a message, so it never carries usage or a
 /// model, and the caller leaves `agent_message_id` unset.
+/// Whether a reconstructed slash-command display line is a `/compact`
+/// invocation — bare, or carrying the focus instructions it accepts.
+fn is_compact_command(display: &str) -> bool {
+    display == "/compact" || display.starts_with("/compact ")
+}
+
+/// Whether the divider recorded at `at` is still the tail of the transcript,
+/// i.e. nothing but its own continuation summary has been appended since.
+///
+/// The slot is a plain index and stays valid under appends, so this is what
+/// stops a `/compact` from being pulled up to a *different*, older compaction:
+/// an automatic one leaves a slot no local command ever claims, and a resume
+/// replays the summary record (there is no whole-record dedup — only the
+/// boundary is deduped, by uuid), which lands a second `System` line here.
+fn compaction_slot_is_current(messages: &[UnifiedMessage], at: usize) -> bool {
+    match messages.len().checked_sub(at) {
+        Some(1) => true,
+        Some(2) => matches!(messages[at + 1].role, MessageRole::System),
+        _ => false,
+    }
+}
+
 fn compaction_blocks(value: &serde_json::Value, tool_use_id: String) -> Vec<ContentBlock> {
     let meta = value.get("compactMetadata");
     let field = |key: &str| meta.and_then(|m| m.get(key));
@@ -1257,6 +1279,10 @@ pub(crate) struct ClaudeRecordAccumulator {
     /// uuid rather than the metadata so two genuine compactions that happen to
     /// reduce the same amount still get a divider each.
     seen_compaction_uuids: std::collections::HashSet<String>,
+    /// Where the `/compact` prompt belongs, once its local-command echo shows
+    /// up: the index of the divider it produced. See the insert in `feed_value`
+    /// for why the prompt can't simply be emitted where the CLI wrote it.
+    compaction_prompt_slot: Option<usize>,
 }
 
 impl ClaudeRecordAccumulator {
@@ -1280,6 +1306,7 @@ impl ClaudeRecordAccumulator {
             usage_owner_by_message_id: std::collections::HashMap::new(),
             pending_assistant_message_id: None,
             seen_compaction_uuids: std::collections::HashSet::new(),
+            compaction_prompt_slot: None,
         }
     }
 
@@ -1388,6 +1415,7 @@ impl ClaudeRecordAccumulator {
             usage_owner_by_message_id,
             pending_assistant_message_id,
             seen_compaction_uuids,
+            compaction_prompt_slot,
         } = self;
 
         let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -1471,6 +1499,56 @@ impl ClaudeRecordAccumulator {
                     .and_then(|u| u.as_str())
                     .unwrap_or("")
                     .to_string();
+                // `/compact` is the one client-side command that leaves a mark
+                // of its own: the divider synthesized from the boundary record.
+                // Verdict-wise it is still a `Drop` (no model turn answers it),
+                // but dropping it left the live and reopened views disagreeing —
+                // live showed the prompt the user typed, history showed only its
+                // consequence. Emit it AT the divider instead of where the CLI
+                // wrote it: the local-command echo is written when the command
+                // FINISHES, i.e. after the boundary and the continuation summary
+                // it caused, so keeping file order would print the request below
+                // its own answer.
+                if let Some(at) = compaction_prompt_slot
+                    .take()
+                    .filter(|_| is_compact_command(&display))
+                    .filter(|at| compaction_slot_is_current(messages, *at))
+                {
+                    messages.insert(
+                        at,
+                        UnifiedMessage {
+                            id: uuid,
+                            role: MessageRole::User,
+                            content: vec![ContentBlock::Text { text: display }],
+                            timestamp,
+                            usage: None,
+                            duration_ms: None,
+                            model: None,
+                            completed_at: Some(timestamp),
+                            agent_message_id: None,
+                        },
+                    );
+                    // Usage ownership is tracked by index, and inserting shifts
+                    // everything at or after the slot. Nothing normally owns
+                    // usage that late (only the divider and the continuation
+                    // summary sit past it, and neither carries any), but the
+                    // map is small and a stale index would silently move one
+                    // API call's tokens onto another line.
+                    //
+                    // `background_watch` also keys its overlay turn ids by
+                    // position, so an insert inside an open episode re-emits
+                    // everything after it. Only a manual compaction inserts,
+                    // and a manual one is a foreground submission — the
+                    // watcher's foreground window is closed around it. Were
+                    // that ever to change the cost is a duplicate overlay
+                    // turn, which the refetch watermark retires.
+                    for owner in usage_owner_by_message_id.values_mut() {
+                        if *owner >= at {
+                            *owner += 1;
+                        }
+                    }
+                    return;
+                }
                 *pending_command = Some((
                     UnifiedMessage {
                         id: uuid,
@@ -1849,6 +1927,9 @@ impl ClaudeRecordAccumulator {
                             // empty text.
                             agent_message_id: None,
                         });
+                        // Hold the divider's position open for the `/compact`
+                        // prompt whose echo the CLI writes a few records later.
+                        *compaction_prompt_slot = Some(messages.len() - 1);
                     }
                     _ => {}
                 }
@@ -2992,6 +3073,153 @@ mod tests {
         assert_eq!(
             latest_claude_context_window_used_tokens(&[usage_turn("turn-0", 108_307)]),
             Some(108_307)
+        );
+    }
+
+    /// The four records Claude Code writes for a `/compact`, in the order it
+    /// writes them: the boundary and the summary land while the command is
+    /// still running, and the local-command echo only once it finishes.
+    fn compact_records(uuid_suffix: &str, args: &str) -> Vec<String> {
+        let args_tag = format!("<command-args>{args}</command-args>");
+        vec![
+            format!(
+                r#"{{"type":"system","subtype":"compact_boundary","timestamp":"2026-09-05T03:41:00.000Z","uuid":"cb{uuid_suffix}","parentUuid":null,"logicalParentUuid":"a1","compactMetadata":{{"trigger":"manual","preTokens":191322,"postTokens":10086,"durationMs":132025}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-05T03:41:01.000Z","uuid":"cs{uuid_suffix}","isCompactSummary":true,"promptId":"p9","cwd":"/Users/test/proj","message":{{"role":"user","content":"This session is being continued from a previous conversation…"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-05T03:41:02.000Z","uuid":"cv{uuid_suffix}","isMeta":true,"promptId":"p9","message":{{"role":"user","content":"<local-command-caveat>Caveat: …</local-command-caveat>"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-05T03:41:03.000Z","uuid":"cc{uuid_suffix}","promptId":"p9","message":{{"role":"user","content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>\n{args_tag}"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-05T03:41:04.000Z","uuid":"co{uuid_suffix}","promptId":"p9","message":{{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}}}"#
+            ),
+        ]
+    }
+
+    fn parse_lines(name: &str, lines: &[String]) -> ConversationDetail {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-Users-test-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join(format!("{name}.jsonl")), lines.join("\n") + "\n").unwrap();
+        ClaudeParser::with_base_dir(dir.path().to_path_buf())
+            .get_conversation(name)
+            .unwrap()
+    }
+
+    /// One line per turn: role plus either its text or the tool it carries.
+    fn turn_shapes(detail: &ConversationDetail) -> Vec<String> {
+        detail
+            .turns
+            .iter()
+            .map(|t| {
+                let what = t
+                    .blocks
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Text { text } => {
+                            Some(text.chars().take(12).collect::<String>())
+                        }
+                        ContentBlock::ToolUse { tool_name, .. } => Some(tool_name.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                format!("{:?}:{what}", t.role)
+            })
+            .collect()
+    }
+
+    #[test]
+    /// The user typed `/compact`; the divider is what it produced. Live, codeg
+    /// echoes the prompt above the divider — so history has to as well, and at
+    /// the same place, which is NOT where the CLI wrote the echo.
+    fn the_compact_prompt_is_emitted_above_the_divider_it_caused() {
+        let mut lines = vec![
+            r#"{"type":"user","timestamp":"2026-09-05T03:40:00.000Z","uuid":"u1","cwd":"/Users/test/proj","message":{"role":"user","content":[{"type":"text","text":"keep going"}]}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-09-05T03:40:05.000Z","uuid":"a1","message":{"id":"msg_01","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Working on it."}]}}"#.to_string(),
+        ];
+        lines.extend(compact_records("1", ""));
+        lines.push(
+            r#"{"type":"user","timestamp":"2026-09-05T03:42:00.000Z","uuid":"u2","cwd":"/Users/test/proj","message":{"role":"user","content":[{"type":"text","text":"carry on"}]}}"#.to_string(),
+        );
+
+        let detail = parse_lines("sess-compact-prompt", &lines);
+        assert_eq!(
+            turn_shapes(&detail),
+            vec![
+                "User:keep going",
+                "Assistant:Working on i",
+                "User:/compact",
+                "Assistant:context_compaction",
+                "System:This session",
+                "User:carry on",
+            ]
+        );
+    }
+
+    #[test]
+    /// `/compact <instructions>` is a real form, so the emitted prompt is the
+    /// reconstructed command line rather than a fixed `/compact` label.
+    fn the_compact_prompt_keeps_the_instructions_it_was_given() {
+        let detail = parse_lines(
+            "sess-compact-args",
+            &compact_records("1", "focus on the parser"),
+        );
+        assert!(
+            turn_shapes(&detail).contains(&"User:/compact foc".to_string()),
+            "got {:?}",
+            turn_shapes(&detail)
+        );
+    }
+
+    #[test]
+    /// An automatic compaction has no prompt to show, and the slot it leaves
+    /// open must not be claimed by an unrelated command much later on.
+    fn an_automatic_compaction_gets_no_prompt_and_leaves_no_slot_behind() {
+        let lines = vec![
+            r#"{"type":"system","subtype":"compact_boundary","timestamp":"2026-09-05T03:41:00.000Z","uuid":"cb1","parentUuid":null,"logicalParentUuid":"a1","compactMetadata":{"trigger":"auto","preTokens":312909,"postTokens":17018,"durationMs":97559}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-09-05T03:41:01.000Z","uuid":"cs1","isCompactSummary":true,"cwd":"/Users/test/proj","message":{"role":"user","content":"This session is being continued from a previous conversation…"}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-09-05T03:41:09.000Z","uuid":"a2","message":{"id":"msg_02","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Picking it back up."}]}}"#.to_string(),
+            // A `/compact` that never ran to completion here — its own boundary
+            // is somewhere else entirely (or the CLI died mid-command).
+            r#"{"type":"user","timestamp":"2026-09-05T03:42:03.000Z","uuid":"cc9","promptId":"p9","message":{"role":"user","content":"<command-name>/compact</command-name>\n<command-args></command-args>"}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-09-05T03:43:00.000Z","uuid":"u2","cwd":"/Users/test/proj","message":{"role":"user","content":[{"type":"text","text":"carry on"}]}}"#.to_string(),
+        ];
+
+        assert_eq!(
+            turn_shapes(&parse_lines("sess-auto-compact", &lines)),
+            vec![
+                "Assistant:context_compaction",
+                "System:This session",
+                "Assistant:Picking it b",
+                "User:carry on",
+            ]
+        );
+    }
+
+    #[test]
+    /// A resume replays the whole block verbatim. The boundary is deduped by
+    /// uuid, and the prompt must not be re-attached to the surviving divider —
+    /// the replayed summary is the only thing that lands after it.
+    fn a_replayed_compact_block_emits_the_prompt_once() {
+        let mut lines = compact_records("1", "");
+        lines.extend(compact_records("1", ""));
+        let shapes = turn_shapes(&parse_lines("sess-compact-replay", &lines));
+        assert_eq!(
+            shapes.iter().filter(|s| s.as_str() == "User:/compact").count(),
+            1,
+            "got {shapes:?}"
+        );
+        assert_eq!(
+            shapes
+                .iter()
+                .filter(|s| s.ends_with("context_compaction"))
+                .count(),
+            1,
+            "got {shapes:?}"
         );
     }
 

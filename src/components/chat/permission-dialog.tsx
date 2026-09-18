@@ -24,10 +24,19 @@ import {
   type PermissionChangeScope,
   type PermissionOptionChange,
 } from "@/lib/permission-request"
+import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
+import type { AgentType } from "@/lib/types"
 
 interface PermissionDialogProps {
   permission: PendingPermission | null
   onRespond: (requestId: string, optionId: string) => void
+  /**
+   * Which agent asked. Only used to localise option labels an agent hardcodes
+   * in one language (`deepseek-acp` ships Simplified Chinese with no locale
+   * switch); optional so a caller with no agent in scope keeps today's verbatim
+   * rendering.
+   */
+  agentType?: AgentType | null
 }
 
 function formatKindLabel(kind: string, fallbackLabel: string): string {
@@ -52,11 +61,19 @@ const CHANGE_SCOPE_LABEL_KEYS = {
 export function PermissionDialog({
   permission,
   onRespond,
+  agentType,
 }: PermissionDialogProps) {
   const t = useTranslations("Folder.chat.permissionDialog")
+  const vocabulary = useAgentVocabulary(agentType)
   const parsed = useMemo(
     () => parsePermissionToolCall(permission?.tool_call),
     [permission?.tool_call]
+  )
+  // Both the grant list and the buttons below read this, so the two never
+  // disagree about what an option is called.
+  const options = useMemo(
+    () => vocabulary.permissionOptions(permission?.options ?? []),
+    [permission?.options, vocabulary]
   )
   // What each option would actually grant, keyed by option id. Empty for every
   // agent that ships no option-level `_meta.permission` — which, on the pinned
@@ -274,7 +291,7 @@ export function PermissionDialog({
               <span>{t("optionGrants")}</span>
             </div>
             <div className="space-y-1 rounded-md bg-muted/40 p-1.5">
-              {permission.options.map((opt) => {
+              {options.map((opt) => {
                 const changes = optionChanges[opt.option_id] ?? []
                 if (changes.length === 0) return null
                 return (
@@ -328,12 +345,13 @@ export function PermissionDialog({
       </div>
 
       <div className="mt-2 flex w-full min-w-0 flex-wrap gap-1.5">
-        {permission.options.map((opt) => {
+        {options.map((opt) => {
           const isReject = opt.kind.startsWith("reject")
+          const emphasized = parsed.defaultToNo ? isReject : !isReject
           return (
             <Button
               key={opt.option_id}
-              variant={isReject ? "outline" : "default"}
+              variant={emphasized ? "default" : "outline"}
               size="xs"
               className="h-auto min-h-6 max-w-full min-w-0 shrink rounded-lg px-2 text-left text-[11px] leading-tight whitespace-normal [overflow-wrap:anywhere]"
               onClick={() => onRespond(permission.request_id, opt.option_id)}

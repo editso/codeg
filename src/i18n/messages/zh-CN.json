@@ -249,6 +249,8 @@
     "appLanguage": "应用语言",
     "languageSaveSuccess": "语言设置已保存",
     "languageSaveFailed": "语言设置保存失败：{message}",
+    "dataTitle": "数据与同步",
+    "dataDescription": "「配置同步」在设备之间搬运设置；「备份」打包这台设备上的全部 codeg 数据。",
     "updateTitle": "应用升级",
     "versionTitle": "软件更新",
     "updateDescription": "点击检查后会从配置的发布源拉取最新版本信息，有新版本时可直接下载并安装。",
@@ -427,7 +429,7 @@
       },
       "open_folder": {
         "title": "打开文件夹",
-        "description": "打开文件夹选择器并在新窗口中打开"
+        "description": "打开文件夹选择器并在工作区中打开该文件夹"
       },
       "open_settings": {
         "title": "打开设置",
@@ -961,7 +963,28 @@
         "failed": "登录未完成。",
         "startFailed": "无法开始登录",
         "credentialHint": "令牌缓存在这里。把这个文件复制到其他无桌面机器，那台也就登录好了。"
-      }
+      },
+      "signOut": {
+        "title": "登录了错误的账号？",
+        "description": "Antigravity 会缓存登录时使用的 Google 账号并静默复用，所以再次登录也换不到别的账号。退出登录会清除已保存的凭据；正在运行的 Antigravity 会话会先被结束，否则它们会把旧账号写回去。",
+        "action": "退出登录",
+        "done": "已退出登录。重新登录即可选择其他账号。",
+        "failed": "退出登录失败"
+      },
+      "tempReclaimTitle": "残留临时空间",
+      "tempReclaimHint": "旧版本 codeg 无法清理该代理每次启动时解压的临时目录。此操作会扫描系统临时文件夹中的这些残留。该文件夹与其他应用共用，因此在你确认之前不会删除任何内容，仍在使用中的项目也会被跳过。",
+      "tempReclaimScan": "扫描",
+      "tempReclaimDelete": "删除残留",
+      "tempReclaimNone": "没有可回收的内容。",
+      "tempReclaimFound": "发现 {count} 项残留，可回收 {size}。",
+      "tempReclaimSkipped": "已跳过 {count} 项（仍在使用或过新）。",
+      "tempReclaimed": "已从 {count} 项中回收 {size}。",
+      "tempReclaimSelectAll": "全选",
+      "tempReclaimAgeHours": "{hours} 小时",
+      "tempReclaimConfirmTitle": "删除选中的 {count} 项？",
+      "tempReclaimConfirmBody": "将永久删除 {size}。系统临时目录与其他应用共用，确认前请先核对每条路径；仍在使用中的项会被跳过。",
+      "tempReclaimConfirmAction": "删除",
+      "tempReclaimCancel": "取消"
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness 配置",
@@ -1169,6 +1192,46 @@
           "todowrite": "写入待办列表",
           "question": "向你提问",
           "doom_loop": "同一调用以相同输入重复 3 次时触发"
+        }
+      },
+      "behavior": {
+        "title": "行为与压缩",
+        "description": "会话默认值、上下文压缩与工具输出上限。写入 opencode.json，点击下方保存后生效。",
+        "docsLink": "配置文档",
+        "unset": "未配置",
+        "defaultAgent": "默认智能体",
+        "defaultAgentHint": "新会话使用哪个主智能体。留空或填了无效名称时回落到 build。",
+        "share": "会话分享",
+        "shareHint": "会话是否可以发布成分享链接。",
+        "shareManual": "手动（需要时才分享）",
+        "shareAuto": "自动（每个新会话都分享）",
+        "shareDisabled": "禁用",
+        "autoUpdate": "自动更新",
+        "autoUpdateHint": "OpenCode 是否自行升级到最新版本。",
+        "autoUpdateOn": "自动更新",
+        "autoUpdateNotify": "仅提示",
+        "autoUpdateOff": "从不",
+        "snapshot": "文件系统快照",
+        "snapshotHint": "每一步之前记录一次快照。关闭后撤销与回滚将无法还原文件。",
+        "compactionAuto": "自动压缩",
+        "compactionAutoHint": "上下文窗口快满时自动总结会话。",
+        "compactionPrune": "裁剪旧工具输出",
+        "compactionPruneHint": "压缩时直接丢弃较早工具调用的输出，而不是把它们总结进去。",
+        "fields": {
+          "subagentDepth": "子智能体层数",
+          "tailTurns": "保留原文的轮数",
+          "preserveRecentTokens": "保留原文的 token 数",
+          "reserved": "预留 token",
+          "maxLines": "工具输出行数上限",
+          "maxBytes": "工具输出字节上限"
+        },
+        "hints": {
+          "subagentDepth": "子智能体最多可以嵌套几层。填 1 表示子智能体不能再启动子智能体。",
+          "tailTurns": "最近多少轮用户对话不参与压缩。留空表示只受下面的 token 预算约束。",
+          "preserveRecentTokens": "压缩后仍按原文保留的最近对话 token 预算。",
+          "reserved": "为压缩本身预留的窗口，避免压缩过程反而撑爆上下文。",
+          "maxLines": "超过该行数的输出会落盘，只在会话里留一段预览。默认 2000。",
+          "maxBytes": "超过该字节数的输出会落盘，只在会话里留一段预览。默认 51200。"
         }
       }
     },
@@ -1440,7 +1503,11 @@
       "ready": "适配器 {adapterCmd} 已安装 —— Codeg 启动的就是它。它自带运行时，所以不需要另外安装 {nativeLabel}；即便以后你装了，两者也能共存并共用 {configDir}。"
     },
     "cline": {
-      "configDescription": "配置 Cline API 提供商和凭证。设置将保存到 ~/.cline/data/。"
+      "configDescription": "配置 Cline API 提供商和凭证。设置将保存到 ~/.cline/data/。",
+      "signInGroup": "使用 Cline 账号登录",
+      "byoGroup": "自带供应商",
+      "externalGroup": "在 codeg 之外配置的",
+      "signInHint": "这类凭据由 cline 自己保管。在终端运行下面的命令登录——它会打印一个验证码，并打开浏览器页面让你确认。"
     },
     "opencodePlugins": {
       "title": "OpenCode 插件",
@@ -1448,7 +1515,10 @@
       "noPlugins": "opencode.json 中未声明任何插件",
       "status": {
         "installed": "已安装",
-        "missing": "未安装"
+        "needs_migration": "需要迁移",
+        "missing": "未安装",
+        "path": "路径插件",
+        "path_missing": "路径不存在"
       },
       "installAll": "安装全部缺失插件",
       "pinVersions": "固定 @latest 版本",
@@ -1509,6 +1579,7 @@
       "installing": "安装中…",
       "recheck": "重新检测",
       "configDirSkillsNote": "设置了自定义配置目录后，设置页中管理的技能、专家与办公工具将不会作用于该 pi；请直接在该目录中管理其技能。",
+      "dirHistoryNote": "这两个目录只对 pi 进程生效。codeg 的历史会话列表读取的是 pi 的默认位置，写入自定义目录的会话不会出现在列表中。",
       "projectTrustTitle": "项目信任",
       "projectTrustDescription": "你允许 pi 从中加载项目文件的目录。被信任的目录会让该仓库的 .pi/extensions 在 pi 启动时执行代码，且对其下所有子目录同样生效，你在终端里运行 pi 时也会沿用。",
       "projectTrustLoading": "加载中…",
@@ -1578,9 +1649,57 @@
     "customAgentBadge": "自定义",
     "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}"
   },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "常规",
+    "deepseekModeDefaultDescription": "直接读写文件、执行命令完成任务",
+    "deepseekModePlan": "计划",
+    "deepseekModePlanDescription": "先调研再给出完整方案，经你确认后才动手；这只是对模型的引导，实际边界仍由「文件权限」决定。",
+    "deepseekOptionModel": "模型",
+    "deepseekOptionReasoning": "推理档位",
+    "deepseekOptionReasoningDescription": "越高越慢越费 token，难题更稳",
+    "deepseekOptionSandbox": "文件权限",
+    "deepseekOptionSandboxDescription": "命令与文件工具共用这一条边界",
+    "deepseekReasoningOff": "关闭",
+    "deepseekReasoningOffDescription": "不做推理，直接作答；最快",
+    "deepseekReasoningLow": "低",
+    "deepseekReasoningLowDescription": "略作推理；比关闭稳，比高档快",
+    "deepseekReasoningHigh": "高",
+    "deepseekReasoningHighDescription": "推理后作答；日常编码的默认档",
+    "deepseekReasoningMax": "最高",
+    "deepseekReasoningMaxDescription": "推理更久；难题更稳，但慢且更费 token",
+    "deepseekSandboxReadOnly": "只读",
+    "deepseekSandboxReadOnlyDescription": "按只读策略执行；需要写入时切换权限。部分平台上只是部分强制。",
+    "deepseekSandboxWorkspaceWrite": "可写工作区",
+    "deepseekSandboxWorkspaceWriteDescription": "写入意在限制于会话工作区与系统临时目录；越界的调用会请求单次授权。部分平台上只是部分强制。",
+    "deepseekSandboxFullAccess": "完全放开（无沙箱）",
+    "deepseekSandboxFullAccessDescription": "不施加任何文件限制。仅在你清楚后果时选择。",
+    "deepseekPermissionAllowOnce": "允许本次",
+    "deepseekPermissionRejectOnce": "拒绝"
+  },
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
     "skillPacksLoading": "正在加载技能包…"
+  },
+  "CloseBehaviorSettings": {
+    "title": "关闭按钮行为",
+    "description": "选择点击主窗口关闭按钮时的行为。",
+    "trayUnavailable": "当前系统没有可用的托盘，关闭按钮将始终退出 codeg。",
+    "behaviorAsk": "每次询问",
+    "behaviorMinimize": "最小化到托盘",
+    "behaviorExit": "退出 codeg",
+    "saveFailed": "保存关闭行为失败：{message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "要关闭 codeg 吗？",
+    "askDescription": "codeg 可以最小化到托盘继续运行，智能体和终端保持活动；也可以完全退出。",
+    "confirmExitTitle": "要退出 codeg 吗？",
+    "confirmExitDescription": "当前设置为：关闭窗口即退出 codeg。",
+    "runningTerminals": "还有 {count} 个终端正在运行，退出后会被全部结束。",
+    "remember": "记住我的选择",
+    "cancel": "取消",
+    "minimize": "最小化到托盘",
+    "exit": "退出 codeg",
+    "actionFailed": "操作失败：{message}"
   },
   "GeneralSettings": {
     "loading": "加载中...",
@@ -1601,6 +1720,8 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
+    "colorizeCommandOutput": "为命令输出着色",
+    "colorizeCommandOutputDescription": "强制智能体运行的命令输出 ANSI 颜色，使其在会话记录中以彩色而非纯文本呈现。对新建会话生效。",
     "renderingDescription": "如果应用出现黑屏或渲染异常（Windows 上常见于 AMD 显卡或部分 Intel 集成显卡，Linux 上常见于 NVIDIA 闭源驱动），可关闭硬件加速。仅 Windows 与 Linux 桌面端生效。",
     "disableHardwareAcceleration": "禁用硬件加速",
     "renderingSaveFailed": "渲染设置保存失败：{message}",
@@ -2936,6 +3057,8 @@
         "tasks": {
           "connectingTitle": "正在连接 {agent}",
           "connectingDescription": "正在建立连接",
+          "preparingTitle": "正在准备 {agent} 会话",
+          "preparingDescription": "正在读取历史会话记录",
           "loadingSelectorsTitle": "正在加载 {agent} 选择项",
           "loadingSelectorsDescription": "正在获取模式和会话配置选项",
           "initSessionTitle": "正在初始化 {agent} 会话",
@@ -2973,6 +3096,9 @@
         "cut": "剪切",
         "copy": "复制",
         "selectAll": "全选",
+        "openLink": "打开链接",
+        "openFile": "打开文件",
+        "sendEmail": "发送邮件",
         "pasteUnavailable": "无法读取剪贴板，请改用 Ctrl/⌘V 粘贴。",
         "clipboardWriteFailed": "无法写入剪贴板，请改用键盘快捷键。",
         "quickMessageUntitled": "未命名",
@@ -3017,6 +3143,7 @@
         "searchModel": "搜索模型...",
         "searchModelAria": "搜索模型",
         "modelListLabel": "模型",
+        "recommendedBadge": "推荐",
         "noModels": "未找到模型",
         "cancel": "取消",
         "send": "发送",
@@ -3055,7 +3182,9 @@
         "saveEdit": "保存",
         "cancelEdit": "取消编辑",
         "editItem": "编辑",
-        "deleteItem": "删除"
+        "deleteItem": "删除",
+        "steerItemNow": "插入当前回合",
+        "steerItemAsNote": "作为留言，供下次检查时读取"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "设置 > Agents",
@@ -3276,13 +3405,17 @@
         "openInFileManager": "在文件管理器打开",
         "copyRelativePath": "复制相对路径",
         "copyAbsolutePath": "复制绝对路径",
+        "download": "下载文件",
         "pathCopied": "已复制路径",
         "copyPathFailed": "复制路径失败",
-        "openFailed": "打开本地文件失败"
+        "openFailed": "打开本地文件失败",
+        "downloadSaved": "已下载 {name}",
+        "downloadFailed": "下载 {name} 失败"
       },
       "messageList": {
         "attachedResources": "附加资源",
         "loading": "加载中...",
+        "loadBackgroundActivity": "加载后台活动",
         "loadEarlier": "加载更早的消息",
         "loadingEarlier": "正在加载更早的消息…",
         "error": "错误：{message}",
@@ -3457,7 +3590,10 @@
         "agentStatusFailed": "失败",
         "agentStatusCompleted": "已完成",
         "agentFallbackTitle": "子智能体启动中…",
-        "agentCodexLaunchOnly": "已启动。Codex 不会再报告这个子智能体的进展——它的结果会作为一条消息出现在本会话中。",
+        "agentCodexLaunchOnly": "已启动。Codex 尚未报告这个子智能体的结局——打开它的会话可以跟进进展。",
+        "agentSubagentDone": "已完成",
+        "agentSubagentInterrupted": "已中断",
+        "agentSubagentUnknown": "结果未知",
         "agentStatsBash": "命令",
         "agentStatsRead": "读取文件",
         "agentStatsSearch": "搜索",
@@ -3723,7 +3859,8 @@
         "opSpawn": "启动子智能体",
         "opWait": "获取子智能体结果",
         "opClose": "结束子智能体",
-        "opResume": "恢复子智能体"
+        "opResume": "恢复子智能体",
+        "opList": "查看子智能体"
       },
       "contextCompaction": {
         "compacting": "正在压缩上下文…",
@@ -3972,6 +4109,13 @@
     "emptyDirectory": "此目录为空",
     "errorLoadingDir": "加载目录失败",
     "selectedCount": "已选 {count} 项"
+  },
+  "BranchPicker": {
+    "searchPlaceholder": "搜索分支…",
+    "none": "无分支",
+    "local": "本地",
+    "remote": "远程",
+    "useCustom": "使用 “{query}”"
   },
   "ChatChannelSettings": {
     "loading": "加载中...",
@@ -4561,13 +4705,12 @@
     "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
   },
   "BackupSettings": {
-    "title": "备份与恢复",
-    "description": "导出一份可移植的 codeg 数据备份，或从备份中恢复。",
     "tabs": {
       "backup": "备份",
       "restore": "恢复"
     },
     "export": {
+      "description": "把这台设备的 codeg 数据（数据库与上传文件）打包成一个归档文件。",
       "includeExternal": "包含会话内容",
       "includeExternalHint": "同时打包各 CLI 的会话记录（Claude、Codex、Gemini 等），体积更大。",
       "passphrase": "口令（可选）",
@@ -4590,6 +4733,7 @@
       }
     },
     "restore": {
+      "description": "用备份归档中的内容替换这台设备当前的 codeg 数据。",
       "selectFile": "选择备份文件",
       "passphrasePrompt": "该备份已加密，请输入其口令。",
       "unlock": "解锁",
@@ -4657,6 +4801,105 @@
       "rollbackConfirmBody": "这会用该快照替换当前数据并重启。被替换的数据会先做快照。"
     }
   },
+  "ConfigSyncSettings": {
+    "title": "配置同步",
+    "scopeTitle": "同步范围",
+    "scopeIncludedTitle": "包含",
+    "scopeExcludedTitle": "不包含",
+    "scopeIncluded": {
+      "providers": "模型服务商（含 API 密钥）",
+      "agentSettings": "智能体设置",
+      "customAgents": "自定义智能体",
+      "quickMessages": "快捷消息",
+      "taskTemplates": "任务模板",
+      "preferences": "应用偏好（语言、外观、开关）"
+    },
+    "scopeExcluded": {
+      "conversations": "会话记录与历史",
+      "uploads": "上传的文件与图片",
+      "workspaces": "工作区项目与路径",
+      "mcp": "MCP 服务器（归各 CLI 自己管）",
+      "credentials": "登录凭据与令牌"
+    },
+    "fileTitle": "配置文件",
+    "exportButton": "导出到文件",
+    "importButton": "从文件导入",
+    "fileHint": "导出为单个 JSON 文件，可拷贝到另一台设备。导入时按条目新增或更新，文件中没有的本地条目会保留。",
+    "webdavTitle": "WebDAV 同步",
+    "webdavHint": "把配置快照上传到你自己的 WebDAV 服务器。",
+    "presetLabel": "服务商",
+    "preset": {
+      "jianguoyun": "坚果云",
+      "nextcloud": "Nextcloud",
+      "synology": "群晖 NAS",
+      "custom": "自定义"
+    },
+    "presetHint": {
+      "jianguoyun": "坚果云需要在「安全选项」里生成应用密码，不能用登录密码。",
+      "nextcloud": "把域名和用户名换成你自己的，密码用「设置 → 安全」里生成的应用密码。",
+      "synology": "需要在 DSM 套件中心安装并启用 WebDAV Server，默认端口 5005（HTTP）/ 5006（HTTPS）。"
+    },
+    "serverUrl": "服务器地址",
+    "username": "用户名",
+    "password": "密码",
+    "passwordKeep": "留空则沿用已保存的密码",
+    "passwordPlaceholder": "应用密码",
+    "remoteDir": "远程目录",
+    "profile": "配置集",
+    "profileHint": "使用相同配置集的设备共享同一份配置；想区分工作与个人环境时可以分开命名。",
+    "autoSyncLabel": "自动上传",
+    "autoSyncHint": "定期检查，只在配置发生变化时上传。",
+    "intervalLabel": "检查间隔",
+    "intervalOption": "每 {minutes} 分钟",
+    "saveButton": "保存",
+    "testButton": "测试连接",
+    "uploadButton": "立即同步",
+    "restoreButton": "从远程恢复",
+    "saved": "同步设置已保存",
+    "testSucceeded": "已成功连接 WebDAV 服务器",
+    "uploaded": "配置已上传",
+    "exported": "配置已导出",
+    "restored": "已应用 {count} 条配置",
+    "imported": "已应用 {count} 条配置",
+    "noRemoteSnapshot": "服务器上还没有配置快照",
+    "lastSyncAt": "上次同步：{time}",
+    "neverSynced": "尚未同步",
+    "lastError": "上次错误：{message}",
+    "working": "处理中…",
+    "plaintextWarning": "快照以明文上传且包含 API 密钥，请只使用只有你能访问的 WebDAV 服务器。同步凭据本身不会写入快照。",
+    "importConfirmTitle": "导入配置？",
+    "importConfirmBody": "文件中的条目将在本机新增或更新，文件未涉及的本地条目会保留。",
+    "restartHint": "部分改动（外观、语言、服务商列表）需要重启 codeg 后才会生效。",
+    "importConfirmAction": "导入",
+    "restoreConfirmTitle": "从远程恢复？",
+    "restoreConfirmBody": "将把 {device} 在 {time} 上传的快照应用到本机，快照未涉及的本地条目会保留。",
+    "restoreConfirmAction": "恢复",
+    "cancel": "取消",
+    "emptySnapshot": "这份快照里没有任何配置条目。",
+    "domain": {
+      "modelProviders": "{count} 个模型服务商",
+      "agentSettings": "{count} 项智能体设置",
+      "customAgents": "{count} 个自定义智能体",
+      "quickMessages": "{count} 条快捷消息",
+      "taskTemplates": "{count} 个任务模板",
+      "preferences": "{count} 项应用偏好"
+    },
+    "rollbackTitle": "撤销导入",
+    "rollbackHint": "每次导入和每次还原前，都会先保存这台设备当时的配置，最近十份会保留下来。",
+    "rollbackAction": "撤销",
+    "rollbackUnknownTime": "时间未知",
+    "rollbackConfirmTitle": "回到这份配置？",
+    "rollbackConfirmBody": "这会用 {time} 保存的那份副本替换当前配置。当前配置会先被保存下来，所以这一步同样可以撤销。",
+    "rollbackConfirmAction": "撤销",
+    "rolledBack": "已恢复 {count} 条配置",
+    "encryptLabel": "加密快照",
+    "encryptHint": "用口令保护上传的文件。参与同步的每台设备都要使用同一个口令。",
+    "encryptedNotice": "快照会先用你的口令加密再上传。口令一旦丢失，服务器上的那份副本将无法恢复。",
+    "passphrase": "加密口令",
+    "passphraseKeep": "留空则沿用已保存的口令",
+    "passphrasePlaceholder": "加密口令",
+    "passphraseHint": "只保存在这台设备的钥匙串里，不会上传。请在你的其他设备上输入同一个口令。"
+  },
   "backup": {
     "restore": {
       "error": {
@@ -4670,6 +4913,27 @@
     "error": {
       "diskSpace": "磁盘空间不足，无法完成操作。",
       "cancelled": "操作已取消。"
+    }
+  },
+  "configSync": {
+    "error": {
+      "newerSchema": "这份快照由更新版本的 codeg 创建（格式 {snapshotVersion}），当前版本最高支持格式 {appVersion}。",
+      "checksum": "快照与校验值不符，可能不完整。",
+      "invalidSnapshot": "这不是有效的 codeg 配置快照文件。",
+      "noRemoteSnapshot": "服务器上还没有配置快照。",
+      "notConfigured": "请先完成 WebDAV 服务器配置再同步。",
+      "unauthorized": "WebDAV 服务器拒绝了该用户名或密码。",
+      "forbidden": "WebDAV 服务器拒绝访问该目录。",
+      "remotePath": "远程目录或配置集名称无效。",
+      "quota": "WebDAV 服务器已无可用空间。",
+      "network": "无法连接到 WebDAV 服务器。",
+      "server": "WebDAV 服务器返回错误（{status}）。",
+      "passphraseRequired": "该快照已加密，请先设置加密口令再同步。",
+      "badPassphrase": "无法解密该快照。请检查口令，也可能是文件已损坏。",
+      "badDomain": "无法读取该快照中的 {domain} 部分。",
+      "noRollback": "这台设备上已经没有那份保存的配置了。",
+      "credentialsUnreadable": "无法读取已保存的凭据。请解锁系统钥匙串后重试。",
+      "notEncrypted": "服务器上的快照未加密，但本机已开启加密。请从本机上传以替换它，或关闭加密后再使用。"
     }
   },
   "WebConnection": {
@@ -4954,12 +5218,7 @@
     "cronApply": "应用",
     "cronPreviewLabel": "预览",
     "cronOpenBuilder": "打开计划生成器",
-    "branchDefault": "默认分支",
-    "branchUseCustom": "使用 “{query}”",
-    "branchLocal": "本地",
-    "branchRemote": "远程",
-    "branchSearchPlaceholder": "搜索分支…",
-    "branchNone": "无分支"
+    "branchDefault": "默认分支"
   },
   "Tasks": {
     "title": "待办任务",
@@ -5084,11 +5343,16 @@
     "phaseRetry": "重试执行",
     "phaseReturn": "继续处理",
     "phaseMerge": "合并变更",
+    "phaseCompact": "压缩上下文",
     "titleLabel": "标题",
     "titlePlaceholder": "要做什么？",
     "promptLabel": "任务描述",
     "promptPlaceholder": "向 agent 描述任务——输入 @ 可引用文件，/ 可唤起命令",
     "folderPlaceholder": "选择文件夹",
+    "baseBranch": "基准分支",
+    "baseBranchPlaceholder": "当前分支",
+    "baseBranchDefault": "任务开始时的当前分支",
+    "baseBranchHint": "任务从该分支拉出工作树，合并时也落回该分支。",
     "agentInheritedHint": "继承自任务设置，修改后仅对本任务生效",
     "agentOverrideReset": "恢复继承",
     "sectionTarget": "目标",
@@ -5114,6 +5378,7 @@
     "mergeDeleteWorktree": "合并后删除 worktree",
     "mergeSubmit": "合并",
     "mergeSubmitQueue": "加入合并队列",
+    "mergeSubmitting": "启动中…",
     "mergeQueuedToast": "已加入合并队列，等当前合并完成后自动开始。",
     "completeTitle": "完成任务",
     "completeDescription": "该任务没有改动任何文件，无需合并，将直接标记为已完成。",
@@ -5135,6 +5400,7 @@
     "settingsMaxConcurrentHint": "0 表示不限制",
     "settingsAutoCompact": "自动压缩上下文阈值",
     "settingsAutoCompactHint": "继续处理、重试或合并前，若会话上下文占用达到该比例，先压缩再发送任务消息。0 表示关闭。",
+    "compactingNote": "正在压缩会话上下文…",
     "settingsCompactCommand": "压缩命令",
     "settingsCompactCommandHint": "留空则按智能体自身提供的命令（或已知默认值）自动选择。",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5377,6 +5643,47 @@
     "groupInstructions": "描述与系统提示词",
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
+  },
+  "DeepSeekModelEditor": {
+    "title": "模型列表",
+    "description": "DeepSeek 会话可切换的模型。保存在 harness 的设置文档里，代理在启动时读取——保存后对之后新建的会话生效。",
+    "inheritedBadge": "代理默认",
+    "inheritedHint": "尚未保存过列表，这些是代理内置的模型。保存会把它们固定下来，之后升级代理也不再自动变化。文件：",
+    "storedHint": "已保存在 harness 设置文档中。这份列表之外的键、以及它们周围的注释都不会被改动。文件：",
+    "unreadable": "无法在这里安全地编辑该设置文档（会有丢失已有内容的风险），请手动编辑。",
+    "invalidStored": "代理拒绝了这份已保存的列表，在修好之前，会话用的都是它内置的模型：",
+    "loading": "正在读取设置文档…",
+    "loadFailed": "无法读取设置文档。",
+    "empty": "没有模型。添加一个，或直接保存以退回代理内置列表。",
+    "addModel": "添加模型",
+    "remove": "删除模型",
+    "advanced": "更多",
+    "save": "保存模型列表",
+    "saving": "保存中…",
+    "restoreDefaults": "使用代理默认",
+    "fieldId": "模型 id",
+    "fieldName": "显示名称",
+    "fieldContextWindow": "上下文窗口",
+    "fieldDescription": "描述",
+    "fieldMaxTokens": "最大输出 token",
+    "fieldAcceptsImages": "接受图片",
+    "fieldImagePixelBudget": "图片像素预算",
+    "imageBudgetPixels": "像素数",
+    "imageBudgetLow": "低精度（512×512）",
+    "fieldImageMaxBytes": "图片字节上限",
+    "placeholderId": "deepseek-flash",
+    "placeholderName": "选择器中显示的名字",
+    "placeholderInherit": "代理默认",
+    "errorMissingId": "每个模型都需要一个 id。",
+    "errorDuplicateId": "有两个模型都叫“{id}”。",
+    "errorBadContextWindow": "“{id}”的上下文窗口必须是大于 0 的整数。",
+    "errorBadMaxTokens": "“{id}”的最大输出 token 必须是大于 0 的整数。",
+    "errorBadImageLimit": "“{id}”的图片限制必须是大于 0 的整数。",
+    "warnSingleModel": "只有一个模型时，代理不会再提供模型选择器。",
+    "warnLaunchModelMissing": "新会话会以“{model}”启动，而它不在这个列表里。可以把它加进来，或在上方环境变量里设置 {variable}。",
+    "toastSaved": "模型列表已保存",
+    "toastRestored": "已改用代理内置模型列表",
+    "toastSaveFailed": "保存模型列表失败"
   },
   "DiagnosticsSettings": {
     "title": "环境诊断",
@@ -5809,6 +6116,23 @@
     "confirmDeleteCancel": "取消",
     "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
-    "mergeIntoNewRegion": "新建区域"
+    "mergeIntoNewRegion": "新建区域",
+    "addFileCard": "文件卡片",
+    "addTerminalCard": "终端卡片",
+    "searchFiles": "搜索文件…",
+    "searchFilesIn": "在 {folder} 中搜索…",
+    "searchingFiles": "搜索中…",
+    "noFiles": "未找到文件",
+    "noOpenFiles": "没有已打开的文件——输入以搜索",
+    "browseForFile": "浏览…",
+    "filePreview": "预览",
+    "fileSource": "源码",
+    "reloadFile": "重新加载",
+    "removeFileCard": "移除文件卡片",
+    "restartTerminal": "重启终端",
+    "removeTerminalCard": "移除终端卡片",
+    "terminalNoDirectory": "这张卡片没有工作目录",
+    "confirmDeleteTerminals": "{count} 个正在运行的终端会被关闭，其中的进程也会一并结束。",
+    "confirmDeleteNotesAndTerminals": "你写下的 {notes} 条便签将被永久删除，另有 {terminals} 个正在运行的终端会被结束。"
   }
 }

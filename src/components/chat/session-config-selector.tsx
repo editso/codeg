@@ -31,6 +31,9 @@ interface SessionConfigSelectorProps {
    * means "no grouping" — fall back to server groups, else the flat list.
    */
   derivedGroups?: ModelOptionGroup[] | null
+  /** Localized chip text for the agent's `recommended_value` row. Omit it and
+   *  the recommendation is simply not shown. */
+  recommendedLabel?: string
 }
 
 export function InlineSessionConfigSelector({
@@ -38,6 +41,7 @@ export function InlineSessionConfigSelector({
   onSelect,
   derivedGroups,
   collapseChevronWhenIdle = false,
+  recommendedLabel,
 }: SessionConfigSelectorProps) {
   if (option.kind.type !== "select") return null
 
@@ -65,6 +69,13 @@ export function InlineSessionConfigSelector({
     (item) => item.value === option.kind.current_value
   )
   const currentLabel = selected?.name ?? option.kind.current_value
+  // The agent's recommended value, if it named one AND the caller supplied a
+  // chip label. Never falls back to `current_value`: "recommended" and
+  // "selected" are different claims, and badging the selected row when nothing
+  // was recommended would invent one.
+  const recommendedValue = recommendedLabel ? option.recommended_value : null
+  const badgeFor = (value: string) =>
+    value === recommendedValue ? recommendedLabel : null
 
   return (
     <DropdownMenu>
@@ -120,6 +131,7 @@ export function InlineSessionConfigSelector({
                       <DropdownRadioItemContent
                         label={item.name}
                         description={item.description}
+                        recommendedLabel={badgeFor(item.value)}
                       />
                     </DropdownMenuRadioItem>
                   ))}
@@ -134,6 +146,7 @@ export function InlineSessionConfigSelector({
                   <DropdownRadioItemContent
                     label={item.name}
                     description={item.description}
+                    recommendedLabel={badgeFor(item.value)}
                   />
                 </DropdownMenuRadioItem>
               ))}

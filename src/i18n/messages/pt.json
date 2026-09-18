@@ -249,6 +249,8 @@
     "appLanguage": "Idioma do app",
     "languageSaveSuccess": "As configurações de idioma foram salvas",
     "languageSaveFailed": "Falha ao salvar as configurações de idioma: {message}",
+    "dataTitle": "Dados e sincronização",
+    "dataDescription": "A sincronização de configuração leva seus ajustes de uma máquina para outra; o backup empacota todos os dados do codeg desta máquina.",
     "updateTitle": "Atualização do app",
     "versionTitle": "Atualização de software",
     "updateDescription": "Verifique versões mais novas na fonte de releases configurada e instale diretamente quando disponíveis.",
@@ -427,7 +429,7 @@
       },
       "open_folder": {
         "title": "Abrir pasta",
-        "description": "Abre o seletor de pastas e abre em uma nova janela"
+        "description": "Abre o seletor de pastas e abre a pasta no espaço de trabalho"
       },
       "open_settings": {
         "title": "Abrir configurações",
@@ -961,7 +963,28 @@
         "failed": "O login não foi concluído.",
         "startFailed": "Não foi possível iniciar o login",
         "credentialHint": "O token fica em cache aqui. Copie este arquivo para outra máquina sem desktop para conectá-la também."
-      }
+      },
+      "signOut": {
+        "title": "Entrou com a conta errada?",
+        "description": "O Antigravity guarda em cache a conta Google usada para entrar e a reutiliza silenciosamente, então entrar de novo não chega a outra conta. Sair descarta a credencial armazenada; as sessões do Antigravity em andamento são encerradas antes, pois de outro modo gravariam a conta antiga de volta.",
+        "action": "Sair",
+        "done": "Sessão encerrada. Entre novamente para escolher outra conta.",
+        "failed": "Não foi possível sair"
+      },
+      "tempReclaimTitle": "Espaço temporário remanescente",
+      "tempReclaimHint": "Versões anteriores do codeg não conseguiam limpar o diretório temporário que este agente descompacta a cada inicialização. Isto verifica a pasta temporária do sistema em busca desses resíduos. Essa pasta é compartilhada com outros aplicativos, portanto nada é excluído até você confirmar, e tudo o que ainda estiver em uso é ignorado.",
+      "tempReclaimScan": "Verificar",
+      "tempReclaimDelete": "Excluir resíduos",
+      "tempReclaimNone": "Nada a recuperar.",
+      "tempReclaimFound": "{count} item(ns) remanescente(s), {size} recuperável(is).",
+      "tempReclaimSkipped": "{count} ignorado(s) (ainda em uso ou muito recente).",
+      "tempReclaimed": "Recuperado(s) {size} de {count} item(ns).",
+      "tempReclaimSelectAll": "Selecionar tudo",
+      "tempReclaimAgeHours": "{hours} h",
+      "tempReclaimConfirmTitle": "Excluir {count} item(ns)?",
+      "tempReclaimConfirmBody": "Isto exclui permanentemente {size}. A pasta temporária do sistema é compartilhada com outros aplicativos, então confira cada caminho antes de confirmar; o que ainda estiver em uso é ignorado.",
+      "tempReclaimConfirmAction": "Excluir",
+      "tempReclaimCancel": "Cancelar"
     },
     "deepseek": {
       "configManagement": "Configuração do DeepSeek Harness",
@@ -1169,6 +1192,46 @@
           "todowrite": "Escrever a lista de tarefas",
           "question": "Fazer uma pergunta a você",
           "doom_loop": "Dispara quando a mesma chamada se repete três vezes com a mesma entrada"
+        }
+      },
+      "behavior": {
+        "title": "Comportamento e compactação",
+        "description": "Padrões da sessão, compactação de contexto e limites de saída das ferramentas. Gravado em opencode.json e aplicado ao salvar abaixo.",
+        "docsLink": "Documentação de configuração",
+        "unset": "Não configurado",
+        "defaultAgent": "Agente padrão",
+        "defaultAgentHint": "Com qual agente principal uma nova sessão abre. Vazio ou desconhecido volta para build.",
+        "share": "Compartilhamento",
+        "shareHint": "Se uma sessão pode ser publicada como link compartilhado.",
+        "shareManual": "Manual (somente quando pedido)",
+        "shareAuto": "Automático (toda sessão nova)",
+        "shareDisabled": "Desativado",
+        "autoUpdate": "Atualização automática",
+        "autoUpdateHint": "Se o OpenCode se atualiza sozinho para a versão mais recente.",
+        "autoUpdateOn": "Atualizar automaticamente",
+        "autoUpdateNotify": "Apenas avisar",
+        "autoUpdateOff": "Nunca",
+        "snapshot": "Snapshots do sistema de arquivos",
+        "snapshotHint": "Registra um snapshot antes de cada passo. Desligado, desfazer e reverter não restauram mais arquivos.",
+        "compactionAuto": "Compactação automática",
+        "compactionAutoHint": "Resume a conversa automaticamente quando a janela de contexto enche.",
+        "compactionPrune": "Podar saída antiga de ferramentas",
+        "compactionPruneHint": "Descarta a saída de chamadas antigas durante a compactação em vez de resumi-la.",
+        "fields": {
+          "subagentDepth": "Profundidade de subagentes",
+          "tailTurns": "Turnos mantidos na íntegra",
+          "preserveRecentTokens": "Tokens mantidos na íntegra",
+          "reserved": "Tokens reservados",
+          "maxLines": "Limite de linhas da saída",
+          "maxBytes": "Limite de bytes da saída"
+        },
+        "hints": {
+          "subagentDepth": "Quantos níveis os subagentes podem aninhar. Com 1, um subagente não pode lançar outro.",
+          "tailTurns": "Quantos turnos recentes do usuário ficam fora da compactação. Sem valor, apenas o orçamento de tokens abaixo os limita.",
+          "preserveRecentTokens": "Orçamento de tokens dos turnos recentes mantidos na íntegra após uma compactação.",
+          "reserved": "Janela deixada livre para que a própria compactação não estoure o contexto.",
+          "maxLines": "Saída maior que isso vai para o disco e é substituída por uma prévia. Padrão 2000.",
+          "maxBytes": "Saída maior que isso vai para o disco e é substituída por uma prévia. Padrão 51200."
         }
       }
     },
@@ -1440,7 +1503,11 @@
       "ready": "O adaptador {adapterCmd} está instalado — é ele que o Codeg inicia. Ele traz o próprio runtime, então a {nativeLabel} não é necessária; se instalá-la depois, as duas coexistem e compartilham {configDir}."
     },
     "cline": {
-      "configDescription": "Configure o provedor de API e as credenciais do Cline. As configurações são salvas em ~/.cline/data/."
+      "configDescription": "Configure o provedor de API e as credenciais do Cline. As configurações são salvas em ~/.cline/data/.",
+      "signInGroup": "Entrar com o Cline",
+      "byoGroup": "Use seu próprio provedor",
+      "externalGroup": "Configurado fora do codeg",
+      "signInHint": "O Cline guarda esta credencial por conta própria. Execute o comando abaixo em um terminal para entrar: ele mostra um código e abre uma página do navegador para confirmá-lo."
     },
     "opencodePlugins": {
       "title": "Plugins do OpenCode",
@@ -1448,7 +1515,10 @@
       "noPlugins": "Nenhum plugin declarado em opencode.json",
       "status": {
         "installed": "Instalado",
-        "missing": "Não instalado"
+        "needs_migration": "Requer migração",
+        "missing": "Não instalado",
+        "path": "Plugin por caminho",
+        "path_missing": "Caminho não encontrado"
       },
       "installAll": "Instalar todos os ausentes",
       "pinVersions": "Fixar versões @latest",
@@ -1509,6 +1579,7 @@
       "installing": "Instalando…",
       "recheck": "Verificar novamente",
       "configDirSkillsNote": "Com um diretório de configuração personalizado, as habilidades, os especialistas e as ferramentas de escritório gerenciados nas Configurações não se aplicam a este pi — gerencie as habilidades dele diretamente nessa pasta.",
+      "dirHistoryNote": "Estes diretórios só chegam ao processo do pi. O histórico de conversas do codeg lê a localização padrão do pi, portanto sessões gravadas num diretório personalizado não aparecerão na lista.",
       "projectTrustTitle": "Confiança do projeto",
       "projectTrustDescription": "Pastas das quais você permitiu que o pi carregue arquivos do projeto. Uma pasta confiável permite que as .pi/extensions daquele repositório executem código ao iniciar o pi, vale para todas as pastas dentro dela e também é usada quando você executa o pi no terminal.",
       "projectTrustLoading": "Carregando…",
@@ -1578,9 +1649,57 @@
     "customAgentBadge": "Personalizado",
     "customAgentNotLaunchable": "Este agente não pode ser iniciado aqui: {reason}"
   },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "Normal",
+    "deepseekModeDefaultDescription": "Lê e edita arquivos e executa comandos diretamente para concluir a tarefa",
+    "deepseekModePlan": "Plano",
+    "deepseekModePlanDescription": "Investiga primeiro e apresenta um plano completo para você confirmar antes de agir. Isso orienta o modelo; o limite real continua sendo o do acesso a arquivos.",
+    "deepseekOptionModel": "Modelo",
+    "deepseekOptionReasoning": "Esforço de raciocínio",
+    "deepseekOptionReasoningDescription": "Quanto maior, mais lento e mais tokens consome, mas é mais estável em problemas difíceis",
+    "deepseekOptionSandbox": "Acesso a arquivos",
+    "deepseekOptionSandboxDescription": "Comandos e ferramentas de arquivo compartilham este único limite",
+    "deepseekReasoningOff": "Desligado",
+    "deepseekReasoningOffDescription": "Responde direto, sem raciocinar; o mais rápido",
+    "deepseekReasoningLow": "Baixo",
+    "deepseekReasoningLowDescription": "Raciocina brevemente; mais estável que desligado, mais rápido que alto",
+    "deepseekReasoningHigh": "Alto",
+    "deepseekReasoningHighDescription": "Raciocina antes de responder; o padrão para o dia a dia",
+    "deepseekReasoningMax": "Máximo",
+    "deepseekReasoningMaxDescription": "Raciocina por mais tempo; mais estável em problemas difíceis, porém mais lento e mais caro",
+    "deepseekSandboxReadOnly": "Somente leitura",
+    "deepseekSandboxReadOnlyDescription": "Executa com uma política somente de leitura; troque o acesso quando precisar gravar. Em algumas plataformas a aplicação é apenas parcial.",
+    "deepseekSandboxWorkspaceWrite": "Escrita no espaço de trabalho",
+    "deepseekSandboxWorkspaceWriteDescription": "As gravações devem ficar dentro do espaço de trabalho da sessão e dos diretórios temporários do sistema; uma chamada fora deles pede autorização pontual. Em algumas plataformas a aplicação é apenas parcial.",
+    "deepseekSandboxFullAccess": "Acesso total (sem sandbox)",
+    "deepseekSandboxFullAccessDescription": "Não aplica nenhuma restrição de arquivos. Escolha apenas se entender as consequências.",
+    "deepseekPermissionAllowOnce": "Permitir uma vez",
+    "deepseekPermissionRejectOnce": "Recusar"
+  },
   "SettingsPages": {
     "agentsLoading": "Carregando configurações de agentes...",
     "skillPacksLoading": "Carregando pacotes de habilidades…"
+  },
+  "CloseBehaviorSettings": {
+    "title": "Comportamento do botão Fechar",
+    "description": "Escolha o que o botão Fechar da janela principal faz.",
+    "trayUnavailable": "Este sistema não tem uma bandeja utilizável, portanto o botão Fechar sempre encerra o codeg.",
+    "behaviorAsk": "Perguntar sempre",
+    "behaviorMinimize": "Minimizar para a bandeja",
+    "behaviorExit": "Sair do codeg",
+    "saveFailed": "Falha ao salvar o comportamento de fechamento: {message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "Fechar o codeg?",
+    "askDescription": "O codeg pode continuar em execução na bandeja para manter agentes e terminais ativos, ou encerrar por completo.",
+    "confirmExitTitle": "Sair do codeg?",
+    "confirmExitDescription": "Fechar a janela está configurado para encerrar o codeg.",
+    "runningTerminals": "{count, plural, one {# terminal ainda está em execução e será encerrado ao sair.} other {# terminais ainda estão em execução e serão encerrados ao sair.}}",
+    "remember": "Lembrar minha escolha",
+    "cancel": "Cancelar",
+    "minimize": "Minimizar para a bandeja",
+    "exit": "Sair do codeg",
+    "actionFailed": "Falha na ação: {message}"
   },
   "GeneralSettings": {
     "loading": "Carregando...",
@@ -1601,6 +1720,8 @@
     "terminalShellNotInstalled": "não instalado",
     "terminalShellNotFoundWarning": "Este caminho não existe neste host.",
     "terminalCurrentShell": "Em uso: {path}",
+    "colorizeCommandOutput": "Colorir a saída dos comandos",
+    "colorizeCommandOutputDescription": "Força cor ANSI nos comandos que os agentes executam, para que a saída apareça colorida na transcrição em vez de como texto simples. Vale para sessões novas.",
     "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas no Windows e com o driver proprietário da NVIDIA no Linux). Aplica-se apenas às versões desktop do Windows e do Linux.",
     "disableHardwareAcceleration": "Desativar aceleração de hardware",
     "renderingSaveFailed": "Falha ao salvar as configurações de renderização: {message}",
@@ -2936,6 +3057,8 @@
         "tasks": {
           "connectingTitle": "Conectando a {agent}",
           "connectingDescription": "Estabelecendo conexão",
+          "preparingTitle": "Preparando a sessão de {agent}",
+          "preparingDescription": "Lendo o histórico da conversa",
           "loadingSelectorsTitle": "Carregando seletores de {agent}",
           "loadingSelectorsDescription": "Buscando opções de modo e configuração de sessão",
           "initSessionTitle": "Initializing {agent} session",
@@ -2971,6 +3094,9 @@
         "cut": "Cortar",
         "copy": "Copiar",
         "selectAll": "Selecionar tudo",
+        "openLink": "Abrir link",
+        "openFile": "Abrir arquivo",
+        "sendEmail": "Enviar e-mail",
         "pasteUnavailable": "Não foi possível ler a área de transferência. Use Ctrl/⌘V para colar.",
         "clipboardWriteFailed": "Não foi possível escrever na área de transferência. Use o atalho de teclado.",
         "quickMessageUntitled": "Sem título",
@@ -3015,6 +3141,7 @@
         "searchModel": "Buscar modelos...",
         "searchModelAria": "Buscar modelos",
         "modelListLabel": "Modelos",
+        "recommendedBadge": "Recomendado",
         "noModels": "Nenhum modelo encontrado",
         "cancel": "Cancelar",
         "send": "Enviar",
@@ -3055,7 +3182,9 @@
         "saveEdit": "Salvar",
         "cancelEdit": "Cancelar edição",
         "editItem": "Editar",
-        "deleteItem": "Remover"
+        "deleteItem": "Remover",
+        "steerItemNow": "Inserir na vez atual",
+        "steerItemAsNote": "Enviar como nota para a próxima verificação"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Configurações > Agentes",
@@ -3276,13 +3405,17 @@
         "openInFileManager": "Abrir no gerenciador de arquivos",
         "copyRelativePath": "Copiar caminho relativo",
         "copyAbsolutePath": "Copiar caminho absoluto",
+        "download": "Baixar arquivo",
         "pathCopied": "Caminho copiado",
         "copyPathFailed": "Falha ao copiar o caminho",
-        "openFailed": "Falha ao abrir o arquivo local"
+        "openFailed": "Falha ao abrir o arquivo local",
+        "downloadSaved": "{name} baixado",
+        "downloadFailed": "Falha ao baixar {name}"
       },
       "messageList": {
         "attachedResources": "Recursos anexados",
         "loading": "Carregando...",
+        "loadBackgroundActivity": "Carregar atividade em segundo plano",
         "loadEarlier": "Carregar mensagens anteriores",
         "loadingEarlier": "Carregando mensagens anteriores…",
         "error": "Erro: {message}",
@@ -3457,7 +3590,10 @@
         "agentStatusFailed": "Falhou",
         "agentStatusCompleted": "Concluído",
         "agentFallbackTitle": "Iniciando subagente…",
-        "agentCodexLaunchOnly": "Iniciado. O Codex não informa mais o progresso deste subagente — o resultado chega como uma mensagem nesta conversa.",
+        "agentCodexLaunchOnly": "Iniciado. O Codex ainda não informou o desfecho deste subagente — abra a sessão dele para acompanhar o trabalho.",
+        "agentSubagentDone": "Concluído",
+        "agentSubagentInterrupted": "Interrompido",
+        "agentSubagentUnknown": "Desfecho desconhecido",
         "agentStatsBash": "Comandos",
         "agentStatsRead": "Arquivos lidos",
         "agentStatsSearch": "Pesquisas",
@@ -3723,7 +3859,8 @@
         "opSpawn": "Iniciando subagente",
         "opWait": "Obtendo resultado do subagente",
         "opClose": "Encerrando subagente",
-        "opResume": "Retomando subagente"
+        "opResume": "Retomando subagente",
+        "opList": "Listando subagentes"
       },
       "contextCompaction": {
         "compacting": "Compactando o contexto…",
@@ -4560,14 +4697,20 @@
     "errorLoadingDir": "Falha ao carregar o diretório",
     "selectedCount": "{count} selecionado(s)"
   },
+  "BranchPicker": {
+    "searchPlaceholder": "Pesquisar branches…",
+    "none": "Sem branches",
+    "local": "Local",
+    "remote": "Remoto",
+    "useCustom": "Usar \"{query}\""
+  },
   "BackupSettings": {
-    "title": "Backup e restauração",
-    "description": "Exporte um backup portátil dos seus dados do codeg ou restaure a partir de um.",
     "tabs": {
       "backup": "Backup",
       "restore": "Restauração"
     },
     "export": {
+      "description": "Empacota os dados do codeg desta máquina — banco de dados e arquivos enviados — em um único arquivo.",
       "includeExternal": "Incluir o conteúdo das conversas",
       "includeExternalHint": "Também arquiva as transcrições das CLIs (Claude, Codex, Gemini, …). Aumenta o tamanho.",
       "passphrase": "Senha (opcional)",
@@ -4590,6 +4733,7 @@
       }
     },
     "restore": {
+      "description": "Substitui os dados do codeg desta máquina pelo conteúdo de um arquivo de backup.",
       "selectFile": "Selecionar arquivo de backup",
       "passphrasePrompt": "Este backup está criptografado. Digite a senha dele.",
       "unlock": "Desbloquear",
@@ -4657,6 +4801,105 @@
       "rollbackConfirmBody": "Isto substitui seus dados atuais pelo instantâneo e reinicia. Antes é feito um instantâneo dos dados substituídos."
     }
   },
+  "ConfigSyncSettings": {
+    "title": "Sincronização de configuração",
+    "scopeTitle": "O que é sincronizado",
+    "scopeIncludedTitle": "Incluído",
+    "scopeExcludedTitle": "Não incluído",
+    "scopeIncluded": {
+      "providers": "Provedores de modelos (com chaves de API)",
+      "agentSettings": "Configurações de agentes",
+      "customAgents": "Agentes personalizados",
+      "quickMessages": "Mensagens rápidas",
+      "taskTemplates": "Modelos de tarefa",
+      "preferences": "Preferências do app (idioma, aparência, opções)"
+    },
+    "scopeExcluded": {
+      "conversations": "Conversas e histórico",
+      "uploads": "Arquivos e imagens enviados",
+      "workspaces": "Projetos e caminhos do espaço de trabalho",
+      "mcp": "Servidores MCP (mantidos por cada CLI)",
+      "credentials": "Credenciais de login e tokens"
+    },
+    "fileTitle": "Arquivo de configuração",
+    "exportButton": "Exportar para arquivo",
+    "importButton": "Importar de arquivo",
+    "fileHint": "Grava um único arquivo JSON que você pode levar para outra máquina. A importação adiciona ou atualiza itens; os itens existentes que não estiverem no arquivo são mantidos.",
+    "webdavTitle": "Sincronização WebDAV",
+    "webdavHint": "Envia o instantâneo de configuração para o seu próprio servidor WebDAV.",
+    "presetLabel": "Servidor",
+    "preset": {
+      "jianguoyun": "Jianguoyun",
+      "nextcloud": "Nextcloud",
+      "synology": "NAS Synology",
+      "custom": "Personalizado"
+    },
+    "presetHint": {
+      "jianguoyun": "O Jianguoyun exige uma senha de aplicativo criada nas configurações de segurança, não a senha de login.",
+      "nextcloud": "Troque o domínio e o usuário e use uma senha de aplicativo em Configurações → Segurança.",
+      "synology": "Ative o WebDAV Server no Centro de Pacotes do DSM; as portas padrão são 5005 (HTTP) e 5006 (HTTPS)."
+    },
+    "serverUrl": "URL do servidor",
+    "username": "Usuário",
+    "password": "Senha",
+    "passwordKeep": "Deixe em branco para manter a senha salva",
+    "passwordPlaceholder": "Senha de aplicativo",
+    "remoteDir": "Pasta remota",
+    "profile": "Perfil",
+    "profileHint": "Máquinas com o mesmo perfil compartilham uma configuração. Use perfis diferentes para separar trabalho e uso pessoal.",
+    "autoSyncLabel": "Enviar automaticamente",
+    "autoSyncHint": "Verifica periodicamente e envia apenas quando a configuração muda.",
+    "intervalLabel": "Intervalo de verificação",
+    "intervalOption": "A cada {minutes} minutos",
+    "saveButton": "Salvar",
+    "testButton": "Testar conexão",
+    "uploadButton": "Sincronizar agora",
+    "restoreButton": "Restaurar do servidor",
+    "saved": "Ajustes de sincronização salvos",
+    "testSucceeded": "Conectado ao servidor WebDAV",
+    "uploaded": "Configuração enviada",
+    "exported": "Configuração exportada",
+    "restored": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
+    "imported": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
+    "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor",
+    "lastSyncAt": "Última sincronização: {time}",
+    "neverSynced": "Ainda não sincronizado",
+    "lastError": "Último erro: {message}",
+    "working": "Processando…",
+    "plaintextWarning": "O instantâneo é enviado sem criptografia e contém chaves de API, então use um servidor WebDAV que só você acesse. As credenciais de sincronização nunca fazem parte do instantâneo.",
+    "importConfirmTitle": "Importar configuração?",
+    "importConfirmBody": "Os itens do arquivo serão adicionados ou atualizados nesta máquina. Os itens existentes que o arquivo não menciona são mantidos.",
+    "restartHint": "Algumas alterações (aparência, idioma e a lista de provedores) só têm efeito depois de reiniciar o codeg.",
+    "importConfirmAction": "Importar",
+    "restoreConfirmTitle": "Restaurar do servidor?",
+    "restoreConfirmBody": "O instantâneo de {device}, criado em {time}, será aplicado a esta máquina. Os itens existentes que o instantâneo não menciona são mantidos.",
+    "restoreConfirmAction": "Restaurar",
+    "cancel": "Cancelar",
+    "emptySnapshot": "Este instantâneo não contém itens de configuração.",
+    "domain": {
+      "modelProviders": "{count, plural, one {# provedor de modelos} other {# provedores de modelos}}",
+      "agentSettings": "{count, plural, one {# ajuste de agente} other {# ajustes de agentes}}",
+      "customAgents": "{count, plural, one {# agente personalizado} other {# agentes personalizados}}",
+      "quickMessages": "{count, plural, one {# mensagem rápida} other {# mensagens rápidas}}",
+      "taskTemplates": "{count, plural, one {# modelo de tarefa} other {# modelos de tarefa}}",
+      "preferences": "{count, plural, one {# preferência} other {# preferências}}"
+    },
+    "rollbackTitle": "Desfazer uma importação",
+    "rollbackHint": "Cada importação e cada restauração guardam antes o estado desta máquina. Os dez últimos são mantidos.",
+    "rollbackAction": "Desfazer",
+    "rollbackUnknownTime": "Hora desconhecida",
+    "rollbackConfirmTitle": "Voltar a esta configuração?",
+    "rollbackConfirmBody": "A configuração atual será substituída pela cópia guardada em {time}. A atual é guardada primeiro, por isso este passo também pode ser desfeito.",
+    "rollbackConfirmAction": "Desfazer",
+    "rolledBack": "{count, plural, one {# entrada restaurada} other {# entradas restauradas}}",
+    "encryptLabel": "Cifrar o snapshot",
+    "encryptHint": "Protege o ficheiro enviado com uma frase-passe. Todas as máquinas sincronizadas precisam da mesma.",
+    "encryptedNotice": "O snapshot é cifrado com a sua frase-passe antes do envio. Se a perder, a cópia no servidor não poderá ser recuperada.",
+    "passphrase": "Frase-passe",
+    "passphraseKeep": "Deixe vazio para manter a frase-passe guardada",
+    "passphrasePlaceholder": "Frase-passe de cifra",
+    "passphraseHint": "Fica no porta-chaves desta máquina e nunca é enviada. Introduza a mesma frase-passe nas suas outras máquinas."
+  },
   "backup": {
     "restore": {
       "error": {
@@ -4670,6 +4913,27 @@
     "error": {
       "diskSpace": "Espaço em disco insuficiente para concluir a operação.",
       "cancelled": "A operação foi cancelada."
+    }
+  },
+  "configSync": {
+    "error": {
+      "newerSchema": "Este instantâneo foi criado por uma versão mais nova do codeg (formato {snapshotVersion}); esta versão suporta até o formato {appVersion}.",
+      "checksum": "O instantâneo não confere com sua soma de verificação e pode estar incompleto.",
+      "invalidSnapshot": "Este arquivo não é um instantâneo de configuração válido do codeg.",
+      "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor.",
+      "notConfigured": "Configure o servidor WebDAV antes de sincronizar.",
+      "unauthorized": "O servidor WebDAV recusou o usuário ou a senha.",
+      "forbidden": "O servidor WebDAV negou acesso a esta pasta.",
+      "remotePath": "A pasta remota ou o nome do perfil não é válido.",
+      "quota": "O servidor WebDAV não tem mais espaço.",
+      "network": "Não foi possível alcançar o servidor WebDAV.",
+      "server": "O servidor WebDAV retornou um erro ({status}).",
+      "passphraseRequired": "Este snapshot está cifrado. Defina a frase-passe antes de sincronizar.",
+      "badPassphrase": "Não foi possível decifrar o snapshot. Verifique a frase-passe — o ficheiro também pode estar danificado.",
+      "badDomain": "Não foi possível ler a secção {domain} deste snapshot.",
+      "noRollback": "Essa configuração guardada já não está nesta máquina.",
+      "credentialsUnreadable": "Não foi possível ler as credenciais salvas. Desbloqueie o chaveiro do sistema e tente novamente.",
+      "notEncrypted": "O instantâneo no servidor não está criptografado, mas a criptografia está ativada neste dispositivo. Envie a partir deste dispositivo para substituí-lo ou desative a criptografia para usá-lo."
     }
   },
   "WebConnection": {
@@ -4954,12 +5218,7 @@
     "cronApply": "Aplicar",
     "cronPreviewLabel": "Pré-visualização",
     "cronOpenBuilder": "Abrir o gerador de agendamento",
-    "branchDefault": "Branch padrão",
-    "branchUseCustom": "Usar \"{query}\"",
-    "branchLocal": "Local",
-    "branchRemote": "Remoto",
-    "branchSearchPlaceholder": "Pesquisar branches…",
-    "branchNone": "Sem branches"
+    "branchDefault": "Branch padrão"
   },
   "Tasks": {
     "title": "Tarefas a fazer",
@@ -5084,11 +5343,16 @@
     "phaseRetry": "Nova tentativa",
     "phaseReturn": "Continuação",
     "phaseMerge": "Merge",
+    "phaseCompact": "Compactação de contexto",
     "titleLabel": "Título",
     "titlePlaceholder": "O que precisa ser feito?",
     "promptLabel": "Descrição da tarefa",
     "promptPlaceholder": "Descreva a tarefa para o agente — @ para referenciar arquivos, / para comandos",
     "folderPlaceholder": "Selecione uma pasta",
+    "baseBranch": "Branch base",
+    "baseBranchPlaceholder": "Branch atual",
+    "baseBranchDefault": "Branch atual quando a tarefa iniciar",
+    "baseBranchHint": "A tarefa parte deste branch e o merge a devolve para ele.",
     "agentInheritedHint": "Herdado das configurações de tarefas; altere para personalizar esta tarefa",
     "agentOverrideReset": "Voltar a herdar",
     "sectionTarget": "Destino",
@@ -5114,6 +5378,7 @@
     "mergeDeleteWorktree": "Excluir o worktree após o merge",
     "mergeSubmit": "Merge",
     "mergeSubmitQueue": "Adicionar à fila",
+    "mergeSubmitting": "Iniciando…",
     "mergeQueuedToast": "Adicionada à fila de merge — começa assim que o merge atual terminar.",
     "completeTitle": "Concluir tarefa",
     "completeDescription": "Esta tarefa não alterou nenhum arquivo, então não há nada para fazer merge: ela é marcada como concluída.",
@@ -5135,6 +5400,7 @@
     "settingsMaxConcurrentHint": "0 = ilimitado",
     "settingsAutoCompact": "Limite de compactação automática",
     "settingsAutoCompactHint": "Antes de uma rodada de continuação, nova tentativa ou merge, compacta a sessão se a janela de contexto estiver ao menos assim cheia. 0 = desativado.",
+    "compactingNote": "Compactando o contexto da sessão…",
     "settingsCompactCommand": "Comando de compactação",
     "settingsCompactCommandHint": "Deixe em branco para usar o que o agente oferece, ou o padrão conhecido dele.",
     "settingsCompactCommandPlaceholder": "/compact",
@@ -5377,6 +5643,47 @@
     "groupInstructions": "Descrição e prompt do sistema",
     "fieldDescription": "Descrição",
     "baseInstructions": "Prompt do sistema (base_instructions)"
+  },
+  "DeepSeekModelEditor": {
+    "title": "Lista de modelos",
+    "description": "Os modelos entre os quais uma sessão do DeepSeek pode alternar. Ficam no documento de definições do harness, que o agente lê ao arrancar — guardar aplica-se às sessões iniciadas depois.",
+    "inheritedBadge": "Predefinições do agente",
+    "inheritedHint": "Ainda não há lista guardada, por isso estes são os modelos integrados do agente. Guardar fixa-os, e as versões seguintes do agente deixam de os alterar sozinhas. Ficheiro:",
+    "storedHint": "Guardada no documento de definições do harness. As chaves fora desta lista — e os comentários à volta delas — ficam intactas. Ficheiro:",
+    "unreadable": "Este documento de definições não pode ser editado aqui sem arriscar o que já contém. Edite-o à mão.",
+    "invalidStored": "O agente recusa esta lista guardada, por isso as sessões correm com os seus modelos integrados até ser corrigida:",
+    "loading": "A ler o documento de definições…",
+    "loadFailed": "Não foi possível ler o documento de definições.",
+    "empty": "Sem modelos. Adicione um, ou guarde para voltar à lista integrada do agente.",
+    "addModel": "Adicionar modelo",
+    "remove": "Remover modelo",
+    "advanced": "Mais",
+    "save": "Guardar lista de modelos",
+    "saving": "A guardar…",
+    "restoreDefaults": "Usar predefinições do agente",
+    "fieldId": "Id do modelo",
+    "fieldName": "Nome apresentado",
+    "fieldContextWindow": "Janela de contexto",
+    "fieldDescription": "Descrição",
+    "fieldMaxTokens": "Tokens de saída máx.",
+    "fieldAcceptsImages": "Aceita imagens",
+    "fieldImagePixelBudget": "Limite de píxeis",
+    "imageBudgetPixels": "Número de pixels",
+    "imageBudgetLow": "Detalhe baixo (512×512)",
+    "fieldImageMaxBytes": "Limite de bytes",
+    "placeholderId": "deepseek-flash",
+    "placeholderName": "Mostrado no seletor",
+    "placeholderInherit": "Predefinição do agente",
+    "errorMissingId": "Todos os modelos precisam de um id.",
+    "errorDuplicateId": "Dois modelos partilham o id “{id}”.",
+    "errorBadContextWindow": "A janela de contexto de “{id}” tem de ser um inteiro maior que zero.",
+    "errorBadMaxTokens": "Os tokens de saída máximos de “{id}” têm de ser um inteiro maior que zero.",
+    "errorBadImageLimit": "Os limites de imagem de “{id}” têm de ser inteiros maiores que zero.",
+    "warnSingleModel": "Com um único modelo, o agente deixa de oferecer seletor de modelo.",
+    "warnLaunchModelMissing": "As sessões novas começam em “{model}”, que não está nesta lista. Adicione-o, ou defina {variable} nas variáveis de ambiente acima.",
+    "toastSaved": "Lista de modelos guardada",
+    "toastRestored": "A usar a lista de modelos integrada do agente",
+    "toastSaveFailed": "Não foi possível guardar a lista de modelos"
   },
   "DiagnosticsSettings": {
     "title": "Diagnóstico do ambiente",
@@ -5809,6 +6116,23 @@
     "confirmDeleteCancel": "Cancelar",
     "confirmDeleteConfirm": "Excluir",
     "canvasActions": "Ações do quadro",
-    "mergeIntoNewRegion": "Nova região"
+    "mergeIntoNewRegion": "Nova região",
+    "addFileCard": "Cartão de arquivo",
+    "addTerminalCard": "Cartão de terminal",
+    "searchFiles": "Pesquisar arquivos…",
+    "searchFilesIn": "Pesquisar em {folder}…",
+    "searchingFiles": "Pesquisando…",
+    "noFiles": "Nenhum arquivo encontrado",
+    "noOpenFiles": "Nenhum arquivo aberto — digite para pesquisar",
+    "browseForFile": "Procurar…",
+    "filePreview": "Pré-visualização",
+    "fileSource": "Código",
+    "reloadFile": "Recarregar",
+    "removeFileCard": "Remover cartão de arquivo",
+    "restartTerminal": "Reiniciar terminal",
+    "removeTerminalCard": "Remover cartão de terminal",
+    "terminalNoDirectory": "Este cartão não tem diretório de trabalho",
+    "confirmDeleteTerminals": "{count} terminal(is) em execução serão fechados e seus processos encerrados.",
+    "confirmDeleteNotesAndTerminals": "{notes} nota(s) que você escreveu serão excluídas permanentemente e {terminals} terminal(is) em execução serão encerrados."
   }
 }

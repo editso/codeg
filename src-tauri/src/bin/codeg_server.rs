@@ -137,7 +137,9 @@ async fn async_main() -> ExitCode {
     // errors are silenced, no subprocesses spawned.
     std::thread::spawn(|| {
         let _ = std::panic::catch_unwind(|| {
+            codeg_lib::acp::binary_cache::migrate_legacy_root();
             codeg_lib::sweep_acp_binary_trash();
+            codeg_lib::sweep_acp_scratch_dirs();
         });
     });
 
@@ -337,10 +339,11 @@ async fn async_main() -> ExitCode {
         &chat_authoring_config,
     )
     .await;
-    // Keep ACP model terminal fallbacks aligned with the same default-shell
-    // preference used by the built-in terminal before accepting connections.
+    // Before accepting connections: keep ACP model terminal fallbacks aligned
+    // with the same default-shell preference the built-in terminal uses, and
+    // seed the command-color opt-in that every launch env is built from.
     let terminal_shell_config = state.connection_manager.terminal_shell_config();
-    codeg_lib::commands::system_settings::apply_persisted_terminal_shell_config(
+    codeg_lib::commands::system_settings::apply_persisted_terminal_settings(
         &state.db.conn,
         &terminal_shell_config,
     )
@@ -481,6 +484,12 @@ async fn async_main() -> ExitCode {
         ));
     }
 
+    // Reclaim scratch directories lost track of mid-session. Deliberately NOT
+    // gated on `idle_timeout_from_env` like the sweep above: setting
+    // `CODEG_ACP_IDLE_TIMEOUT_SECS=0` disables idle disconnects, not disk
+    // reclamation.
+    tokio::spawn(codeg_lib::scratch_sweep_task());
+
     // Office watch preview servers: reap dead children + ref0 stragglers.
     if let Some(idle_timeout) = codeg_lib::office_watch::idle_timeout_from_env() {
         tokio::spawn(codeg_lib::office_watch::office_watch_idle_sweep_task(
@@ -515,6 +524,22 @@ async fn async_main() -> ExitCode {
         state.data_dir.clone(),
     ) {
         tokio::spawn(codeg_lib::work_task::run_task_engine(engine));
+    }
+
+    // Config-sync uploader (mirrors lib.rs setup): sleeps a minute, then
+    // compares the configuration's hash every interval and uploads only when
+    // it changed. Does nothing at all until a WebDAV endpoint is configured.
+    {
+        let db_for_sync = state.db.conn.clone();
+        let emitter = std::sync::Arc::new(state.emitter.clone());
+        tokio::spawn(async move {
+            codeg_lib::commands::config_sync::auto_sync::run_auto_sync_loop(
+                db_for_sync,
+                emitter,
+                codeg_lib::commands::config_sync::APP_VERSION.to_string(),
+            )
+            .await;
+        });
     }
 
     // Label worktree folders registered before aliases were seeded at creation

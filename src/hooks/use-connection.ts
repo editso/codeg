@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
 import {
   useAcpActions,
   useConnectionStore,
+  getCachedSelectors,
   type ClaudeApiRetryState,
   type ConnectionState,
   type PendingPermission,
@@ -59,6 +60,7 @@ export interface UseConnectionReturn {
   promptCapabilities: PromptCapabilitiesInfo
   supportsFork: boolean
   selectorsReady: boolean
+  hasCachedSelectors: boolean
   sessionId: string | null
   /** The working directory the live connection was established with (null when
    *  not connected). Lets callers detect a connection that is mid-reconnect to a
@@ -221,19 +223,42 @@ export function useConnection(contextKey: string): UseConnectionReturn {
     return raw
   }, [store, contextKey])
   const connection = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  // A `connect()` that has started but not yet produced an entry. Rides the
+  // same per-key listener set, so one subscription covers both.
+  const getPendingSnapshot = useCallback(
+    () => store.getConnectPending(contextKey),
+    [store, contextKey]
+  )
+  const connectPending = useSyncExternalStore(
+    subscribe,
+    getPendingSnapshot,
+    getPendingSnapshot
+  )
 
   const connectionId = connection?.connectionId ?? null
   const agentType = connection?.agentType ?? null
   const isViewer = connection?.isViewer ?? false
-  const status = connection?.status ?? null
+  // An in-flight `connect()` IS "connecting", even though the store has no
+  // entry for it yet: the backend call that creates one only returns after the
+  // agent has spawned, handshaken and resumed the session, so reporting `null`
+  // for that whole stretch told every consumer "idle, nothing in flight" —
+  // which is how opening a historical conversation ended up with no composer
+  // placeholder, no loading cue and no status-bar task. A real entry always
+  // wins: once it exists, its own status is the more specific truth.
+  const status = connection?.status ?? (connectPending ? "connecting" : null)
   const promptCapabilities =
     connection?.promptCapabilities ?? DEFAULT_PROMPT_CAPABILITIES
   const supportsFork = connection?.supportsFork ?? false
   const selectorsReady = connection?.selectorsReady ?? false
+  const cached = connection?.agentType
+    ? getCachedSelectors(connection.agentType)
+    : null
+  const hasCachedSelectors = cached !== null
   const sessionId = connection?.sessionId ?? null
   const connectedWorkingDir = connection?.workingDir ?? null
-  const modes = connection?.modes ?? null
-  const configOptions = connection?.configOptions ?? null
+  const modes = connection?.modes ?? cached?.modes ?? null
+  const configOptions =
+    connection?.configOptions ?? cached?.configOptions ?? null
   const availableCommands = connection?.availableCommands ?? null
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingUserMessage = connection?.pendingUserMessage ?? null
@@ -344,6 +369,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       promptCapabilities,
       supportsFork,
       selectorsReady,
+      hasCachedSelectors,
       sessionId,
       connectedWorkingDir,
       modes,
@@ -385,6 +411,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       promptCapabilities,
       supportsFork,
       selectorsReady,
+      hasCachedSelectors,
       sessionId,
       connectedWorkingDir,
       modes,

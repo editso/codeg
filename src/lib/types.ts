@@ -797,12 +797,14 @@ export type CanvasNodeKind =
   | "conversation"
   | "custom"
   | "note"
+  | "file"
+  | "terminal"
 
 /** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
  *  a binding region (folder / folder group / agent / single conversation), a
- *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
- *  `folder_group_id` / `conversation_id` are soft references — a binding whose
- *  target is gone renders as unresolved. */
+ *  hand-curated `custom` region, a sticky `note`, a read-only `file` card or a
+ *  `terminal`. `folder_id` / `folder_group_id` / `conversation_id` / `path` are
+ *  soft references — a binding whose target is gone renders as unresolved. */
 export interface CanvasNode {
   id: number
   kind: CanvasNodeKind
@@ -815,6 +817,9 @@ export interface CanvasNode {
   member_ids: number[]
   title: string | null
   content: string | null
+  /** kind=file: the document's absolute path. kind=terminal: the working
+   *  directory its shell runs in. `null` for every other kind. */
+  path: string | null
   color: string | null
   collapsed: boolean
   /**
@@ -1526,6 +1531,13 @@ export interface SessionConfigOptionInfo {
   description?: string | null
   category?: string | null
   kind: SessionConfigKindInfo
+  /** The value the AGENT recommends (JetBrains AIR `recommendedValue`; codex-acp
+   *  1.11.0+ names its default model and the current model's default reasoning
+   *  effort, claude-agent-acp 0.76.0+ the same pair for model and effort).
+   *  A hint only — `current_value` still says what is selected, and a
+   *  recommendation matching no option simply marks nothing. Absent for agents
+   *  that publish none, and on payloads predating the field. */
+  recommended_value?: string | null
 }
 
 export interface AgentOptionsSnapshot {
@@ -1666,6 +1678,12 @@ export interface WorkTaskConfig {
   mode_id?: string | null
   config_values: Record<string, string>
   label_snapshot?: AutomationLabelSnapshot | null
+  /** The branch this task is FOR: its worktree branches from that branch's tip
+   *  and the merge lands back onto it. Absent/blank = the project folder's
+   *  current branch when the task starts (and what every task created before
+   *  the choice existed does). The branch actually used is recorded on
+   *  `WorkTask.base_branch` once the worktree exists. */
+  base_branch?: string | null
 }
 
 export interface WorkTask {
@@ -1727,8 +1745,14 @@ export interface WorkTask {
   source_key?: string | null
   /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
   source_meta?: ForgeSourceMeta | null
-  /** Latest agent_progress milestone — present on live (running/awaiting/merging) rows only. */
+  /** Latest agent_progress milestone OF THIS GENERATION — present on live
+   *  (preparing/running/awaiting/merging) rows only. Scoped by run_seq, so a
+   *  merge in flight never narrates the work round it is landing. */
   latest_progress?: string | null
+  /** This generation is parked on its pre-prompt context compaction: the agent
+   *  is working, but on shrinking the session rather than on the task. The one
+   *  thing that explains a card sitting in 准备中 / 合并中 for minutes. */
+  compacting?: boolean
   created_at: string
   updated_at: string
   started_at: string | null
@@ -2600,6 +2624,11 @@ export type AcpEvent =
       option_name: string
       requested: string
       actual: string
+      /** The same two as RAW value ids — what `agent-label-vocabulary` keys on.
+       *  Optional so a client stays compatible with a server that predates
+       *  them. */
+      requested_value?: string
+      actual_value?: string
     }
   | {
       type: "selectors_ready"
@@ -3758,6 +3787,15 @@ export interface SystemLanguageSettings {
 
 export interface SystemTerminalSettings {
   default_shell: string | null
+  /**
+   * Force ANSI color out of agent-run commands (`CLICOLOR=1`,
+   * `CLICOLOR_FORCE=1`, `FORCE_COLOR=1` and `TERM=xterm-256color` on the agent
+   * process) so their output renders colored in the transcript's terminal card.
+   * Off by default: those are inherited by every command the agent runs, the
+   * force flags outrank `NO_COLOR`, and so they break machine parsing of things
+   * like `gh … --json`.
+   */
+  colorize_command_output: boolean
 }
 
 export interface TerminalShellOption {
@@ -3782,6 +3820,43 @@ export interface SystemRenderingSettings {
  * was requested (e.g. Windows Task Manager vetoing the Run entry). */
 export interface SystemAutostartSettings {
   enabled: boolean
+}
+
+/**
+ * What the main window's close button does.
+ *
+ * `ask` is the shipped default and exists for discoverability: codeg has always
+ * hidden to tray, and a user who believes the app exited never goes looking for
+ * a preference. The first close offers the choice, then pins itself to one of
+ * the other two.
+ */
+export type CloseWindowBehavior = "ask" | "minimize" | "exit"
+
+/**
+ * What the settings UI reads: the stored preference plus a live platform
+ * capability, same shape of pairing as {@link LogSettingsView}. `tray_available`
+ * is never persisted — where the tray is unusable (Linux without one, failed
+ * tray install) hiding the window would strand the workspace, so the close
+ * button force-exits and the preference cannot apply; the UI disables the
+ * control and says so.
+ *
+ * Named for the Rust `SystemCloseBehaviorSettingsView` it mirrors: the Rust
+ * `SystemCloseBehaviorSettings` is the stored row alone and has no
+ * `tray_available`.
+ */
+export interface SystemCloseBehaviorSettingsView {
+  behavior: CloseWindowBehavior
+  tray_available: boolean
+}
+
+/**
+ * `ask` — offer both actions plus "remember my choice".
+ * `confirm_terminals` — the action is already pinned to exit; confirm the loss
+ * of `running_terminals` live terminals.
+ */
+export interface CloseRequestPayload {
+  mode: "ask" | "confirm_terminals"
+  running_terminals: number
 }
 
 // --- Logging ---
@@ -3914,6 +3989,7 @@ export type McpAppType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "pi"
 
 export interface LocalMcpServer {
   id: string
@@ -4359,6 +4435,20 @@ export interface TerminalInfo {
 export interface TerminalEvent {
   terminal_id: string
   data: string
+  /** Cumulative chunk counter, this chunk included. A viewer that subscribes
+   *  before asking for a `TerminalSnapshot` uses it to drop the events the
+   *  snapshot already contains (`seq <= snapshot.seq`). Absent on the exit
+   *  event, which carries no output. */
+  seq?: number
+}
+
+/** Recent output of a live terminal plus the cursor it was read at. `alive`
+ *  false means no such terminal is running — the caller should spawn one
+ *  rather than attach. */
+export interface TerminalSnapshot {
+  alive: boolean
+  data: string
+  seq: number
 }
 
 export interface TokenBreakdown {
@@ -4433,13 +4523,48 @@ export interface PreflightResult {
 
 // ─── OpenCode Plugins ───
 
-export type PluginStatus = "installed" | "missing"
+// ─── Leaked temp reclamation ───
+
+/** One reclaimable artifact left by an agent launch from before temp isolation. */
+export interface LeakedTempEntry {
+  path: string
+  bytes: number
+  age_hours: number
+  is_dir: boolean
+}
+
+export interface LeakedTempScan {
+  root: string
+  entries: LeakedTempEntry[]
+  total_bytes: number
+  /** Matched the leak shape but is still in use, or too recent to touch. */
+  skipped: number
+}
+
+export interface LeakedTempReclaim {
+  removed: number
+  freed_bytes: number
+  failed: string[]
+}
+
+/// `needs_migration` = present only under the pre-1.18 flat `node_modules/`,
+/// which current opencode never reads. Not installed, from opencode's side.
+export type PluginStatus =
+  | "installed"
+  | "needs_migration"
+  | "missing"
+  /** Loaded off disk by opencode itself — nothing to install. */
+  | "path"
+  /** Declared as a path plugin, but nothing exists at the resolved path. */
+  | "path_missing"
 
 export interface PluginInfo {
   name: string
   declared_spec: string
   installed_version: string | null
   status: PluginStatus
+  /** Where opencode will look for a path plugin; null for package plugins. */
+  resolved_path: string | null
 }
 
 export interface PluginCheckSummary {
@@ -4909,4 +5034,63 @@ export function isCodexCompatEntry(
   return Object.entries(CODEX_COMPAT_OVERRIDES).every(([key, value]) =>
     Object.is(key in overrides ? overrides[key] : base[key], value)
   )
+}
+
+// ── DeepSeek Harness model catalog ──
+//
+// Mirrors `src-tauri/src/commands/deepseek_settings.rs`, which reads and writes
+// the `llm-deepseek.models` section of `$DSH_HOME/settings.yaml` — the advisory
+// catalog `deepseek-acp` turns into the composer's model dropdown. Field names
+// are the document's own, so the wire shape and the YAML shape are one thing.
+
+/** One entry of the DeepSeek Harness advisory model catalog. Every field but
+ *  `id` is optional, and an absent field is not the same as an empty one: the
+ *  agent falls back to its own default for what is missing. */
+export interface DeepSeekCatalogModel {
+  /** Wire model id sent to the endpoint. Required, unique within the list. */
+  id: string
+  /** Selector label; the agent shows `id` when absent. */
+  name?: string
+  /** Selector detail, for deployments carrying similar variants. */
+  description?: string
+  /** Combined request/response capacity, in tokens. */
+  contextWindow?: number
+  /** Per-request output cap, in tokens. */
+  maxTokens?: number
+  /** Accepted request modalities; absent means text-only, and sending an image
+   *  to a model without `image` here is refused by the agent. */
+  inputModalities?: ("text" | "image")[]
+  /** Total-pixel budget for one request preview, or `"low"` for the agent's
+   *  named low-detail tier (512×512). Vision entries only. */
+  imagePixelBudget?: number | "low"
+  /** Encoded-byte cap for one request preview. Vision entries only. */
+  imageMaxBytes?: number
+  /** How the system prompt is delivered to this route; the agent accepts only
+   *  `"in-history"`, and its own default entry declares it.
+   *
+   *  The editor has no control for this — it carries the value through
+   *  untouched. Dropping it does not fail: it silently moves that model to the
+   *  other delivery mode, which is why it must survive a round trip. */
+  systemPromptUpdate?: "in-history"
+}
+
+/** What the settings panel reads about the stored catalog. */
+export interface DeepSeekModelCatalog {
+  /** Resolved `settings.yaml` path (shown so the file can be found by hand). */
+  path: string
+  /** Whether that document exists at all. */
+  exists: boolean
+  /** Whether it declares `llm-deepseek.models`. `false` means `models` below is
+   *  the agent's built-in list, inherited rather than stored. */
+  configured: boolean
+  /** The effective catalog: what is stored, else the built-in defaults. */
+  models: DeepSeekCatalogModel[]
+  /** Why the stored document could not be read. Set only when the file exists
+   *  and is unusable — editing is refused rather than overwriting it blind. */
+  error: string | null
+  /** Why the stored list is one the agent refuses (duplicate ids, a
+   *  non-positive context window, image limits on a text-only entry…). The
+   *  document was understood, so the rows stay editable — but until they are
+   *  fixed, sessions run on the agent's built-in catalog instead. */
+  invalid: string | null
 }

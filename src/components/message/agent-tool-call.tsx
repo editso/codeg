@@ -6,6 +6,8 @@ import type {
   AgentType,
 } from "@/lib/types"
 import { tryParseJson, extractJsonField } from "./content-parts-renderer"
+import { SubagentSessionDialog } from "./subagent-session-dialog"
+import { useSessionViewerHost } from "./session-viewer-host"
 import { shortAgentId } from "@/lib/collab-tool"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
@@ -15,9 +17,17 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/instant-collapsible"
 import { cn } from "@/lib/utils"
-import { ChevronRightIcon, Clock3, Loader2 } from "lucide-react"
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  CircleDashed,
+  Clock3,
+  Loader2,
+  OctagonX,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentCapsule } from "./agent-capsule"
+import { SubagentSessionButton } from "./subagent-session-button"
 import {
   AssistantActivityRows,
   type AssistantActivityItem,
@@ -198,28 +208,25 @@ function parseGrokSubagentProgress(
 }
 
 /**
- * The child's own session, when the sub-agent ran as a standalone session on
  * disk. Grok and Codex native team-of-agents both do this: they write the
  * child's transcript separately and do not stream its messages into the
- * parent's ACP response. Its transcript is rendered beneath the launch card
- * so the child remains part of the parent's activity flow.
+ * parent's ACP response. The transcript is rendered inline when available,
+ * with a session viewer action for opening the full child session.
  *
- * Live it arrives as `meta.grokSubagentSession.childSessionId`
+ * Grok, live, arrives as `meta.grokSubagentSession.childSessionId`
  * (`connection.rs::grok_subagent_meta`, re-sent on every progress tick because
  * meta is replaced wholesale); in history it comes off the parsed
  * `agent_stats.child_session_id` (`parsers/grok.rs::subagent_stats`). Codex
  * instead supplies the child's native rollout id as `agent_id` on a card
  * marked `__codegCodexSubagentLaunch`; the direct conversation loader resolves
- * that id to the child's rollout.
- *
- * `agent_stats.child_session_id` is currently Grok-only. Codex's launch marker
- * is intentionally required before treating `agent_id` as a session id: other
- * hosts can use an `agent_id` argument for unrelated tool payloads.
+ * that id to the child's rollout. The launch marker is required before
+ * treating `agent_id` as a session id because other hosts can use that field
+ * for unrelated tool payloads.
  */
 function parseChildSessionId(
   meta: Record<string, unknown> | null | undefined,
   statsChildSessionId: string | null | undefined,
-  codexNativeAgentId: string | null
+  codexSubagentId: string | null
 ): { sessionId: string; agentType: AgentType } | null {
   const raw = meta?.grokSubagentSession
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -228,12 +235,47 @@ function parseChildSessionId(
       return { sessionId: live, agentType: "grok" }
     }
   }
-  if (codexNativeAgentId) {
-    return { sessionId: codexNativeAgentId, agentType: "codex" }
+  if (statsChildSessionId && statsChildSessionId.length > 0) {
+    return { sessionId: statsChildSessionId, agentType: "grok" }
   }
-  return statsChildSessionId && statsChildSessionId.length > 0
-    ? { sessionId: statsChildSessionId, agentType: "grok" }
+  return codexSubagentId
+    ? { sessionId: codexSubagentId, agentType: "codex" }
     : null
+}
+
+/**
+ * How the codex sub-agent itself ended, as a pill chip.
+ *
+ * Separate from the capsule's own status chrome, and deliberately so: the card
+ * settles when codex acknowledges the LAUNCH, so its "completed" says nothing
+ * about the child, which may still be working. codex reports the real outcome
+ * later as `SubAgentActivity{kind}` — live via `settle_codex_subagent_launch`,
+ * on reload via the rollout parser — and both write it to the same key.
+ *
+ * `null` (no outcome heard yet) is a state in its own right, not an absence:
+ * the child's fate is genuinely unknown, and saying so is the whole reason this
+ * chip exists. That case keeps the full explanation in the body, since a
+ * two-word chip cannot carry a caveat.
+ */
+function CodexSubagentStateBadge({ state }: { state: string | null }) {
+  const t = useTranslations("Folder.chat.contentParts")
+  const [Icon, label, tone] =
+    state === "completed"
+      ? ([CheckIcon, t("agentSubagentDone"), "text-green-600"] as const)
+      : state === "interrupted"
+        ? ([OctagonX, t("agentSubagentInterrupted"), "text-amber-500"] as const)
+        : ([
+            CircleDashed,
+            t("agentSubagentUnknown"),
+            "text-muted-foreground/70",
+          ] as const)
+
+  return (
+    <span className="inline-flex items-center gap-1 text-3xs font-normal text-muted-foreground">
+      <Icon aria-hidden className={cn("size-3 shrink-0", tone)} />
+      {label}
+    </span>
+  )
 }
 
 // ── main component ────────────────────────────────────────────────────
@@ -352,10 +394,16 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   // codex 0.147's native team-of-agents marks its capsules as LAUNCH-only
   // (`CODEX_SUBAGENT_LAUNCH_KEY`, written by both the live path and the rollout
   // parser). The card settles when codex acknowledges the spawn, which is not
-  // when the child finishes — codex forwards no further progress, and an
-  // asynchronous child can still be working long after. Say so, rather than let
-  // a green "completed" claim the sub-agent is done.
-  const isLaunchOnly = parsed?.__codegCodexSubagentLaunch === true
+  // when the child finishes — an asynchronous child can still be working long
+  // after. Say so, rather than let a green "completed" claim the sub-agent is
+  // done.
+  const isCodexSubagent = parsed?.__codegCodexSubagentLaunch === true
+
+  // …and codex DOES eventually say how the child ended
+  // (`SubAgentActivity{kind}`), which both paths stamp here. Present only once
+  // that has been heard; while it is absent the child's fate is genuinely
+  // unknown, which is what the launch note describes.
+  const codexSubagentState = asText(parsed?.__codegCodexSubagentState)
 
   // codex spawn capsules carry the sub-agent's UUID (`agent_id`); show it in the
   // pill so the execution capsule reads uniformly with the live/wait collab
@@ -419,31 +467,35 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     [part.meta]
   )
 
-  // The child's own session, when it has one. Grok supplies its id through the
-  // spawn metadata/stats; Codex native team-of-agents supplies it through the
-  // launch card's `agent_id`. Both routes render inline while the child writes
-  // its independent transcript.
+  // The child's own session, when it has one (grok, codex). Available live —
+  // from the spawn notification's meta / id — as well as in history, so a
+  // running child can be watched while it works instead of only after it
+  // reports back.
   const childSession = useMemo(
     () =>
       parseChildSessionId(
         part.meta,
         agentStats?.child_session_id,
-        isLaunchOnly ? agentId : null
+        isCodexSubagent ? agentId : null
       ),
-    [part.meta, agentStats?.child_session_id, isLaunchOnly, agentId]
+    [part.meta, agentStats?.child_session_id, isCodexSubagent, agentId]
   )
+  const viewerHost = useSessionViewerHost()
+  const [sessionOpen, setSessionOpen] = useState(false)
   const childTranscriptLive =
-    isRunning || isLiveBackgroundLaunch || isLaunchOnly
+    isRunning ||
+    isLiveBackgroundLaunch ||
+    (isCodexSubagent && codexSubagentState === null)
+  const hasChildTranscript =
+    childSession != null && (childTranscriptLive || !isCodexSubagent)
+  const hasLiveChildTranscript = childSession != null && childTranscriptLive
   const hasLiveInlineTranscript =
     isRunning && transcriptActivityItems.length > 0
   const timelinePresentation =
-    display === "inline" || childSession != null || hasLiveInlineTranscript
-  const autoOpenTimeline =
-    isLaunchOnly ||
-    (childSession != null && childTranscriptLive) ||
-    hasLiveInlineTranscript
+    display === "inline" || hasLiveChildTranscript || hasLiveInlineTranscript
+  const autoOpenTimeline = hasLiveChildTranscript || hasLiveInlineTranscript
   const isRecursiveTranscriptReference =
-    isLaunchOnly && agentId != null && ancestorSessionIds.has(agentId)
+    isCodexSubagent && agentId != null && ancestorSessionIds.has(agentId)
   const grokProgressLine = useMemo(() => {
     if (!grokProgress) return null
     const pieces: string[] = []
@@ -480,7 +532,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
 
   const showRunningIndicator =
     (isRunning && !part.output) || isLiveBackgroundLaunch || outcomeBackground
-  const showLaunchOnlyNote = isLaunchOnly && !isRunning && !childSession
+  const showLaunchOnlyNote = isCodexSubagent && !isRunning && !childSession
   const showGrokProgress =
     (isRunning || isLiveBackgroundLaunch) && grokProgressLine != null
   const showErrorOutput = isError && Boolean(part.errorText)
@@ -505,11 +557,28 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     showRunningIndicator ||
     showLaunchOnlyNote ||
     showGrokProgress ||
-    childSession != null ||
+    hasChildTranscript ||
     showErrorOutput ||
     showOutcomeError ||
     showBackgroundLifecycle ||
     showFinalOutput
+
+  // Opening the child's transcript is capsule-level, so the action remains
+  // available even when the launch has no expandable body.
+  const openChildSession = useMemo(() => {
+    if (!childSession) return null
+    return () =>
+      viewerHost
+        ? viewerHost.open({
+            kind: "agentSession",
+            sessionId: childSession.sessionId,
+            agentType: childSession.agentType,
+            subagentType,
+            description,
+            live: childTranscriptLive,
+          })
+        : setSessionOpen(true)
+  }, [childSession, viewerHost, subagentType, description, childTranscriptLive])
 
   // A Codex child rollout can start with a copied parent launch card pointing
   // straight back to this same rollout. Do not turn that copied prefix into an
@@ -609,7 +678,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
       {/* Grok and Codex native teams forward none of the child's messages over
           the parent ACP stream. Read the independent transcript as nested
           activity rows instead of moving it to a side drawer. */}
-      {childSession && (
+      {hasChildTranscript && childSession && (
         <SubagentSessionTranscript
           sessionId={childSession.sessionId}
           agentType={childSession.agentType}
@@ -675,28 +744,46 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   }
 
   return (
-    <AgentCapsule
-      title={title}
-      isRunning={isRunning || isLiveBackgroundLaunch || outcomeBackground}
-      isError={isError || backgroundFailed || outcomeError != null}
-      rightSuffix={durationSuffix}
-      idBadge={agentId ? shortAgentId(agentId) : null}
-      statusLabel={statusLabel}
-      presentation={timelinePresentation ? "timeline" : "card"}
-      hasBody={hasAgentDetail}
-      timelineBodyClassName={
-        timelinePresentation && alignTimelineToParent
-          ? "-ms-[34px] w-[calc(100%+34px)]"
-          : undefined
-      }
-      // Codex reports a native spawn as completed as soon as the child has
-      // launched, while that child can still be producing its own transcript.
-      // Open when live activity arrives, including a Grok session id that is
-      // delivered after the Agent card first mounted. User disclosure choices
-      // still take precedence once they click the pill.
-      autoOpen={autoOpenTimeline}
-    >
-      {agentDetail}
-    </AgentCapsule>
+    <>
+      <AgentCapsule
+        title={title}
+        isRunning={isRunning || isLiveBackgroundLaunch || outcomeBackground}
+        isError={isError || backgroundFailed || outcomeError != null}
+        rightSuffix={durationSuffix}
+        idBadge={agentId ? shortAgentId(agentId) : null}
+        stateBadge={
+          isCodexSubagent && !isRunning ? (
+            <CodexSubagentStateBadge state={codexSubagentState} />
+          ) : null
+        }
+        headerAction={
+          openChildSession && !hasChildTranscript ? (
+            <SubagentSessionButton onClick={openChildSession} />
+          ) : null
+        }
+        statusLabel={statusLabel}
+        presentation={timelinePresentation ? "timeline" : "card"}
+        hasBody={hasAgentDetail}
+        timelineBodyClassName={
+          timelinePresentation && alignTimelineToParent
+            ? "-ms-[34px] w-[calc(100%+34px)]"
+            : undefined
+        }
+        autoOpen={autoOpenTimeline}
+      >
+        {agentDetail}
+      </AgentCapsule>
+      {childSession && viewerHost == null && sessionOpen && (
+        <SubagentSessionDialog
+          open={sessionOpen}
+          onOpenChange={setSessionOpen}
+          sessionId={childSession.sessionId}
+          agentType={childSession.agentType}
+          subagentType={subagentType}
+          description={description}
+          live={childTranscriptLive}
+        />
+      )}
+    </>
   )
 })
