@@ -124,10 +124,13 @@ export function PermissionDialog({
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-            {/* Prefer the human-readable description (claude-agent-acp ≥0.63
-                `_meta.claudeCode.title`, else codex-acp ≥1.7.0
-                `_meta.permission.title`) over the raw title (the shell
-                command, which the command block below already shows). */}
+            {/* Prefer the human-readable description (claude-agent-acp
+                0.63–0.72 `_meta.claudeCode.title`, else `_meta.permission.title`
+                — codex ≥1.7.0 and claude ≥0.73.0, whose permission tool calls
+                carry no `claudeCode` block at all) over the raw title (the
+                shell command, which the command block below already shows).
+                `parsePermissionToolCall` also drops a description that IS that
+                command, which is what claude-agent-acp ≥0.79.0 puts there. */}
             <span className="truncate">
               {parsed.description ?? parsed.title}
             </span>

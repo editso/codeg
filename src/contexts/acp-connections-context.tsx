@@ -115,6 +115,7 @@ import {
   saveModePreference,
   saveConfigPreference,
 } from "@/lib/selector-prefs-storage"
+import { rememberModelLabels } from "@/lib/model-label-store"
 import { useAlertContext, type AlertAction } from "@/contexts/alert-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
@@ -4554,6 +4555,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             }
             entry.configOptions = e.config_options
             selectorsCache.set(configConn.agentType, entry)
+            // This is the only place a model's DISPLAY name and its id are seen
+            // together. Transcripts record the id alone, so without capturing
+            // the pair here an agent with opaque ids (qoder's `qfmodel`) can
+            // never label its own history. The agent comes off the connection,
+            // not off whatever is selected in the UI — the settings panels'
+            // probe snapshots lag an agent switch by a debounce and would
+            // file the labels under the wrong one.
+            rememberModelLabels(configConn.agentType, e.config_options)
           }
           break
         }
@@ -4591,6 +4600,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               modes: readyConn.modes,
               configOptions: readyConn.configOptions,
             })
+          }
+          // Also covers the replay path, where the options were restored onto
+          // the connection without a fresh `session_config_options` event.
+          if (readyConn) {
+            rememberModelLabels(readyConn.agentType, readyConn.configOptions)
           }
           break
         }
